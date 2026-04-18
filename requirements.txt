@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+chromadb
+langchain
+sentence-transformers
+pytesseract
+opencv-python
+pytest

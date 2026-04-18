@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: lexshield_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app  # Maps local folder to the container so live-reload works
+    environment:
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+    depends_on:
+      - chromadb
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: lexshield_chroma
+    ports:
+      - "8001:8000" # Maps local port 8001 to Chroma's internal port 8000
+    volumes:
+      - ./data/chroma:/chroma/chroma # Saves vector data locally so it isn't lost on restart
