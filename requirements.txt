@@ -8,3 +8,5 @@ sentence-transformers
 pytesseract
 opencv-python
 pytest
+pdf2image
+numpy
