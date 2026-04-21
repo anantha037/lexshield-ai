@@ -1,4 +1,16 @@
-.env
+# Python & Environments
+venv/
 __pycache__/
 *.pyc
-venv/
+
+# Secrets
+.env
+
+# Data & Databases
+data/raw/
+data/processed/
+data/chroma/
+
+# Temporary Files & Test Images
+temp_*.jpg
+sample_order.jpg
