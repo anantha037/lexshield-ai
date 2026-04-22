@@ -20,6 +20,7 @@ import json
 import random
 from pathlib import Path
 from typing import Optional
+import hashlib
 
 # ── Optional PyMuPDF import ───────────────────────────────────────────────────
 try:
@@ -174,16 +175,14 @@ def _save_chunk(
     doc_type: str,
     section: Optional[str],
 ) -> None:
-    """
-    Assembles a chunk dict from a word list and appends it to `chunks`.
-    Skips fragments shorter than 50 characters.
-    """
     text = " ".join(words).strip()
     if len(text) < 50:
         return
 
-    source_slug = re.sub(r'[^a-z0-9]', '_', source.lower())[:30]
-    chunk_id    = f"{source_slug}_{len(chunks) + 1:05d}"
+    source_slug = re.sub(r'[^a-z0-9]', '_', source.lower())[:25]
+    # Add a short hash of the text to guarantee uniqueness
+    text_hash   = hashlib.md5(text.encode()).hexdigest()[:6]
+    chunk_id    = f"{source_slug}_{len(chunks) + 1:05d}_{text_hash}"
 
     chunks.append({
         "chunk_id":   chunk_id,

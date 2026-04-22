@@ -1,16 +1,47 @@
-# Python & Environments
+# =========================
+# 1. Python & Environments
+# =========================
 venv/
+env/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 
-# Secrets
+# =========================
+# 2. Secrets & Configs
+# =========================
+# (This prevents another API token disaster!)
 .env
+*.pem
+secrets.json
 
-# Data & Databases
+# =========================
+# 3. Data & Databases
+# =========================
+# GitHub blocks pushes over 100MB, so never commit raw datasets
 data/raw/
 data/processed/
-data/chroma/
+data/chroma_db/
+*.csv
+*.pdf
+*.json
 
-# Temporary Files & Test Images
+# =========================
+# 4. Logs & Temporary Files
+# =========================
+*.log
+temp/
+tmp/
 temp_*.jpg
 sample_order.jpg
+
+# =========================
+# 5. OS & Editor Junk
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
