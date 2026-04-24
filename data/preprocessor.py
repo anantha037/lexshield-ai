@@ -21,15 +21,7 @@ import random
 from pathlib import Path
 from typing import Optional
 import hashlib
-
-# ── Optional PyMuPDF import ───────────────────────────────────────────────────
-try:
-    import fitz  # PyMuPDF
-    PYMUPDF_AVAILABLE = True
-except ImportError:
-    PYMUPDF_AVAILABLE = False
-    print("  PyMuPDF not installed. Run: pip install pymupdf")
-    print("    PDF processing will be skipped.\n")
+import fitz  # PyMuPDF
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 RAW_DIR       = Path("data/raw")
@@ -70,9 +62,6 @@ def extract_text_from_pdf(pdf_path: Path) -> list[dict]:
     Extracts text page-by-page from a PDF using PyMuPDF.
     Returns list of {page_num, text} dicts.
     """
-    if not PYMUPDF_AVAILABLE:
-        print(f"  [SKIP] PyMuPDF unavailable — cannot read {pdf_path.name}")
-        return []
 
     pages = []
     try:

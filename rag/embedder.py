@@ -14,6 +14,8 @@ Usage:
   from rag.embedder import embedder
   vectors = embedder.embed(["section 420 cheating", "tenant deposit refund"])
 """
+
+
 import os
 # --- HARDWARE SAFETY LIMITS ---
 # Force the AI to use only 2 CPU threads to prevent laptop overheating
@@ -23,6 +25,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "2"
 import torch
 torch.set_num_threads(2)
 # ------------------------------
+
 
 from sentence_transformers import SentenceTransformer
 from typing import Union
@@ -41,7 +44,7 @@ class LegalEmbedder:
         print("(First run downloads ~90MB — subsequent runs load from cache)")
         self.model = SentenceTransformer(model_name)
         self.model_name = model_name
-        self.vector_dim = self.model.get_sentence_embedding_dimension()
+        self.vector_dim = self.model.get_embedding_dimension()
         print(f"Model loaded. Vector dimension: {self.vector_dim}")
 
     def embed(

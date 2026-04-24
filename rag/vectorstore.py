@@ -110,6 +110,7 @@ class LegalVectorStore:
             pct    = (added / total) * 100
             print(f"Batch {batch_idx + 1}/{n_batch} | {added}/{total} ({pct:.1f}%)")
 
+            # Slow down slightly
             import time
             time.sleep(1.5)
 

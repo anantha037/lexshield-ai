@@ -101,4 +101,4 @@ def download_pre_chunked_judgments():
 
 if __name__ == "__main__":
     download_iltur_judgments()
-    # download_pre_chunked_judgments()
+    download_pre_chunked_judgments()
