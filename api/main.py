@@ -29,9 +29,12 @@ app.add_middleware(
 # ── Routers ───────────────────────────────────────────────────────────────────
 from api.document     import router as document_router
 from api.legal        import router as legal_router
+from api.orchestator  import router as orchestrator_router
 
 app.include_router(document_router)
 app.include_router(legal_router)
+app.include_router(orchestrator_router)
+
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
