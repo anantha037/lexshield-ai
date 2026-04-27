@@ -1,433 +1,446 @@
 """
-LexShield Legal Text Preprocessor
-==================================
-Pipeline: raw PDF / judgment JSON → clean text → chunks → chunks.json
+LexShield AI — Week 2 Contextual Chunking Preprocessor
+=======================================================
+Replaces Week 1 basic token-splitter with:
+  1. Section-boundary detection — splits at legal section headers first
+  2. Context injection — every chunk carries its section header as a prefix
+  3. Hierarchical metadata — section_number, section_title, chapter, chunk_type
+  4. Token-based splitting ONLY as fallback when a section > MAX_SECTION_WORDS
 
-Sources handled:
-  1. Statute PDFs     (data/raw/statutes/)
-  2. IL-TUR judgments (data/raw/judgments/iltur_judgments.json)
-  3. Pre-chunked SC   (data/raw/judgments/sc_prechunked.json)
+New chunk schema (superset of Week 1):
+  chunk_id, text, context_text, source, doc_type,
+  section, section_title, chapter, chunk_type, word_count
 
-Output:
-  data/processed/chunks.json  — ~4,500–5,000 quality chunks
-
-Run:
-  python data/preprocessor.py
+  context_text = "[source | chapter | section header]\\n{raw text}"
+  → embedded for richer semantic signal; text = raw section (shown in prompts)
 """
 
 import re
 import json
-import random
-from pathlib import Path
-from typing import Optional
 import hashlib
-import fitz  # PyMuPDF
+import gc
+import os
+from pathlib import Path
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-RAW_DIR       = Path("data/raw")
-PROCESSED_DIR = Path("data/processed")
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+# CPU safety — set before any numpy/torch import (even transitive)
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-# ── Chunking parameters ───────────────────────────────────────────────────────
-# 1 token ≈ 0.75 words for English legal text
-# Target: 500 tokens  → ~375 words
-# Overlap: 50 tokens  → ~38 words
-CHUNK_SIZE_WORDS   = 375
-CHUNK_OVERLAP_WORDS = 38
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    raise ImportError("Run: pip install PyMuPDF")
 
-# ── Sampling caps (keeps total under 5,000 for your hardware) ─────────────────
-MAX_ILTUR_CHUNKS      = 1000
-MAX_PRECHUNKED_CHUNKS = 2000
+# ── Chunking constants ────────────────────────────────────────────────────────
+MAX_SECTION_WORDS = 450   # sections larger than this get token-split
+OVERLAP_WORDS     = 38    # ~50 token overlap when splitting
+MIN_CHUNK_WORDS   = 15    # discard chunks shorter than this
 
-# ── Statute files to process ──────────────────────────────────────────────────
-STATUTE_FILES = {
-    "IPC_1860.pdf":                     ("IPC 1860",                     "statute"),
-    "BNS_2023.pdf":                     ("BNS 2023",                     "statute"),
-    "CrPC_1973.pdf":                    ("CrPC 1973",                    "statute"),
-    "Consumer_Protection_Act_2019.pdf": ("Consumer Protection Act 2019", "statute"),
-    "Payment_of_Wages_1936.pdf":        ("Payment of Wages Act 1936",    "statute"),
-    "BNS_Handbook_2024.pdf":            ("BNS Handbook 2024",            "statute"),
-    "Kerala_Rent_Control_Act_1965.pdf": ("Kerala Rent Control Act 1965", "statute"),
-}
+# ── Regex patterns ────────────────────────────────────────────────────────────
+CHAPTER_RE = re.compile(
+    r'^(CHAPTER\s+(?:[IVXLCDM]+|\d+)[^\n]{0,80})',
+    re.MULTILINE | re.IGNORECASE,
+)
 
+# Ordered most-specific → least-specific; first match wins for any position
+SECTION_PATTERNS: list[re.Pattern] = [
+    re.compile(r'^(Section\s+\d+[A-Za-z]?\.)',           re.MULTILINE),
+    re.compile(r'^(\d{1,4}[A-Z]?\.\s+[A-Z][a-z])',      re.MULTILINE),
+    re.compile(r'^(Article\s+\d+[A-Za-z]?\.?)',          re.MULTILINE),
+    re.compile(r'^(Rule\s+\d+[A-Za-z]?\.)',              re.MULTILINE | re.IGNORECASE),
+    re.compile(r'^([A-Z][A-Z\s\-]{8,60})$',             re.MULTILINE),
+]
 
-# ═════════════════════════════════════════════════════════════════════════════
-# STAGE 1 — PDF TEXT EXTRACTION
-# Uses PyMuPDF to read the text layer directly (much faster + cleaner than OCR)
-# OCR pipeline (cv/pipeline.py) is reserved for scanned images/court uploads.
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Text cleaning ─────────────────────────────────────────────────────────────
 
-def extract_text_from_pdf(pdf_path: Path) -> list[dict]:
-    """
-    Extracts text page-by-page from a PDF using PyMuPDF.
-    Returns list of {page_num, text} dicts.
-    """
-
-    pages = []
-    try:
-        doc = fitz.open(str(pdf_path))
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            text = page.get_text("text")
-            if text.strip():
-                pages.append({"page_num": page_num + 1, "text": text})
-        doc.close()
-    except Exception as e:
-        print(f"  [ERROR] Could not read {pdf_path.name}: {e}")
-    return pages
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# STAGE 2 — TEXT CLEANING
-# ═════════════════════════════════════════════════════════════════════════════
-
-def clean_text(raw_text: str) -> str:
-    """
-    Cleans raw extracted text from legal PDFs and judgment files.
-
-    Removes:
-      - Standalone page numbers
-      - Common Indian legal PDF headers/footers
-      - Section separator lines (---, ___, ...)
-      - Hyphenated line breaks  (word-\\nword → wordword)
-      - Excess whitespace
-      - Lines containing only special characters (table artifacts)
-      - Runs of 3+ blank lines → collapsed to 1 blank line
-    """
-    text = raw_text
-
-    # Standalone page numbers (a line that is just digits, optionally spaced)
-    text = re.sub(r'(?m)^\s*\d{1,4}\s*$', '', text)
-
-    # Common headers/footers in Indian legislative PDFs
-    text = re.sub(
-        r'(THE\s+GAZETTE\s+OF\s+INDIA'
-        r'|MINISTRY\s+OF\s+LAW'
-        r'|GOVERNMENT\s+OF\s+INDIA'
-        r'|www\.legislative\.gov\.in'
-        r'|legislative\.gov\.in'
-        r'|www\.indiacode\.nic\.in'
-        r'|indiacode\.nic\.in)',
-        '', text, flags=re.IGNORECASE
-    )
-
-    # Section separator lines (---, ___, ===, ...)
-    text = re.sub(r'(?m)^[\-_\.=]{3,}\s*$', '', text)
-
-    # Fix hyphenated line breaks: "imprison-\nment" → "imprisonment"
-    text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)
-
-    # Collapse multiple spaces/tabs → single space
-    text = re.sub(r'[ \t]+', ' ', text)
-
-    # Remove lines with only special chars (table borders, junk)
-    text = re.sub(
-        r'(?m)^\s*[^a-zA-Z0-9\u0D00-\u0D7F\u0900-\u097F\n]{3,}\s*$',
-        '', text
-    )
-
-    # Collapse 3+ consecutive blank lines → 1 blank line
+def clean_text(text: str) -> str:
+    text = re.sub(r'^\s*\d{1,4}\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'THE GAZETTE OF INDIA[^\n]*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'MINISTRY OF[^\n]*',           '', text, flags=re.IGNORECASE)
+    text = re.sub(r'GOVERNMENT OF[^\n]*',         '', text, flags=re.IGNORECASE)
+    text = re.sub(r'EXTRAORDINARY\s+PART\s+II[^\n]*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'-\n(\w)', r'\1', text)          # re-join hyphen line-breaks
     text = re.sub(r'\n{3,}', '\n\n', text)
-
+    text = re.sub(r'[ \t]+', ' ', text)
     return text.strip()
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# STAGE 3 — SECTION-AWARE CHUNKING
-# ═════════════════════════════════════════════════════════════════════════════
+def make_chunk_id(slug: str, index: int, text: str) -> str:
+    h = hashlib.md5(text.encode("utf-8")).hexdigest()[:6]
+    return f"{slug}_{index:05d}_{h}"
 
-def detect_section_header(text: str) -> Optional[str]:
-    """
-    Tries to extract a section label from the start of a paragraph.
 
-    Recognises patterns like:
-      "Section 420."  /  "420. Cheating"  /  "CHAPTER IV"  /  "PART III"
-    Returns the label string (≤80 chars) or None.
+def _is_toc_chunk(text: str) -> bool:
+    """True if chunk looks like a Table of Contents (short lines + many dots/numbers)."""
+    lines = text.strip().splitlines()
+    if not lines:
+        return False
+    toc = sum(
+        1 for l in lines
+        if len(l.strip()) < 80 and (
+            l.count('.') / max(len(l.strip()), 1) > 0.3
+            or re.match(r'^\d[\d\s\.]+$', l.strip())
+        )
+    )
+    return toc / max(len(lines), 1) > 0.65
+
+
+# ── Section-boundary detection ────────────────────────────────────────────────
+
+def find_chapters(text: str) -> list[tuple[int, str]]:
+    return sorted(
+        [(m.start(), m.group(1).strip()) for m in CHAPTER_RE.finditer(text)],
+        key=lambda x: x[0],
+    )
+
+
+def find_section_boundaries(text: str) -> list[tuple[int, str]]:
     """
-    patterns = [
-        r'^(Section\s+\d+[A-Z]?[\.\-]?\s*[A-Z][^\.]*)',  # Section 420. Cheating...
-        r'^(\d+[A-Z]?[\.\)]\s+[A-Z][^\.]{5,60})',         # 420. Cheating and...
-        r'^(CHAPTER\s+[IVXLC]+[\.\s][^\n]*)',              # CHAPTER IV OFFENCES
-        r'^(PART\s+[IVXLC]+[\.\s][^\n]*)',                 # PART III
-    ]
-    for pattern in patterns:
-        m = re.match(pattern, text.strip(), re.IGNORECASE)
+    Returns sorted [(char_pos, header_text)] for every section start.
+    De-duplicates positions within 5 characters to avoid double-matches.
+    """
+    seen:  set[int]         = set()
+    found: list[tuple[int, str]] = []
+
+    for pattern in SECTION_PATTERNS:
+        for m in pattern.finditer(text):
+            pos = m.start()
+            if any(abs(pos - s) < 5 for s in seen):
+                continue
+            seen.add(pos)
+            found.append((pos, m.group(1).strip()))
+
+    found.sort(key=lambda x: x[0])
+    return found
+
+
+def chapter_at(position: int, chapters: list[tuple[int, str]]) -> str:
+    name = "General Provisions"
+    for pos, header in chapters:
+        if pos <= position:
+            name = header
+        else:
+            break
+    return name
+
+
+def parse_section_header(header: str) -> tuple[str, str]:
+    """Returns (section_number, section_title)."""
+    for pat, grp_num, grp_title in [
+        (r'[Ss]ection\s+(\d+[A-Z]?)\.?\s*(.*)',       1, 2),
+        (r'(\d+[A-Z]?)\.\s*(.*)',                       1, 2),
+        (r'Article\s+(\d+[A-Z]?)\.?\s*(.*)',           1, 2),
+        (r'Rule\s+(\d+[A-Z]?)\.?\s*(.*)',              1, 2),
+    ]:
+        m = re.match(pat, header, re.IGNORECASE)
         if m:
-            return m.group(1).strip()[:80]
-    return None
+            num   = m.group(grp_num)
+            title = m.group(grp_title).rstrip('.—').strip()
+            return num, title
+    return "", header
 
 
-def _save_chunk(
-    chunks: list,
-    words: list[str],
-    source: str,
-    doc_type: str,
-    section: Optional[str],
-) -> None:
-    text = " ".join(words).strip()
-    if len(text) < 50:
-        return
+# ── Token-based split for over-long sections ──────────────────────────────────
 
-    source_slug = re.sub(r'[^a-z0-9]', '_', source.lower())[:25]
-    # Add a short hash of the text to guarantee uniqueness
-    text_hash   = hashlib.md5(text.encode()).hexdigest()[:6]
-    chunk_id    = f"{source_slug}_{len(chunks) + 1:05d}_{text_hash}"
-
-    chunks.append({
-        "chunk_id":   chunk_id,
-        "text":       text,
-        "source":     source,
-        "doc_type":   doc_type,
-        "section":    section or "",
-        "word_count": len(words),
-    })
-
-
-def chunk_text(
+def split_large_section(
     text: str,
-    source: str,
-    doc_type: str,
-    chunk_size_words: int  = CHUNK_SIZE_WORDS,
-    overlap_words: int     = CHUNK_OVERLAP_WORDS,
+    max_words: int = MAX_SECTION_WORDS,
+    overlap:   int = OVERLAP_WORDS,
+) -> list[str]:
+    words  = text.split()
+    parts: list[str] = []
+    start  = 0
+    while start < len(words):
+        end = min(start + max_words, len(words))
+        parts.append(" ".join(words[start:end]))
+        if end == len(words):
+            break
+        start = end - overlap
+    return parts
+
+
+# ── Core contextual chunker ───────────────────────────────────────────────────
+
+def contextual_chunk_document(
+    text:         str,
+    source:       str,
+    doc_type:     str,
+    source_slug:  str,
+    start_index:  int = 0,
 ) -> list[dict]:
     """
-    Splits text into overlapping chunks while respecting paragraph boundaries.
+    Converts a full document string into contextual chunks.
 
-    Strategy:
-      1. Split on paragraph boundaries (\\n\\n) to respect natural structure.
-      2. If a single paragraph exceeds the chunk size, split by sentences.
-      3. Accumulate paragraphs into a chunk until size limit is reached.
-      4. Apply overlap: carry last `overlap_words` words into the next chunk.
-
-    Each chunk dict has: chunk_id, text, source, doc_type, section, word_count
+    For each detected section:
+      • context_text = "[source | chapter | section header]\\n{section text}"
+      • If section fits ≤ MAX_SECTION_WORDS → single chunk (chunk_type='section')
+      • If section too long   → overlapping split  (chunk_type='split')
+      • No sections detected  → fallback token-split (chunk_type='fallback_split')
     """
-    chunks: list[dict] = []
-    paragraphs = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
+    text       = clean_text(text)
+    chapters   = find_chapters(text)
+    boundaries = find_section_boundaries(text)
+    chunks:    list[dict] = []
+    idx        = start_index
 
-    current_words:  list[str]    = []
-    current_section: Optional[str] = None
+    # ── No section markers: pure token-split fallback ────────────────────────
+    if not boundaries:
+        words = text.split()
+        i = 0
+        while i < len(words):
+            part = " ".join(words[i : i + MAX_SECTION_WORDS])
+            if len(part.split()) >= MIN_CHUNK_WORDS and not _is_toc_chunk(part):
+                cid = make_chunk_id(source_slug, idx, part)
+                chunks.append({
+                    "chunk_id":      cid,
+                    "text":          part,
+                    "context_text":  f"[{source}]\n{part}",
+                    "source":        source,
+                    "doc_type":      doc_type,
+                    "section":       "",
+                    "section_title": "",
+                    "chapter":       "",
+                    "chunk_type":    "fallback_split",
+                    "word_count":    len(part.split()),
+                })
+                idx += 1
+            i += MAX_SECTION_WORDS - OVERLAP_WORDS
+        return chunks
 
-    for para in paragraphs:
+    # ── Build (start, end, header) spans ─────────────────────────────────────
+    spans: list[tuple[int, int, str]] = []
 
-        # Update running section label if this paragraph is a header
-        detected = detect_section_header(para)
-        if detected:
-            current_section = detected
+    if boundaries[0][0] > 150:
+        preamble = text[: boundaries[0][0]].strip()
+        if len(preamble.split()) >= MIN_CHUNK_WORDS:
+            spans.append((0, boundaries[0][0], "Preamble"))
 
-        para_words = para.split()
+    for i, (pos, header) in enumerate(boundaries):
+        end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(text)
+        spans.append((pos, end, header))
 
-        # If the paragraph alone exceeds chunk size → split by sentences first
-        if len(para_words) > chunk_size_words:
-            sentences = re.split(r'(?<=[.?!])\s+', para)
-            for sentence in sentences:
-                sent_words = sentence.split()
-                if len(current_words) + len(sent_words) > chunk_size_words:
-                    if current_words:
-                        _save_chunk(chunks, current_words, source, doc_type, current_section)
-                        current_words = current_words[-overlap_words:]
-                current_words.extend(sent_words)
+    # ── Process each span ────────────────────────────────────────────────────
+    for sec_start, sec_end, header in spans:
+        raw = text[sec_start:sec_end].strip()
+        if len(raw.split()) < MIN_CHUNK_WORDS or _is_toc_chunk(raw):
+            continue
 
+        sec_num, sec_title  = parse_section_header(header)
+        chap_name           = chapter_at(sec_start, chapters)
+        ctx_prefix          = f"[{source} | {chap_name} | {header}]\n"
+
+        if len(raw.split()) <= MAX_SECTION_WORDS:
+            # ── Single-chunk section ─────────────────────────────────────────
+            cid = make_chunk_id(source_slug, idx, raw)
+            chunks.append({
+                "chunk_id":      cid,
+                "text":          raw,
+                "context_text":  ctx_prefix + raw,
+                "source":        source,
+                "doc_type":      doc_type,
+                "section":       sec_num,
+                "section_title": sec_title,
+                "chapter":       chap_name,
+                "chunk_type":    "section",
+                "word_count":    len(raw.split()),
+            })
+            idx += 1
         else:
-            # Normal paragraph: accumulate until size limit
-            if len(current_words) + len(para_words) > chunk_size_words:
-                if current_words:
-                    _save_chunk(chunks, current_words, source, doc_type, current_section)
-                    current_words = current_words[-overlap_words:]
-            current_words.extend(para_words)
-
-    # Flush any remaining words
-    if current_words:
-        _save_chunk(chunks, current_words, source, doc_type, current_section)
+            # ── Overlapping sub-chunks ───────────────────────────────────────
+            for part in split_large_section(raw):
+                if len(part.split()) < MIN_CHUNK_WORDS:
+                    continue
+                cid = make_chunk_id(source_slug, idx, part)
+                chunks.append({
+                    "chunk_id":      cid,
+                    "text":          part,
+                    "context_text":  ctx_prefix + part,
+                    "source":        source,
+                    "doc_type":      doc_type,
+                    "section":       sec_num,
+                    "section_title": sec_title,
+                    "chapter":       chap_name,
+                    "chunk_type":    "split",
+                    "word_count":    len(part.split()),
+                })
+                idx += 1
 
     return chunks
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# STAGE 4 — SOURCE PROCESSORS
-# ═════════════════════════════════════════════════════════════════════════════
+# ── PyMuPDF extraction ────────────────────────────────────────────────────────
 
-def process_statutes() -> list[dict]:
-    """
-    Reads every statute PDF in data/raw/statutes/, extracts + cleans text,
-    chunks it and returns all chunks.
-    All statute chunks are always kept (no sampling) — they are the legal core.
-    """
+def extract_text_pymupdf(pdf_path: str) -> str:
+    doc   = fitz.open(pdf_path)
+    pages = [page.get_text("text") for page in doc]
+    doc.close()
+    return "\n".join(pages)
+
+
+# ── Statute configs ───────────────────────────────────────────────────────────
+
+STATUTE_CONFIGS: list[dict] = [
+    {"path": "data/raw/statutes/ipc.pdf",              "source": "Indian Penal Code (IPC)",                        "doc_type": "statute",  "slug": "ipc"},
+    {"path": "data/raw/statutes/bns.pdf",              "source": "Bharatiya Nyaya Sanhita (BNS) 2023",             "doc_type": "statute",  "slug": "bns"},
+    {"path": "data/raw/statutes/crpc.pdf",             "source": "Code of Criminal Procedure (CrPC)",              "doc_type": "statute",  "slug": "crpc"},
+    {"path": "data/raw/statutes/consumer_protection.pdf","source":"Consumer Protection Act 2019",                  "doc_type": "statute",  "slug": "consumer"},
+    {"path": "data/raw/statutes/wages.pdf",            "source": "Code on Wages 2019",                             "doc_type": "statute",  "slug": "wages"},
+    {"path": "data/raw/statutes/kerala_rent.pdf",      "source": "Kerala Buildings (Lease and Rent Control) Act",  "doc_type": "statute",  "slug": "kerala_rent"},
+    {"path": "data/raw/statutes/bns_handbook.pdf",     "source": "BNS Handbook",                                   "doc_type": "handbook", "slug": "bns_handbook"},
+]
+
+
+def process_all_statutes(start_index: int = 0) -> list[dict]:
     all_chunks: list[dict] = []
-    statutes_dir = RAW_DIR / "statutes"
-
-    for filename, (source_name, doc_type) in STATUTE_FILES.items():
-        pdf_path = statutes_dir / filename
-
-        if not pdf_path.exists():
-            print(f"   Not found, skipping: {filename}")
+    idx = start_index
+    for cfg in STATUTE_CONFIGS:
+        p = Path(cfg["path"])
+        if not p.exists():
+            print(f"  [SKIP] {p}")
             continue
-
-        print(f"\nProcessing: {filename}")
-        pages = extract_text_from_pdf(pdf_path)
-        if not pages:
-            print(f"   No text extracted — file may be image-only (needs OCR).")
-            continue
-
-        print(f"   Pages extracted : {len(pages)}")
-
-        full_text = "\n\n".join(p["text"] for p in pages)
-        cleaned   = clean_text(full_text)
-        chunks    = chunk_text(cleaned, source=source_name, doc_type=doc_type)
-
+        print(f"  {cfg['source']}", end=" ... ", flush=True)
+        chunks = contextual_chunk_document(
+            text=extract_text_pymupdf(str(p)),
+            source=cfg["source"], doc_type=cfg["doc_type"],
+            source_slug=cfg["slug"], start_index=idx,
+        )
+        print(f"{len(chunks)} chunks")
         all_chunks.extend(chunks)
-        print(f"   Chunks created  : {len(chunks)}")
-
+        idx += len(chunks)
+        gc.collect()
     return all_chunks
 
 
-def process_iltur_judgments() -> list[dict]:
-    """
-    Reads iltur_judgments.json, cleans and chunks each judgment text.
-    Sampled down to MAX_ILTUR_CHUNKS for performance on 8GB RAM.
-    """
+# ── Judgment dataset wrappers ─────────────────────────────────────────────────
+
+def chunk_judgment_records(
+    records:      list[dict],
+    source_field: str,
+    text_field:   str,
+    doc_type:     str,
+    slug_prefix:  str,
+    max_records:  int = 1000,
+    start_index:  int = 0,
+) -> list[dict]:
     all_chunks: list[dict] = []
-    filepath = RAW_DIR / "judgments" / "iltur_judgments.json"
-
-    if not filepath.exists():
-        print("   iltur_judgments.json not found — skipping.")
-        return []
-
-    with open(filepath, "r", encoding="utf-8") as f:
-        judgments = json.load(f)
-
-    # Random sample so we don't spend hours embedding 130k docs
-    if len(judgments) > MAX_ILTUR_CHUNKS * 3:
-        # Sample 3x so that after chunking we land near the cap
-        judgments = random.sample(judgments, MAX_ILTUR_CHUNKS * 3)
-
-    print(f"\n  Processing IL-TUR judgments ({len(judgments)} docs sampled)...")
-
-    for judgment in judgments:
-        raw_text = judgment.get("text", "")
-        if not raw_text.strip():
+    idx = start_index
+    for i, rec in enumerate(records[:max_records]):
+        text   = rec.get(text_field, "")
+        source = str(rec.get(source_field, f"{doc_type}_{i}"))[:200]
+        if not text or len(text.strip()) < 100:
             continue
-
-        source  = f"SC Judgment — {judgment.get('source_config', 'iltur')}"
-        cleaned = clean_text(raw_text)
-        chunks  = chunk_text(cleaned, source=source, doc_type="judgment")
-
-        for chunk in chunks:
-            chunk["court"]         = judgment.get("court", "Supreme Court of India")
-            chunk["source_config"] = judgment.get("source_config", "")
-
-        all_chunks.extend(chunks)
-
-        # Stop once we hit the cap
-        if len(all_chunks) >= MAX_ILTUR_CHUNKS:
-            all_chunks = all_chunks[:MAX_ILTUR_CHUNKS]
-            break
-
-    print(f"   Final IL-TUR chunks : {len(all_chunks)}")
+        sub = contextual_chunk_document(
+            text=text, source=source, doc_type=doc_type,
+            source_slug=f"{slug_prefix}_{i:04d}", start_index=idx,
+        )
+        all_chunks.extend(sub)
+        idx += len(sub)
+        if i > 0 and i % 100 == 0:
+            print(f"    {i} records → {len(all_chunks)} chunks")
+            gc.collect()
     return all_chunks
 
 
-def process_prechunked_judgments() -> list[dict]:
-    """
-    Reads sc_prechunked.json — data already chunked by HuggingFace dataset.
-    Just cleans and normalises metadata; no re-chunking needed.
-    Sampled down to MAX_PRECHUNKED_CHUNKS for performance.
-    """
-    all_chunks: list[dict] = []
-    filepath = RAW_DIR / "judgments" / "sc_prechunked.json"
-
-    if not filepath.exists():
-        print("   sc_prechunked.json not found — skipping.")
-        return []
-
-    with open(filepath, "r", encoding="utf-8") as f:
-        raw_chunks = json.load(f)
-
-    print(f"\n Processing pre-chunked SC judgments ({len(raw_chunks)} entries)...")
-
-    # Shuffle then iterate so the sample is random, not just the first N
-    random.shuffle(raw_chunks)
-
-    for item in raw_chunks:
-        text = item.get("text", "") or item.get("chunk", "")
-        if not text or len(text.strip()) < 80:
+def wrap_prechunked_records(
+    records:     list[dict],
+    slug_prefix: str,
+    doc_type:    str = "judgment",
+    max_records: int = 2000,
+    start_index: int = 0,
+) -> list[dict]:
+    """Wraps already-chunked SC records in the new Week 2 schema."""
+    chunks: list[dict] = []
+    idx = start_index
+    for i, rec in enumerate(records[:max_records]):
+        text   = rec.get("text", rec.get("chunk", ""))
+        source = str(rec.get("source", rec.get("case", f"SC_{i}")))[:200]
+        if not text or len(text.split()) < MIN_CHUNK_WORDS:
             continue
-
-        cleaned = clean_text(text)
-        if len(cleaned) < 80:
-            continue
-
-        all_chunks.append({
-            "chunk_id":   item.get("chunk_id", f"hf_sc_{len(all_chunks):05d}"),
-            "text":       cleaned,
-            "source":     item.get("source", "Supreme Court of India"),
-            "doc_type":   "judgment",
-            "section":    "",
-            "word_count": len(cleaned.split()),
+        cid = make_chunk_id(f"{slug_prefix}_{i:04d}", 0, text)
+        chunks.append({
+            "chunk_id":      cid,
+            "text":          text,
+            "context_text":  f"[Supreme Court Judgment | {source}]\n{text}",
+            "source":        source,
+            "doc_type":      doc_type,
+            "section":       str(rec.get("section", "")),
+            "section_title": str(rec.get("section_title", "")),
+            "chapter":       "",
+            "chunk_type":    "judgment_segment",
+            "word_count":    len(text.split()),
         })
-
-        if len(all_chunks) >= MAX_PRECHUNKED_CHUNKS:
-            break
-
-    print(f"   Final pre-chunked SC chunks : {len(all_chunks)}")
-    return all_chunks
+        idx += 1
+    return chunks
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# MAIN PIPELINE
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Full pipeline entry point ─────────────────────────────────────────────────
 
-def run_preprocessing() -> list[dict]:
-    """
-    Runs the full pipeline and writes data/processed/chunks.json.
-    Returns the final list of chunks.
-    """
-    random.seed(42)  # Reproducible sampling across runs
-
-    print("=" * 60)
-    print("  LexShield Legal Preprocessing Pipeline")
-    print("=" * 60)
+def run_full_pipeline(
+    iltur_path:  str = "data/raw/judgments/iltur_judgments.json",
+    sc_path:     str = "data/raw/judgments/sc_prechunked.json",
+    output_path: str = "data/processed/chunks.json",
+    max_iltur:   int = 1000,
+    max_sc:      int = 2000,
+) -> list[dict]:
+    print("=" * 64)
+    print("LexShield AI — Week 2 Contextual Chunking Pipeline")
+    print("=" * 64)
 
     all_chunks: list[dict] = []
 
-    # ── 1. Statutes (always include all) ─────────────────────────────────────
-    statute_chunks = process_statutes()
+    print("\n[1/3] Statute PDFs ...")
+    statute_chunks = process_all_statutes(start_index=0)
     all_chunks.extend(statute_chunks)
+    print(f"  Statute total : {len(statute_chunks)}")
+    gc.collect()
 
-    # ── 2. IL-TUR judgments (capped at MAX_ILTUR_CHUNKS) ─────────────────────
-    iltur_chunks = process_iltur_judgments()
-    all_chunks.extend(iltur_chunks)
+    print(f"\n[2/3] IL-TUR judgments (max {max_iltur}) ...")
+    if Path(iltur_path).exists():
+        with open(iltur_path, "r", encoding="utf-8") as f:
+            iltur_recs = json.load(f)
+        iltur_chunks = chunk_judgment_records(
+            records=iltur_recs, source_field="case_name", text_field="text",
+            doc_type="judgment", slug_prefix="iltur",
+            max_records=max_iltur, start_index=len(all_chunks),
+        )
+        all_chunks.extend(iltur_chunks)
+        print(f"  IL-TUR total  : {len(iltur_chunks)}")
+    else:
+        print(f"  [SKIP] {iltur_path}")
+    gc.collect()
 
-    # ── 3. Pre-chunked SC judgments (capped at MAX_PRECHUNKED_CHUNKS) ─────────
-    prechunked_chunks = process_prechunked_judgments()
-    all_chunks.extend(prechunked_chunks)
+    print(f"\n[3/3] SC judgments (max {max_sc}) ...")
+    if Path(sc_path).exists():
+        with open(sc_path, "r", encoding="utf-8") as f:
+            sc_recs = json.load(f)
+        sc_chunks = wrap_prechunked_records(
+            records=sc_recs, slug_prefix="sc",
+            max_records=max_sc, start_index=len(all_chunks),
+        )
+        all_chunks.extend(sc_chunks)
+        print(f"  SC total      : {len(sc_chunks)}")
+    else:
+        print(f"  [SKIP] {sc_path}")
 
-    # ── Save ──────────────────────────────────────────────────────────────────
-    output_path = PROCESSED_DIR / "chunks.json"
-    with open(output_path, "w", encoding="utf-8") as f:
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
         json.dump(all_chunks, f, ensure_ascii=False, indent=2)
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("  Preprocessing complete!")
-    print(f"  Statute chunks       : {len(statute_chunks)}")
-    print(f"  IL-TUR chunks        : {len(iltur_chunks)}")
-    print(f"  Pre-chunked SC chunks: {len(prechunked_chunks)}")
-    print(f"  ─────────────────────────────")
-    print(f"  TOTAL CHUNKS         : {len(all_chunks)}")
-    print(f"  Output               : {output_path}")
-    print("=" * 60)
+    print(f"\n{'='*64}")
+    print(f"DONE  —  Total chunks : {len(all_chunks)}")
+    print(f"Saved → {output_path}")
 
-    # ── Quick quality spot-check ──────────────────────────────────────────────
-    print("\n Random sample of 3 chunks for quality check:\n")
-    for c in random.sample(all_chunks, min(3, len(all_chunks))):
-        print(f"  [{c['doc_type'].upper()}] {c['source'][:55]}")
-        print(f"  Section : {c['section'][:60] or '—'}")
-        print(f"  Words   : {c['word_count']}")
-        print(f"  Preview : {c['text'][:180]}...")
-        print()
+    type_counts: dict[str, int] = {}
+    for c in all_chunks:
+        k = c.get("chunk_type", "unknown")
+        type_counts[k] = type_counts.get(k, 0) + 1
+    print("\nchunk_type breakdown:")
+    for t, n in sorted(type_counts.items(), key=lambda x: -x[1]):
+        print(f"  {t:28s}  {n}")
 
     return all_chunks
 
 
 if __name__ == "__main__":
-    run_preprocessing()
+    run_full_pipeline()

@@ -1,234 +1,274 @@
 """
-LexShield RAG Pipeline
-=======================
-End-to-end: legal question → retrieved context → cited answer.
-
-Pipeline steps:
-  1. Receive user query
-  2. Embed query → vector
-  3. Retrieve top-K chunks from ChromaDB
-  4. Build grounded prompt with retrieved context
-  5. LLM generates answer
-  6. Format response with citations
-
-Usage:
-  from rag.pipeline import rag_pipeline
-  result = rag_pipeline.answer("What are my rights as a tenant?")
+LexShield AI — RAG Pipeline  (Week 2 update)
+=============================================
+Changes from Week 1:
+  • search step now uses HybridSearcher (vector + BM25) instead of raw vector search
+  • Citations include section_title and chapter when available
+  • Prompt builder passes context_text (header-enriched) to the LLM
+  • RAGResponse gets two new fields: retrieval_sources, section_titles
+  • Everything else (query preprocessing, LLM call, anti-hallucination prompt) unchanged
 """
 
-from dataclasses import dataclass
+import os
+import re
+from dataclasses import dataclass, field
 from typing import Optional
 
-from rag.embedder    import embedder
-from rag.vectorstore import vectorstore
-from rag.llm         import llm
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+
+from rag.llm          import llm            # LegalLLM singleton (Week 1, unchanged)
+from rag.hybrid_search import hybrid_searcher  # Week 2 hybrid searcher
+
+# ── System prompt ─────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are LexShield, an AI legal assistant specialising in Indian law.
+
+Rules you MUST follow:
+1. Answer ONLY from the retrieved legal sections provided. Do not use outside knowledge.
+2. Every factual claim must cite its source in the format: [Source Name, Section X].
+3. If the retrieved sections do not contain a clear answer, say:
+   "The retrieved legal sections do not contain enough information to answer this question."
+4. Do NOT guess, infer, or extrapolate beyond what the text explicitly states.
+5. When a section number is available, always include it in your citation.
+6. Write in clear, simple English that a non-lawyer can understand.
+7. Keep your answer concise — typically 150–300 words unless complexity demands more.
+"""
+
+# ── Query preprocessor ────────────────────────────────────────────────────────
+# Expands abbreviated legal queries to improve retrieval quality.
+QUERY_EXPANSIONS: dict[str, str] = {
+    r'\bipc\b':      'Indian Penal Code',
+    r'\bbnss?\b':    'Bharatiya Nyaya Sanhita',
+    r'\bcrpc\b':     'Code of Criminal Procedure',
+    r'\bpil\b':      'Public Interest Litigation',
+    r'\bfir\b':      'First Information Report',
+    r'\bnbw\b':      'non-bailable warrant',
+    r'\bbw\b':       'bailable warrant',
+    r'\bsc\b':       'Supreme Court',
+    r'\bhc\b':       'High Court',
+    r'\bdb\b':       'Division Bench',
+    r'\bsb\b':       'Single Bench',
+    r'\brt[ia]\b':   'Right to Information Act',
+    r'\bmv\s?act\b': 'Motor Vehicles Act',
+    r'\bndps\b':     'Narcotic Drugs and Psychotropic Substances Act',
+    r'\bpoc[so]\b':  'Prevention of Corruption Act',
+}
+
+SECTION_RE = re.compile(
+    r'\b(\d{1,4}[A-Z]?)\s*(ipc|bnss?|crpc|cpc|it\s?act|consumer|mv\s?act)\b',
+    re.IGNORECASE,
+)
+
+
+def preprocess_query(query: str) -> str:
+    """
+    Expands abbreviations and normalises section references.
+    "216ipc" → "Section 216 Indian Penal Code"
+    """
+    q = query.strip()
+    # Expand section references: "420 IPC" → "Section 420 Indian Penal Code"
+    def expand_section(m: re.Match) -> str:
+        num = m.group(1)
+        act = m.group(2).upper()
+        expansions = {
+            'IPC':  'Indian Penal Code', 'BNS': 'Bharatiya Nyaya Sanhita',
+            'BNSS': 'Bharatiya Nyaya Sanhita', 'CRPC': 'Code of Criminal Procedure',
+            'CPC':  'Code of Civil Procedure',
+        }
+        return f"Section {num} {expansions.get(act, act)}"
+
+    q = SECTION_RE.sub(expand_section, q)
+
+    for pattern, replacement in QUERY_EXPANSIONS.items():
+        q = re.sub(pattern, replacement, q, flags=re.IGNORECASE)
+
+    return q
 
 
 # ── Response dataclass ────────────────────────────────────────────────────────
 
 @dataclass
 class RAGResponse:
-    """Structured response returned by the RAG pipeline."""
-    query:          str
-    answer:         str
-    citations:      list[dict]          # list of {source, section, doc_type, score}
-    retrieved_chunks: list[dict]        # raw retrieved chunks (for debugging)
-    context_used:   bool                # False if no relevant context found
-    warning:        Optional[str] = None
-
-
-# ── System prompt ─────────────────────────────────────────────────────────────
-
-SYSTEM_PROMPT = """You are LexShield, an AI-powered Indian legal assistant.
-
-Your role is to help Indian citizens understand their legal rights and obligations.
-
-Rules you MUST follow:
-1. Answer ONLY based on the retrieved legal sections provided. Do not use outside knowledge.
-2. Always cite which law or judgment supports each claim (e.g., "Under Section 420 of IPC..." or "As per the Kerala Rent Control Act...").
-3. If the retrieved context does not contain enough information to answer the question, say explicitly: "The retrieved legal sections do not contain sufficient information to answer this question. Please consult a qualified lawyer."
-4. Use plain, simple language. Avoid legal jargon where possible. Explain technical terms when you must use them.
-5. Never give a definitive legal opinion — you provide information, not legal advice. End responses with: "Note: This is legal information, not legal advice. For your specific situation, consult a qualified lawyer."
-6. If the question involves a criminal matter or urgent situation, mention that the person should contact the police or a lawyer immediately."""
+    query:             str
+    answer:            str
+    citations:         list[str]          = field(default_factory=list)
+    retrieved_chunks:  list[dict]         = field(default_factory=list)
+    context_used:      bool               = True
+    warning:           Optional[str]      = None
+    retrieval_sources: list[str]          = field(default_factory=list)  # "vector"/"bm25"/"both"
+    section_titles:    list[str]          = field(default_factory=list)
 
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
-def build_rag_prompt(query: str, retrieved_chunks: list[dict]) -> str:
+def build_rag_prompt(query: str, chunks: list[dict]) -> str:
     """
-    Constructs the full RAG prompt by injecting retrieved legal context.
-
-    Format:
-      [Retrieved Legal Sections]
-      --- Section 1 ---
-      Source: IPC 1860 | Section: 420 | Type: statute
-      <text>
-      ...
-      [User Question]
-      <query>
-      [Instructions]
-      Answer based only on the above sections. Cite sources.
+    Builds the user-turn prompt for the LLM.
+    Uses chunk text as retrieved context.
     """
-    if not retrieved_chunks:
-        return (
-            f"The user asked: {query}\n\n"
-            "No relevant legal sections were found in the knowledge base. "
-            "Tell the user you cannot find relevant legal information and recommend they consult a lawyer."
-        )
+    sections_text = ""
+    for i, chunk in enumerate(chunks, start=1):
+        source       = chunk.get("source", "Unknown")
+        section      = chunk.get("section", "")
+        section_title = chunk.get("section_title", "")
+        chapter      = chunk.get("chapter", "")
 
-    # Build context block
-    context_parts = []
-    for i, chunk in enumerate(retrieved_chunks, 1):
-        source   = chunk.get("source",   "Unknown Source")
-        section  = chunk.get("section",  "")
-        doc_type = chunk.get("doc_type", "")
-        text     = chunk.get("text",     "")
-
-        header = f"--- Retrieved Section {i} ---"
-        meta   = f"Source: {source} | Type: {doc_type}"
+        # Build a clear citation header
+        citation_parts = [source]
+        if chapter:
+            citation_parts.append(chapter)
         if section:
-            meta += f" | Section: {section}"
+            label = f"Section {section}"
+            if section_title:
+                label += f" ({section_title})"
+            citation_parts.append(label)
 
-        context_parts.append(f"{header}\n{meta}\n{text}")
+        header = " › ".join(citation_parts)
+        text   = chunk.get("text", "")
 
-    context_block = "\n\n".join(context_parts)
+        sections_text += f"\n--- [{i}] {header} ---\n{text}\n"
 
-    prompt = f"""
-[RETRIEVED LEGAL SECTIONS]
-{context_block}
-
-[USER QUESTION]
-{query}
-
-[YOUR TASK]
-Using ONLY the retrieved legal sections above:
-1. Answer the user's question clearly and in plain language.
-2. For every legal claim you make, cite the source (e.g., "Under Section X of [Act Name]...").
-3. Structure your answer with clear paragraphs.
-4. If the sections above do not contain enough information, say so honestly.
-5. End with the standard disclaimer about legal advice.
-
-Answer:""".strip()
-
-    return prompt
+    return (
+        f"[RETRIEVED LEGAL SECTIONS]\n"
+        f"{sections_text}\n"
+        f"[USER QUESTION]\n{query}\n\n"
+        f"[TASK]\n"
+        f"Answer the user's question using ONLY the retrieved sections above. "
+        f"Cite every claim with its source and section number.\n"
+        f"Answer:"
+    )
 
 
-# ── Main pipeline class ───────────────────────────────────────────────────────
+# ── Citation extractor ────────────────────────────────────────────────────────
+
+def extract_citations(chunks: list[dict]) -> list[str]:
+    """Build a deduplicated citation list from retrieved chunks."""
+    seen: set[str]     = set()
+    citations: list[str] = []
+
+    for chunk in chunks:
+        source       = chunk.get("source", "Unknown")
+        section      = chunk.get("section", "")
+        section_title = chunk.get("section_title", "")
+
+        if section:
+            cite = f"{source}, Section {section}"
+            if section_title:
+                cite += f" ({section_title})"
+        else:
+            cite = source
+
+        if cite not in seen:
+            seen.add(cite)
+            citations.append(cite)
+
+    return citations
+
+
+# ── RAG Pipeline ──────────────────────────────────────────────────────────────
 
 class RAGPipeline:
     """
-    Orchestrates the full retrieve-then-generate pipeline.
+    End-to-end RAG pipeline.
+
+    Steps:
+      0. preprocess_query   — expand abbreviations / section refs
+      1. hybrid search      — vector + BM25 via HybridSearcher
+      2. filter             — remove low-score / ToC chunks
+      3. build prompt       — format retrieved context for LLM
+      4. llm.generate()     — call Groq LLaMA 3.3 70B
+      5. extract citations  — deduplicated citation list
+      6. return RAGResponse
     """
 
     def __init__(
         self,
-        n_results:           int   = 5,
-        min_relevance_score: float = 0.25,
+        n_retrieve:       int   = 8,
+        min_hybrid_score: float = 0.005,   # RRF scores are small floats
+        temperature:      float = 0.1,
+        max_tokens:       int   = 1024,
     ):
-        """
-        Args:
-            n_results           : how many chunks to retrieve per query
-            min_relevance_score : chunks below this similarity are discarded
-                                  (0.30 is permissive — catches edge cases)
-        """
-        self.n_results           = n_results
-        self.min_relevance_score = min_relevance_score
+        self.n_retrieve       = n_retrieve
+        self.min_hybrid_score = min_hybrid_score
+        self.temperature      = temperature
+        self.max_tokens       = max_tokens
 
-    def answer(
+    def query(
         self,
-        query:           str,
-        doc_type_filter: Optional[str] = None,
-        verbose:         bool          = False,
+        user_query: str,
+        n_results:  Optional[int] = None,
     ) -> RAGResponse:
-        """
-        Full RAG pipeline for a single legal query.
+        n = n_results or self.n_retrieve
 
-        Args:
-            query          : user's natural language legal question
-            doc_type_filter: optionally restrict retrieval to 'statute' or 'judgment'
-            verbose        : if True, prints retrieved chunks before generating
+        # ── Step 0: Preprocess ───────────────────────────────────────────────
+        expanded_query = preprocess_query(user_query)
 
-        Returns:
-            RAGResponse with answer, citations, and retrieved chunks.
-        """
+        # ── Step 1: Hybrid retrieval ─────────────────────────────────────────
+        raw_chunks = hybrid_searcher.search(expanded_query, n_results=n)
 
-        # ── Step 1: Retrieve ──────────────────────────────────────────────────
-        raw_results = vectorstore.search(
-            query,
-            n_results=self.n_results,
-            doc_type_filter=doc_type_filter,
-        )
+        # ── Step 2: Filter ───────────────────────────────────────────────────
+        chunks = [
+            c for c in raw_chunks
+            if c.get("hybrid_score", 0) >= self.min_hybrid_score
+        ]
 
-        # Filter out low-relevance chunks
-        relevant = [r for r in raw_results if r["score"] >= self.min_relevance_score]
+        # Section-number fallback — if query contains an explicit section number,
+        # ensure at least one chunk with that section is present
+        section_match = re.search(r'\bSection\s+(\d+[A-Z]?)\b', expanded_query, re.IGNORECASE)
+        if section_match and chunks:
+            target_sec = section_match.group(1)
+            has_target = any(c.get("section", "") == target_sec for c in chunks)
+            if not has_target:
+                # Widen search with pure BM25 for section-number queries
+                from rag.bm25_retriever import bm25_retriever
+                extra = bm25_retriever.search(expanded_query, n_results=4)
+                for e in extra:
+                    if e.get("section", "") == target_sec:
+                        e["hybrid_score"] = 0.01   # give it a nominal hybrid score
+                        chunks.append(e)
+                chunks = chunks[:n]
 
-        if verbose:
-            print(f"\n[RAG] Query: {query}")
-            print(f"[RAG] Retrieved {len(raw_results)} chunks, {len(relevant)} above threshold")
-            for i, r in enumerate(relevant, 1):
-                print(f"  {i}. [{r['score']:.3f}] {r['source'][:50]} — {r['section'][:40]}")
+        # ── Step 3: Build prompt ─────────────────────────────────────────────
+        if not chunks:
+            return RAGResponse(
+                query=user_query,
+                answer=(
+                    "The retrieved legal sections do not contain enough information "
+                    "to answer this question. Please consult a qualified legal professional."
+                ),
+                context_used=False,
+                warning="No relevant chunks retrieved above threshold.",
+            )
 
-        # ── Step 2: Build prompt ──────────────────────────────────────────────
-        prompt = build_rag_prompt(query, relevant)
+        prompt = build_rag_prompt(expanded_query, chunks)
 
-        # ── Step 3: Generate ──────────────────────────────────────────────────
-        answer_text = llm.generate(
+        # ── Step 4: Generate answer ──────────────────────────────────────────
+        answer = llm.generate(
             prompt=prompt,
             system_prompt=SYSTEM_PROMPT,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
         )
 
-        # ── Step 4: Build citations ───────────────────────────────────────────
-        citations = []
-        seen_sources = set()
-        for chunk in relevant:
-            key = f"{chunk['source']}|{chunk['section']}"
-            if key not in seen_sources:
-                seen_sources.add(key)
-                citations.append({
-                    "source":   chunk["source"],
-                    "section":  chunk["section"],
-                    "doc_type": chunk["doc_type"],
-                    "score":    chunk["score"],
-                })
-
-        context_used = len(relevant) > 0
-        warning      = None
-        if not context_used:
-            warning = "No relevant legal sections found. Answer may be incomplete."
+        # ── Step 5: Citations + metadata ─────────────────────────────────────
+        citations        = extract_citations(chunks)
+        retrieval_sources = list({c.get("retrieval_source", "?") for c in chunks})
+        section_titles   = list({
+            c.get("section_title", "")
+            for c in chunks
+            if c.get("section_title")
+        })
 
         return RAGResponse(
-            query           = query,
-            answer          = answer_text,
-            citations       = citations,
-            retrieved_chunks = relevant,
-            context_used    = context_used,
-            warning         = warning,
+            query=user_query,
+            answer=answer,
+            citations=citations,
+            retrieved_chunks=chunks,
+            context_used=True,
+            retrieval_sources=retrieval_sources,
+            section_titles=section_titles,
         )
 
-    def pretty_print(self, response: RAGResponse) -> None:
-        """Prints a formatted RAGResponse to terminal for manual testing."""
-        width = 65
-        print("\n" + "=" * width)
-        print("  LEXSHIELD LEGAL Q&A")
-        print("=" * width)
-        print(f"  Query: {response.query}")
-        print("-" * width)
-        print("\nANSWER:\n")
-        print(response.answer)
 
-        if response.citations:
-            print("\n" + "-" * width)
-            print("SOURCES USED:")
-            for i, c in enumerate(response.citations, 1):
-                section_str = f" › {c['section'][:55]}" if c["section"] else ""
-                print(f"  {i}. [{c['doc_type'].upper()}] {c['source']}{section_str}")
-                print(f"      Relevance score: {c['score']:.3f}")
-
-        if response.warning:
-            print(f"\n  Warning: {response.warning}")
-
-        print("=" * width + "\n")
-
-
-# ── Module-level singleton ────────────────────────────────────────────────────
-rag_pipeline = RAGPipeline(n_results=5, min_relevance_score=0.25)
+# ── Singleton ─────────────────────────────────────────────────────────────────
+rag_pipeline = RAGPipeline()

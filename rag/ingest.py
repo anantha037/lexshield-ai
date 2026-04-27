@@ -1,134 +1,131 @@
 """
-LexShield Ingestion Script — Memory-Safe Version
-=================================================
-Optimised for 8GB RAM, no GPU.
-Uses small batches + garbage collection to prevent OOM freeze.
+LexShield AI — Week 2 Re-ingestion Script
+==========================================
+Run this ONCE to migrate from Week 1 to Week 2:
+  1. Re-chunk entire corpus with contextual_chunk_document()
+  2. Reset ChromaDB collection (delete old, create fresh)
+  3. Ingest all new chunks (context_text as document)
+  4. Rebuild BM25 index
 
-Run:
-  python rag/ingest.py
+Usage (from project root, venv active):
+    python -m rag.ingest
+
+Expected runtime on i5-8250U:
+  - Chunking:    2–4 minutes (PyMuPDF + regex, CPU only)
+  - Ingestion:   15–25 minutes (embedding 4000+ chunks, batch_size=8)
+  - BM25 build:  < 30 seconds
+
+Flags:
+  --skip-chunk   Skip re-chunking if chunks.json already updated
+  --skip-reset   Skip ChromaDB reset (add-only, deduplication handles repeats)
+  --dry-run      Run chunking only, no ChromaDB/BM25 changes
 """
 
-import json
-import time
+import sys
+import os
 import gc
-from pathlib import Path
+import time
+import argparse
 
-CHUNKS_FILE = Path("data/processed/chunks.json")
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-# ── Tuned for 8GB RAM ─────────────────────────────────────────────────────────
-EMBED_BATCH_SIZE  = 8    # texts embedded at once (was 32 — too high)
-INGEST_BATCH_SIZE = 16   # chunks sent to ChromaDB at once (was 50 — too high)
-GC_EVERY_N_BATCHES = 5   # force garbage collection every N batches
+# ── Parse flags ───────────────────────────────────────────────────────────────
+parser = argparse.ArgumentParser(description="LexShield Week 2 re-ingestion")
+parser.add_argument("--skip-chunk",  action="store_true", help="Skip chunking step")
+parser.add_argument("--skip-reset",  action="store_true", help="Skip ChromaDB reset")
+parser.add_argument("--dry-run",     action="store_true", help="Chunk only, no DB changes")
+parser.add_argument("--max-iltur",   type=int, default=1000)
+parser.add_argument("--max-sc",      type=int, default=2000)
+args = parser.parse_args()
 
 
-def main():
-    if not CHUNKS_FILE.exists():
-        print(f"{CHUNKS_FILE} not found. Run data/preprocessor.py first.")
-        return
+def separator(title: str = "") -> None:
+    line = "=" * 64
+    if title:
+        print(f"\n{line}\n  {title}\n{line}")
+    else:
+        print(line)
 
-    with open(CHUNKS_FILE, "r", encoding="utf-8") as f:
+
+# ── Step 1: Contextual chunking ───────────────────────────────────────────────
+chunks = []
+
+if args.skip_chunk:
+    separator("Step 1: SKIPPED (--skip-chunk)")
+    import json
+    from pathlib import Path
+    path = Path("data/processed/chunks.json")
+    if not path.exists():
+        print("ERROR: chunks.json not found. Remove --skip-chunk.")
+        sys.exit(1)
+    with open(path, "r", encoding="utf-8") as f:
         chunks = json.load(f)
+    print(f"Loaded {len(chunks)} existing chunks from {path}")
+else:
+    separator("Step 1: Contextual chunking")
+    from data.preprocessor import run_full_pipeline
+    chunks = run_full_pipeline(
+        max_iltur=args.max_iltur,
+        max_sc=args.max_sc,
+    )
 
-    print(f"Loaded {len(chunks)} chunks from {CHUNKS_FILE}")
+if not chunks:
+    print("ERROR: No chunks produced. Aborting.")
+    sys.exit(1)
 
-    by_type: dict[str, int] = {}
-    for c in chunks:
-        t = c.get("doc_type", "unknown")
-        by_type[t] = by_type.get(t, 0) + 1
-    print("Breakdown by type:")
-    for doc_type, count in by_type.items():
-        print(f"  {doc_type:12s}: {count}")
-    print()
+print(f"\nChunks ready: {len(chunks)}")
+gc.collect()
 
-    # Import after printing so model-load message appears cleanly
-    from rag.embedder import embedder
-    from rag.vectorstore import vectorstore
+if args.dry_run:
+    print("\n[DRY RUN] Chunking complete. Skipping DB/BM25 changes.")
+    sys.exit(0)
 
-    # Check what's already in ChromaDB (safe re-run)
-    existing_ids = set(vectorstore.collection.get(include=[])["ids"])
-    chunks_to_add = [c for c in chunks if c["chunk_id"] not in existing_ids]
+# ── Step 2: ChromaDB reset + ingestion ───────────────────────────────────────
+separator("Step 2: ChromaDB re-ingestion")
 
-    if not chunks_to_add:
-        print("All chunks already ingested.")
-        print(f"   Total in ChromaDB: {vectorstore.count()}")
-        return
+from rag.vectorstore import vectorstore
 
-    print(f"Already ingested : {len(existing_ids)}")
-    print(f"Remaining        : {len(chunks_to_add)}")
-    print()
+if not args.skip_reset:
+    print("Resetting ChromaDB collection ...")
+    vectorstore.reset_collection()
+    print("Collection cleared.\n")
+else:
+    print(f"(--skip-reset: existing {vectorstore.count()} docs kept)\n")
 
-    total    = len(chunks_to_add)
-    n_batches = (total + INGEST_BATCH_SIZE - 1) // INGEST_BATCH_SIZE
-    added    = 0
-    start    = time.time()
+t0 = time.time()
+added = vectorstore.ingest_chunks(chunks, skip_existing=args.skip_reset)
+elapsed = time.time() - t0
+print(f"\nIngestion done in {elapsed/60:.1f} min.")
+print(f"ChromaDB total docs: {vectorstore.count()}")
+gc.collect()
 
-    print(f"Starting ingestion: {n_batches} batches of {INGEST_BATCH_SIZE}")
-    print(f"Embed batch size  : {EMBED_BATCH_SIZE} (memory-safe for 8GB)\n")
+# ── Step 3: BM25 rebuild ──────────────────────────────────────────────────────
+separator("Step 3: BM25 index rebuild")
+from rag.bm25_retriever import bm25_retriever
+bm25_retriever.rebuild()
+print(f"BM25 index: {bm25_retriever.count()} docs indexed.")
 
-    for batch_idx in range(n_batches):
-        s = batch_idx * INGEST_BATCH_SIZE
-        e = min(s + INGEST_BATCH_SIZE, total)
-        batch = chunks_to_add[s:e]
+# ── Step 4: Quick smoke-test ──────────────────────────────────────────────────
+separator("Step 4: Smoke tests")
 
-        texts     = [c["text"]     for c in batch]
-        ids       = [c["chunk_id"] for c in batch]
-        metadatas = [
-            {
-                "source":     c.get("source",   ""),
-                "doc_type":   c.get("doc_type",  ""),
-                "section":    c.get("section",   ""),
-                "court":      c.get("court",     ""),
-                "word_count": str(c.get("word_count", 0)),
-            }
-            for c in batch
-        ]
+test_queries = [
+    "Section 420 cheating dishonestly",       # exact keyword
+    "punishment for murder under IPC",         # semantic
+    "tenant eviction notice period Kerala",    # mixed
+]
 
-        # Embed with small batch size to control RAM spike
-        vectors = embedder.embed(
-            texts,
-            batch_size=EMBED_BATCH_SIZE,
-            show_progress=False,
-        )
+from rag.hybrid_search import hybrid_searcher
 
-        # Deduplicate within batch
-        seen = set()
-        deduped = [
-            (i, v, t, m)
-            for i, v, t, m in zip(ids, vectors, texts, metadatas)
-            if i not in seen and not seen.add(i)
-        ]
+for q in test_queries:
+    results = hybrid_searcher.search_explain(q, n_results=3)
+    print(f"\nQuery: '{q}'")
+    for r in results:
+        src   = r.get("source",         "?")[:45]
+        sec   = r.get("section",        "")
+        breakdown = r.get("score_breakdown", "")
+        print(f"  {breakdown}  |  {src}  sec={sec}")
 
-        if deduped:
-            d_ids, d_vecs, d_texts, d_metas = zip(*deduped)
-            vectorstore.collection.add(
-                ids=list(d_ids),
-                embeddings=list(d_vecs),
-                documents=list(d_texts),
-                metadatas=list(d_metas),
-            )
-            added += len(d_ids)
-
-        # Progress
-        pct     = (added / total) * 100
-        elapsed = time.time() - start
-        eta_sec = (elapsed / max(added, 1)) * (total - added)
-        eta_min = eta_sec / 60
-        print(
-            f"  Batch {batch_idx + 1:3d}/{n_batches} | "
-            f"{added:4d}/{total} ({pct:5.1f}%) | "
-            f"ETA: {eta_min:.0f} min"
-        )
-
-        # Force garbage collection every N batches to free RAM
-        if (batch_idx + 1) % GC_EVERY_N_BATCHES == 0:
-            gc.collect()
-
-    elapsed_total = (time.time() - start) / 60
-    print(f"\nIngestion complete!")
-    print(f"   Chunks added     : {added}")
-    print(f"   Total in ChromaDB: {vectorstore.count()}")
-    print(f"   Time taken       : {elapsed_total:.1f} minutes")
-
-
-if __name__ == "__main__":
-    main()
+separator("DONE")
+print("Week 2 ingestion complete.\n"
+      "Run: uvicorn api.main:app --reload")
