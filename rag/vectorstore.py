@@ -1,46 +1,43 @@
 """
-LexShield AI — Vector Store  (Week 2 update)
-============================================
-Changes from Week 1:
-  • ingest_chunks() now uses chunk["context_text"] as the document to embed
-    (richer signal: source + chapter + section header + text)
-  • Metadata now includes: section_title, chapter, chunk_type
-  • search() returns chunk_id, context_text, section_title, chapter, chunk_type
-  • New reset_collection() — wipes collection before re-ingestion
-  • Backward-compatible: old chunks without context_text fall back to text
+LexShield AI — Vector Store  (section lookup patch)
+====================================================
+Key addition: get_by_section() — direct ChromaDB metadata query by section number.
+Bypasses BM25 and vector text-similarity when an exact section is requested.
+Everything else unchanged from Day 1.
 """
 
 import os
 import time
 import gc
-import json
 from typing import Optional
 
-# CPU safety
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 import chromadb
 from chromadb.config import Settings
+from rag.embedder import embedder
 
-from rag.embedder import embedder   # LegalEmbedder singleton (Week 1, unchanged)
+COLLECTION_NAME = "legal_documents"
+INGEST_BATCH    = 16
+BATCH_SLEEP     = 1.5
+GC_EVERY_N      = 5
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-COLLECTION_NAME  = "legal_documents"
-INGEST_BATCH     = 16    # ChromaDB batch size (RAM safe on 8 GB)
-BATCH_SLEEP      = 1.5   # seconds between batches
-GC_EVERY_N       = 5     # run gc.collect() every N batches
+# Maps lowercase query keywords → partial source strings for optional filtering
+SOURCE_KEYWORDS: dict[str, str] = {
+    "ipc":                      "Indian Penal Code",
+    "indian penal code":        "Indian Penal Code",
+    "bns":                      "Bharatiya Nyaya Sanhita",
+    "bharatiya nyaya sanhita":  "Bharatiya Nyaya Sanhita",
+    "crpc":                     "Code of Criminal Procedure",
+    "code of criminal procedure": "Code of Criminal Procedure",
+    "consumer":                 "Consumer Protection",
+    "wages":                    "Code on Wages",
+    "kerala":                   "Kerala Buildings",
+}
 
 
 class LegalVectorStore:
-    """
-    ChromaDB-backed vector store for LexShield legal corpus.
-
-    Stores:
-      document  = context_text  (section-header-prefixed text, used for embedding)
-      metadata  = source, doc_type, section, section_title, chapter, chunk_type
-      id        = chunk_id
-    """
 
     def __init__(self, persist_dir: str = "data/chroma_db"):
         self.persist_dir = persist_dir
@@ -54,26 +51,79 @@ class LegalVectorStore:
         )
         print(f"[VectorStore] Collection '{COLLECTION_NAME}' — {self.count()} docs")
 
-    # ── Ingestion ─────────────────────────────────────────────────────────────
+    # ── Direct metadata lookup — the section fast path ────────────────────────
+
+    def get_by_section(
+        self,
+        section_number: str,
+        source_hint:    Optional[str] = None,
+    ) -> list[dict]:
+        """
+        Query ChromaDB metadata directly by section number.
+        Returns all chunks where metadata.section == section_number.
+        Optionally filters to chunks whose source contains source_hint.
+
+        Returned chunks get hybrid_score=1.0 so they pin to the top of results.
+        retrieval_source is tagged "metadata" to distinguish from BM25/vector.
+
+        This is intentionally called BEFORE hybrid search when an explicit
+        section number is detected in the query.
+        """
+        section_number = section_number.strip().upper()
+        
+        try:
+            raw = self.collection.get(
+                where={"section": {"$eq": section_number}},
+                include=["documents", "metadatas",],
+                limit=20,
+            )
+
+            if not raw["ids"]:
+                return []
+
+            results: list[dict] = []
+            for cid, doc, meta in zip(raw["ids"], raw["documents"], raw["metadatas"]):
+                source = meta.get("source", "")
+
+                # Optional source filter — "Indian Penal Code" filters out CrPC s.108 etc.
+                if source_hint and source_hint.lower() not in source.lower():
+                    continue
+
+                results.append({
+                    "chunk_id":        cid,
+                    "text":            doc,
+                    "source":          source,
+                    "doc_type":        meta.get("doc_type",      ""),
+                    "section":         meta.get("section",       ""),
+                    "section_title":   meta.get("section_title", ""),
+                    "chapter":         meta.get("chapter",       ""),
+                    "chunk_type":      meta.get("chunk_type",    ""),
+                    # Scores — pinned high so these always appear at the top
+                    "score":           1.0,
+                    "vector_score":    1.0,
+                    "bm25_score":      1.0,
+                    "bm25_score_norm": 1.0,
+                    "hybrid_score":    1.0,
+                    "retrieval_source": "metadata",
+                    "rerank_score":    None,
+                })
+
+            return results
+
+        except Exception as e:
+            print(f"[VectorStore] get_by_section({section_number!r}) error: {e}")
+            return []
+
+    # ── Ingest ────────────────────────────────────────────────────────────────
 
     def ingest_chunks(self, chunks: list[dict], skip_existing: bool = True) -> int:
-        """
-        Batch-ingest chunk dicts into ChromaDB.
-
-        Uses context_text for embedding (falls back to text if absent).
-        Returns number of newly added chunks.
-        """
         if not chunks:
             return 0
-
-        # Deduplicate against existing ids if requested
         if skip_existing:
-            existing_ids: set[str] = set()
             try:
-                all_ids = self.collection.get(include=[])["ids"]
-                existing_ids = set(all_ids)
+                existing_ids = set(self.collection.get(include=[])["ids"])
             except Exception:
-                pass
+                existing_ids = set()
             new_chunks = [c for c in chunks if c.get("chunk_id", "") not in existing_ids]
         else:
             new_chunks = chunks
@@ -85,18 +135,11 @@ class LegalVectorStore:
         total   = len(new_chunks)
         added   = 0
         batches = [new_chunks[i : i + INGEST_BATCH] for i in range(0, total, INGEST_BATCH)]
-
         print(f"[VectorStore] Ingesting {total} chunks in {len(batches)} batches ...")
 
         for batch_idx, batch in enumerate(batches):
-            # Prepare document text for embedding
-            docs = [
-                c.get("context_text") or c.get("text", "")
-                for c in batch
-            ]
-            ids = [c["chunk_id"] for c in batch]
-
-            # Build metadata dicts — ChromaDB requires str/int/float/bool values
+            docs      = [c.get("context_text") or c.get("text", "") for c in batch]
+            ids       = [c["chunk_id"] for c in batch]
             metadatas = [
                 {
                     "source":        str(c.get("source",        "")),
@@ -109,39 +152,26 @@ class LegalVectorStore:
                 }
                 for c in batch
             ]
-
-            # Embed using the Week 1 LegalEmbedder (batch_size=8 safe)
             embeddings = embedder.embed(docs)
-
             self.collection.add(
-                ids=ids,
-                documents=docs,
-                embeddings=embeddings,
-                metadatas=metadatas,
+                ids=ids, documents=docs,
+                embeddings=embeddings, metadatas=metadatas,
             )
             added += len(batch)
-
-            # Memory management
             if (batch_idx + 1) % GC_EVERY_N == 0:
                 gc.collect()
-
             time.sleep(BATCH_SLEEP)
-
             if (batch_idx + 1) % 10 == 0 or batch_idx == len(batches) - 1:
                 print(f"  batch {batch_idx + 1}/{len(batches)}  ({added}/{total})")
 
         gc.collect()
-        print(f"[VectorStore] Done. Added {added} chunks. Total: {self.count()}")
+        print(f"[VectorStore] Done. Added {added}. Total: {self.count()}")
         return added
 
     # ── Reset ─────────────────────────────────────────────────────────────────
 
     def reset_collection(self):
-        """
-        Delete and recreate the ChromaDB collection.
-        Call before re-ingestion to start fresh.
-        """
-        print(f"[VectorStore] Deleting collection '{COLLECTION_NAME}' ...")
+        print(f"[VectorStore] Deleting '{COLLECTION_NAME}' ...")
         try:
             self.client.delete_collection(COLLECTION_NAME)
         except Exception:
@@ -150,42 +180,28 @@ class LegalVectorStore:
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
-        print("[VectorStore] Collection reset. Empty.")
+        print("[VectorStore] Collection reset.")
 
-    # ── Search ────────────────────────────────────────────────────────────────
+    # ── Vector search ─────────────────────────────────────────────────────────
 
     def search(self, query: str, n_results: int = 8) -> list[dict]:
-        """
-        Embed query → cosine similarity search → return results.
-
-        Each result dict:
-          chunk_id, text (=context_text stored in ChromaDB),
-          source, doc_type, section, section_title, chapter, chunk_type,
-          score  (float 0–1, higher = more similar)
-        """
         if self.count() == 0:
             return []
-
         query_embedding = embedder.embed([query])[0]
-
         raw = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=min(n_results, self.count()),
             include=["documents", "distances", "metadatas"],
         )
-
         results: list[dict] = []
         for cid, doc, dist, meta in zip(
-            raw["ids"][0],
-            raw["documents"][0],
-            raw["distances"][0],
-            raw["metadatas"][0],
+            raw["ids"][0], raw["documents"][0],
+            raw["distances"][0], raw["metadatas"][0],
         ):
-            # ChromaDB cosine distance ∈ [0, 2]; convert to similarity [0, 1]
             score = max(0.0, 1.0 - dist / 2.0)
             results.append({
                 "chunk_id":      cid,
-                "text":          doc,            # context_text stored as document
+                "text":          doc,
                 "source":        meta.get("source",        ""),
                 "doc_type":      meta.get("doc_type",      ""),
                 "section":       meta.get("section",       ""),
@@ -194,7 +210,6 @@ class LegalVectorStore:
                 "chunk_type":    meta.get("chunk_type",    ""),
                 "score":         round(score, 4),
             })
-
         return results
 
     # ── Utilities ─────────────────────────────────────────────────────────────
@@ -207,18 +222,10 @@ class LegalVectorStore:
 
     def get_by_id(self, chunk_id: str) -> Optional[dict]:
         try:
-            r = self.collection.get(
-                ids=[chunk_id],
-                include=["documents", "metadatas"],
-            )
+            r = self.collection.get(ids=[chunk_id], include=["documents", "metadatas"])
             if not r["ids"]:
                 return None
-            meta = r["metadatas"][0]
-            return {
-                "chunk_id": chunk_id,
-                "text":     r["documents"][0],
-                **meta,
-            }
+            return {"chunk_id": chunk_id, "text": r["documents"][0], **r["metadatas"][0]}
         except Exception:
             return None
 

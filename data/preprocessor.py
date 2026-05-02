@@ -54,12 +54,48 @@ SECTION_PATTERNS: list[re.Pattern] = [
 # ── Text cleaning ─────────────────────────────────────────────────────────────
 
 def clean_text(text: str) -> str:
+    # ── Existing cleans (Week 1) ──────────────────────────────────────────────
+    # Remove standalone page numbers
     text = re.sub(r'^\s*\d{1,4}\s*$', '', text, flags=re.MULTILINE)
+    # Remove gazette/ministry headers
     text = re.sub(r'THE GAZETTE OF INDIA[^\n]*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'MINISTRY OF[^\n]*',           '', text, flags=re.IGNORECASE)
     text = re.sub(r'GOVERNMENT OF[^\n]*',         '', text, flags=re.IGNORECASE)
     text = re.sub(r'EXTRAORDINARY\s+PART\s+II[^\n]*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'-\n(\w)', r'\1', text)          # re-join hyphen line-breaks
+    # Re-join hyphenated line breaks
+    text = re.sub(r'-\n(\w)', r'\1', text)
+
+    # ── FIX 1: strip amendment PREFIX from section headers ────────────────────
+    # '1[108A. Abetment in India' → '108A. Abetment in India'
+    # '8[121A. Conspiracy...'     → '121A. Conspiracy...'
+    # Rule: only strip when digit[ is immediately followed by another digit
+    # (section numbers) — never strips '1[imprisonment' (letter follows)
+    text = re.sub(r'^\d{1,3}\[(\d)', r'\1', text, flags=re.MULTILINE)
+
+    # ── FIX 2: strip footnote annotation lines ────────────────────────────────
+    # These are page-footer notes in printed Indian statutes — NOT legal content.
+    # Examples:
+    #   '1. Subs. by Act 35 of 1969, s. 2, for section 153A.'
+    #   '2. Ins. by Act 13 of 2013, s. 20 (w.e.f. 3-2-2013).'
+    #   '11. Subs. by the A. O. 1950, for "Queen".'
+    #   '6. Now see the Navy Act, 1957 (62 of 1957).'
+    #   '5. The words "or that Act" omitted by the A. O. 1950.'
+    # These lines start with a small number + period + known amendment keyword.
+    # Zero false positives confirmed: no real IPC section starts with these words.
+    text = re.sub(
+        r'^\d{1,3}\.\s+(?:Subs\.|Ins\.|Rep\.|Added|Proviso|Omitted|Now\s+see|The\s+word)[^\n]*',
+        '',
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
+    # ── FIX 3: unwrap inline amendment markers (cosmetic) ────────────────────
+    # '1[imprisonment for life]' → 'imprisonment for life'
+    # '2[India]'                 → 'India'
+    # Only unwraps short non-nested markers so structural brackets are safe.
+    text = re.sub(r'\d{1,3}\[([A-Za-z][^\[\]\n]{1,80})\]', r'\1', text)
+
+    # ── Final normalisation ───────────────────────────────────────────────────
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'[ \t]+', ' ', text)
     return text.strip()

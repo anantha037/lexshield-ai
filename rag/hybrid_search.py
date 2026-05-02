@@ -1,43 +1,75 @@
 """
-LexShield AI — Hybrid Search (Vector + BM25 Fusion)
-=====================================================
-Combines ChromaDB cosine-similarity search with BM25 keyword search.
+LexShield AI — Hybrid Search  (section fast path patch)
+========================================================
+Key addition: section_number fast path at the top of search().
 
-Fusion strategy: Reciprocal Rank Fusion (RRF)  [default]
-  • RRF is robust to score-scale differences between vector and BM25
-  • score(chunk) = Σ  1 / (k + rank_in_list)  across both lists
-  • k=60 is the standard constant (smoother rank differences)
+When the query contains an explicit section number (detected by regex),
+we call vectorstore.get_by_section() first — a direct ChromaDB metadata
+lookup that always returns the exact section chunk, regardless of how
+similar nearby sections look to the text-similarity models.
 
-Also supports: weighted linear combination
-  • score = α × vector_score_norm + (1-α) × bm25_score_norm
+Those exact-match chunks are pinned to hybrid_score=1.0 and injected
+at the top of the merged result list before RRF fusion runs on the rest.
 
-Why RRF over weighted?
-  • No need to tune α per query type
-  • Chunks found by both retrieval methods get a strong natural boost
-  • Empirically better on mixed and semantic queries
-
-Result dict keys (superset of Week 1 vector search results):
-  chunk_id, text, source, doc_type, section, section_title,
-  chapter, chunk_type, vector_score, bm25_score, bm25_score_norm,
-  hybrid_score, retrieval_source
+Everything else (RRF, weighted fusion, ToC filter) is unchanged from Day 1.
 """
 
 import os
-from typing import Literal
+import re
+from typing import Literal, Optional
 
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-from rag.vectorstore    import vectorstore
+from rag.vectorstore    import vectorstore, SOURCE_KEYWORDS
 from rag.bm25_retriever import bm25_retriever
 
-# ── RRF constant ──────────────────────────────────────────────────────────────
-RRF_K = 60   # standard value from the original RRF paper
+RRF_K = 60
 
-# ── ToC filter ────────────────────────────────────────────────────────────────
+# ── Section number detection ──────────────────────────────────────────────────
+
+# Matches: "Section 108", "section 108A", "s. 108", "s108"
+SECTION_NUMBER_RE = re.compile(
+    r'\b[Ss]ections?\s*\.?\s*(\d{1,4}[A-Za-z]?)\b'
+    r'|'
+    r'\b(\d{1,4}[A-Za-z]?)\s+(?:IPC|BNS|CrPC|CRPC)\b',
+    re.IGNORECASE,
+)
+
+
+def extract_section_and_source(query: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Extracts (section_number, source_hint) from a query string.
+
+    Examples:
+      "What is Section 108 Indian Penal Code?"  → ("108", "Indian Penal Code")
+      "Section 420 IPC cheating"                → ("420", "Indian Penal Code")
+      "punishment for murder"                   → (None, None)
+
+    Returns (None, None) if no explicit section number is found.
+    """
+    m = SECTION_NUMBER_RE.search(query)
+    if not m:
+        return None, None
+
+    section_number = (m.group(1) or m.group(2) or "").strip().upper()
+    if not section_number:
+        return None, None
+
+    # Detect source hint from query keywords
+    q_lower = query.lower()
+    source_hint = None
+    for keyword, source_name in SOURCE_KEYWORDS.items():
+        if keyword in q_lower:
+            source_hint = source_name
+            break
+
+    return section_number, source_hint
+
+
+# ── ToC filter (unchanged) ────────────────────────────────────────────────────
 
 def _is_toc_chunk(text: str) -> bool:
-    import re
     lines = text.strip().splitlines()
     if not lines:
         return False
@@ -51,17 +83,9 @@ def _is_toc_chunk(text: str) -> bool:
     return toc / max(len(lines), 1) > 0.65
 
 
-# ── Fusion functions ──────────────────────────────────────────────────────────
+# ── RRF / weighted fusion (unchanged) ────────────────────────────────────────
 
-def rrf_scores(
-    vector_results: list[dict],
-    bm25_results:   list[dict],
-    k:              int = RRF_K,
-) -> dict[str, float]:
-    """
-    Reciprocal Rank Fusion.
-    Returns {chunk_id: rrf_score} for all chunks from both lists.
-    """
+def rrf_scores(vector_results: list[dict], bm25_results: list[dict], k: int = RRF_K) -> dict[str, float]:
     scores: dict[str, float] = {}
     for rank, r in enumerate(vector_results, start=1):
         cid = r["chunk_id"]
@@ -72,15 +96,7 @@ def rrf_scores(
     return scores
 
 
-def weighted_scores(
-    vector_results: list[dict],
-    bm25_results:   list[dict],
-    alpha:          float = 0.6,
-) -> dict[str, float]:
-    """
-    Weighted linear combination of normalised scores.
-    α=0.6 gives a slight semantic-search advantage.
-    """
+def weighted_scores(vector_results: list[dict], bm25_results: list[dict], alpha: float = 0.6) -> dict[str, float]:
     scores: dict[str, float] = {}
     for r in vector_results:
         cid = r["chunk_id"]
@@ -91,23 +107,9 @@ def weighted_scores(
     return scores
 
 
-# ── Main hybrid searcher ──────────────────────────────────────────────────────
+# ── Hybrid searcher ───────────────────────────────────────────────────────────
 
 class HybridSearcher:
-    """
-    Two-stage retrieval:
-      1. Retrieve fetch_k candidates from vector store + BM25 each
-      2. Fuse ranks / scores → deduplicate → re-rank → return top n_results
-
-    Parameters
-    ----------
-    fusion : "rrf" | "weighted"
-        Fusion strategy (default: "rrf").
-    alpha : float
-        Weight for vector scores when fusion="weighted" (ignored for "rrf").
-    fetch_multiplier : int
-        How many extras to fetch before fusion. fetch_k = n_results * fetch_multiplier.
-    """
 
     def __init__(
         self,
@@ -119,8 +121,6 @@ class HybridSearcher:
         self.alpha            = alpha
         self.fetch_multiplier = fetch_multiplier
 
-    # ── Core search ───────────────────────────────────────────────────────────
-
     def search(
         self,
         query:            str,
@@ -129,20 +129,32 @@ class HybridSearcher:
         filter_toc:       bool  = True,
     ) -> list[dict]:
         """
-        Hybrid retrieval.
+        Hybrid retrieval with section fast path.
 
-        Returns up to n_results dicts with hybrid_score field.
-        Chunks found by both methods appear once with combined score.
+        Flow:
+          1. Detect explicit section number in query
+          2. If found → metadata lookup (always correct, pinned to top)
+          3. RRF fusion of vector + BM25 for remaining slots
+          4. Inject metadata results at position 0, deduplicate, return top N
         """
         fetch_k = n_results * self.fetch_multiplier
 
-        # ── Step 1: Independent retrievals ───────────────────────────────────
+        # ── Step 1: Section fast path ─────────────────────────────────────────
+        section_hits: list[dict] = []
+        section_number, source_hint = extract_section_and_source(query)
+
+        if section_number:
+            section_hits = vectorstore.get_by_section(section_number, source_hint)
+            if section_hits:
+                print(f"[HybridSearch] Section fast path: found {len(section_hits)} "
+                      f"chunk(s) for section={section_number!r} source_hint={source_hint!r}")
+
+        # ── Step 2: Standard vector + BM25 retrieval ─────────────────────────
         vector_raw  = vectorstore.search(query, n_results=fetch_k)
         vector_hits = [r for r in vector_raw if r.get("score", 0) >= min_vector_score]
-
         bm25_hits   = bm25_retriever.search(query, n_results=fetch_k)
 
-        # ── Step 2: Build unified chunk lookup ────────────────────────────────
+        # ── Step 3: Build lookup from text-similarity results ─────────────────
         lookup: dict[str, dict] = {}
 
         for r in vector_hits:
@@ -168,9 +180,6 @@ class HybridSearcher:
                 lookup[cid]["bm25_score"]      = r.get("bm25_score",      0.0)
                 lookup[cid]["bm25_score_norm"]  = r.get("bm25_score_norm", 0.0)
                 lookup[cid]["retrieval_source"] = "both"
-                # Use text from BM25 (raw text, not context_text prefix) when available
-                if r.get("text") and not lookup[cid].get("text"):
-                    lookup[cid]["text"] = r["text"]
             else:
                 lookup[cid] = {
                     "chunk_id":        cid,
@@ -187,65 +196,53 @@ class HybridSearcher:
                     "retrieval_source": "bm25",
                 }
 
-        # ── Step 3: Compute fusion scores ─────────────────────────────────────
+        # ── Step 4: RRF / weighted scores ─────────────────────────────────────
         if self.fusion == "rrf":
             fused = rrf_scores(vector_hits, bm25_hits)
         else:
             fused = weighted_scores(vector_hits, bm25_hits, self.alpha)
 
-        # ── Step 4: Attach hybrid_score + sort ────────────────────────────────
-        results: list[dict] = []
+        text_results: list[dict] = []
         for cid, chunk in lookup.items():
             chunk["hybrid_score"] = round(fused.get(cid, 0.0), 6)
-            results.append(chunk)
+            text_results.append(chunk)
+        text_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
 
-        results.sort(key=lambda x: x["hybrid_score"], reverse=True)
+        # ── Step 5: Inject section fast-path results at the top ───────────────
+        # Remove duplicates: if a section_hit chunk_id is already in text_results,
+        # remove it from there so the metadata version pins to position 0.
+        if section_hits:
+            fast_path_ids = {r["chunk_id"] for r in section_hits}
+            text_results  = [r for r in text_results if r["chunk_id"] not in fast_path_ids]
+            merged = section_hits + text_results
+        else:
+            merged = text_results
 
-        # ── Step 5: Optional ToC filtering ───────────────────────────────────
+        # ── Step 6: ToC filter ────────────────────────────────────────────────
         if filter_toc:
-            results = [
-                r for r in results
+            merged = [
+                r for r in merged
                 if not _is_toc_chunk(r.get("text", ""))
                 and len(r.get("text", "").split()) >= 15
             ]
 
-        return results[:n_results]
+        return merged[:n_results]
 
-    # ── Debug / test helper ───────────────────────────────────────────────────
+    # ── Debug helper ──────────────────────────────────────────────────────────
 
-    def search_explain(
-        self,
-        query:     str,
-        n_results: int = 5,
-    ) -> list[dict]:
-        """
-        Like search() but attaches a human-readable score_breakdown to each result.
-        Useful for comparing hybrid vs vector-only in tests.
-        """
+    def search_explain(self, query: str, n_results: int = 5) -> list[dict]:
         results = self.search(query, n_results=n_results)
         for r in results:
             src = r.get("retrieval_source", "?")
-            tag = {
-                "vector": "V   ",
-                "bm25":   " B  ",
-                "both":   "V+B ",
-            }.get(src, "?   ")
+            tag = {"vector": "V   ", "bm25": " B  ", "both": "V+B ", "metadata": "META"}.get(src, "?   ")
             r["score_breakdown"] = (
-                f"{tag}| vector={r.get('vector_score',0):.3f} "
-                f"bm25={r.get('bm25_score_norm',0):.3f} "
-                f"hybrid={r.get('hybrid_score',0):.6f}"
+                f"{tag}| vector={r.get('vector_score', 0):.3f} "
+                f"bm25={r.get('bm25_score_norm', 0):.3f} "
+                f"hybrid={r.get('hybrid_score', 0):.6f}"
             )
         return results
 
-    # ── Pure vector search (for comparison baseline) ──────────────────────────
-
-    def search_vector_only(
-        self,
-        query:     str,
-        n_results: int   = 8,
-        min_score: float = 0.25,
-    ) -> list[dict]:
-        """Week 1-style pure vector search. Used in test comparisons."""
+    def search_vector_only(self, query: str, n_results: int = 8, min_score: float = 0.25) -> list[dict]:
         raw = vectorstore.search(query, n_results=n_results)
         return [r for r in raw if r.get("score", 0) >= min_score]
 
