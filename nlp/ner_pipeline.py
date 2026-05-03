@@ -263,6 +263,8 @@ _SECTION_PATTERNS: list[re.Pattern] = [
     re.compile(r'\bSs?\.\s*(\d{1,4}[A-Za-z]{0,2})\b', re.IGNORECASE),
     # "sec. 420", "sec 420"
     re.compile(r'\bsec\.?\s+(\d{1,4}[A-Za-z]{0,2})\b', re.IGNORECASE),
+    # Article 14, Article 21
+    re.compile(r'\bArticle\s+(\d+[A-Za-z]?(?:\([a-z]\))?)\b', re.IGNORECASE),
 ]
 
 # Act names — matched as complete phrases
@@ -295,7 +297,17 @@ _ACT_PATTERNS: list[re.Pattern] = [
         r'|[\w\s]+ Act,?\s+\d{4}'   # generic fallback: "Any Named Act, 1980"
         r')',
         re.IGNORECASE,
-    )
+    ),
+
+    re.compile(
+        r'\b([\w\s]+ (?:Rules?|Regulations?|Scheme|Order),?\s+\d{4})\b',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'\b((?:Water|Air|Environment(?:al)?|Forest|Wildlife|Pollution)\s+(?:Protection\s+)?'
+        r'(?:Act|Rules?|Regulations?),?\s*(?:\d{4})?)\b',
+        re.IGNORECASE,
+    ),
 ]
 
 # Case number patterns in Indian courts
@@ -303,6 +315,16 @@ _CASE_NUMBER_PATTERNS: list[re.Pattern] = [
     # W.P.(C) No. 1234/2023 — Writ Petition Civil
     re.compile(
         r'\b(W\.?P\.?\s*(?:\([A-Z]+\))?\s*No\.?\s*\d+\s*/\s*\d{4})',
+        re.IGNORECASE,
+    ),
+    # W.P.(C) 1694/2004
+    re.compile(
+        r'\b(W\.?P\.?\s*\([A-Z]\)\.?\s*(?:No\.?)?\s*\d+\s*(?:of|/)\s*\d{4})',
+        re.IGNORECASE,
+    ),
+    # WP(C).No. 26435 of 2013
+    re.compile(
+        r'\b(W\.?P\.?\s*\([A-Z]\)\s*\d+\s*(?:of|/)\s*\d{4})',
         re.IGNORECASE,
     ),
     # Crl.A. 456/2022, Crl.Rev. 789/2021
@@ -430,9 +452,10 @@ def _run_regex(text: str) -> dict[str, list[str]]:
     for pat in _ACT_PATTERNS:
         for m in pat.finditer(text):
             act = m.group(0).strip()
-            # Clean trailing punctuation
             act = re.sub(r'[,\.\s]+$', '', act)
-            if len(act) > 5:
+            # Remove leading garbage up to the first capital Act word
+            act = re.sub(r'^.*?(?=(?:[A-Z][\w\s]+\s+(?:Act|Rules?|Code|Order)))', '', act).strip()
+            if 5 < len(act) < 120:   # cap length — full sentences are noise
                 result["acts"].append(act)
 
     # Case numbers
@@ -484,12 +507,28 @@ def _run_location_regex(text: str) -> dict[str, list[str]]:
 def _run_person_regex(text: str) -> dict[str, list[str]]:
     """Regex-based person extraction using Indian legal document patterns."""
     persons = []
-    preprocessed = preprocess_allcaps(text)  # title-case ALL-CAPS names first
+    preprocessed = preprocess_allcaps(text)
+
+    # ── Strip judgment advocate listing lines before person extraction ────
+    # These lines follow pattern: "R3 BY ADV. SRI.NAME" or "BY ADVS.NAME"
+    preprocessed = re.sub(
+        r'\b(?:R[\-\d\,\s&]+\s+)?BY\s+(?:ADV[S]?|ADVOCATE[S]?)\.?\s*'
+        r'(?:SRI|SMT|DR|MR|MRS)?\.?\s*[^\n]+',
+        '',
+        preprocessed,
+        flags=re.IGNORECASE,
+    )
+    # Strip "v. Union of India" style case citations being treated as persons
+    preprocessed = re.sub(
+        r'\b\w[\w\.\s]+v\.\s+(?:Union|State)\s+of\s+India[^\n]*',
+        '',
+        preprocessed,
+        flags=re.IGNORECASE,
+    )
 
     for pat in _PERSON_PATTERNS:
         for m in pat.finditer(preprocessed):
             name = m.group(1).strip().title()
-            # Filter noise: must be 2+ words or a known-name length
             words = name.split()
             if len(words) >= 2 and all(len(w) >= 2 for w in words):
                 persons.append(name)
@@ -497,8 +536,8 @@ def _run_person_regex(text: str) -> dict[str, list[str]]:
                 persons.append(name)
 
     return {"persons": persons}
-# ── Step 5: Merge and deduplicate ─────────────────────────────────────────────
 
+# ── Step 5: Merge and deduplicate ─────────────────────────────────────────────
 def _clean_val(val: str) -> str:
     """Strip trailing punctuation and normalize whitespace."""
     return re.sub(r'\s+', ' ', val).strip().strip('.,;:()[]')
