@@ -263,6 +263,7 @@ _SECTION_PATTERNS: list[re.Pattern] = [
 ]
 
 _ACT_PATTERNS: list[re.Pattern] = [
+    # 1. Specific known acts
     re.compile(
         r'\b('
         r'Indian Penal Code(?:\s+\d{4})?'
@@ -288,19 +289,17 @@ _ACT_PATTERNS: list[re.Pattern] = [
         r'|Domestic Violence Act(?:\s+\d{4})?'
         r'|Dowry Prohibition Act(?:\s+\d{4})?'
         r'|Kerala Buildings\s+\([^)]+\)\s+Act(?:\s+\d{4})?'
-        r'|[\w\s]+ Act,?\s+\d{4}'
         r')',
         re.IGNORECASE,
     ),
-    re.compile(
-        r'\b([\w\s]+ (?:Rules?|Regulations?|Scheme|Order),?\s+\d{4})\b',
-        re.IGNORECASE,
-    ),
+    # 2. Specific Environmental acts
     re.compile(
         r'\b((?:Water|Air|Environment(?:al)?|Forest|Wildlife|Pollution)\s+(?:Protection\s+)?'
         r'(?:Act|Rules?|Regulations?),?\s*(?:\d{4})?)\b',
         re.IGNORECASE,
     ),
+    # 3. NEW STRICT GENERIC FALLBACK: Relies on Capitalized words. NO IGNORECASE!
+    re.compile(r'\b(?:[A-Z][A-Za-z]*\s+){1,6}(?:Act|Rules?|Code|Regulations?)(?:\s*,?\s*\d{4})?')
 ]
 
 _CASE_NUMBER_PATTERNS: list[re.Pattern] = [
@@ -379,10 +378,10 @@ def _run_regex(text: str) -> dict[str, list[str]]:
     for pat in _ACT_PATTERNS:
         for m in pat.finditer(text):
             act = m.group(0).strip()
-            act = re.sub(r'[,\.\s]+$', '', act)
-            act = re.sub(r'^.*?(?=(?:[A-Z][\w\s]+\s+(?:Act|Rules?|Code|Order)))', '', act).strip()
+            act = re.sub(r'[,\.\s]+$', '', act) # Clean trailing punctuation
             
-            # Max length is 75, skips if it contains verbs
+            # The fragile re.sub lookahead hack has been removed!
+            
             if 5 < len(act) < 75 and not _ACT_VERB_NOISE.search(act):
                 result["acts"].append(act)
 
