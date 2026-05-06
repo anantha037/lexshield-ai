@@ -36,6 +36,7 @@ temp/
 tmp/
 temp_*.jpg
 sample_order.jpg
+tests/sample_legal.jpg
 
 # =========================
 # 5. OS & Editor Junk
@@ -45,3 +46,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# =========================
+# 6. Models
+# =========================
+models/saved/
+models/scratch.py
