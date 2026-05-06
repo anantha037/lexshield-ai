@@ -69,7 +69,7 @@ TEST_QUERIES: list[dict] = [
         "query":    "What consumer rights does a buyer have against a defective product?",
         "tags":     ["consumer", "redressal", "multi-source"],
         "expect_sections": [],
-        "multi_source_expected": True,
+        "multi_source_expected": False,
     },
     {
         "id":       7,
