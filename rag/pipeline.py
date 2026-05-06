@@ -1,12 +1,13 @@
 """
-LexShield AI — RAG Pipeline  (Week 2, Day 3)
-============================================
-Unchanged from Day 2 up to reranking.
-Day 3 change: replaces bare llm.generate() call with full synthesis flow.
+LexShield AI — RAG Pipeline  (Week 2, Day 3 + section-pin patch)
+=================================================================
+Patch over Day 3:
+  - expanded query always included in all_queries (preserves section numbers)
+  - section fast-path chunks pinned after dedup so reranker cannot drop them
+  - negative rerank score gate in Step 5 safety fallback
+  - out-of-corpus act warning injection
 
-  query → preprocess → rewrite → hybrid×N → dedup → rerank
-        → build_synthesis_prompt → llm.generate → synthesize()
-        → LegalAnswer  (structured citations + grounding check)
+Everything else unchanged.
 """
 
 import os
@@ -17,9 +18,10 @@ os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 from rag.llm            import llm
-from rag.hybrid_search  import hybrid_searcher
+from rag.hybrid_search  import hybrid_searcher, extract_sections_and_sources
 from rag.query_rewriter import query_rewriter
 from rag.reranker       import reranker
+from rag.vectorstore    import vectorstore
 from rag.synthesizer    import (
     build_synthesis_prompt,
     SYNTHESIS_SYSTEM_PROMPT,
@@ -32,7 +34,13 @@ N_RETRIEVE_PER_QUERY = 8
 N_RERANKER_INPUT     = 10
 N_FINAL_CONTEXT      = 5
 
-# ── Query preprocessor ────────────────────────────────────────────────────────
+# Acts not in corpus — used for early warning injection
+OUT_OF_CORPUS_ACTS = [
+    "negotiable instruments", "ni act", "cheque bounce",
+    "companies act", "income tax act", "gst",
+]
+
+# ── Query preprocessor (unchanged) ───────────────────────────────────────────
 QUERY_EXPANSIONS: dict[str, str] = {
     r'\bipc\b':      'Indian Penal Code',
     r'\bbnss?\b':    'Bharatiya Nyaya Sanhita',
@@ -109,7 +117,6 @@ class RAGPipeline:
         self.enable_reranking = enable_reranking
 
     def query(self, user_query: str, n_results: Optional[int] = None) -> LegalAnswer:
-        """Run the full pipeline. Never raises — errors return a LegalAnswer with warning."""
         try:
             return self._run(user_query, n_results or self.n_final)
         except Exception as e:
@@ -126,11 +133,29 @@ class RAGPipeline:
         # Step 0: Preprocess
         expanded = preprocess_query(user_query)
 
+        # ── PATCH: section fast-path pin ──────────────────────────────────────
+        # Run get_by_section on the ORIGINAL expanded query before rewriting
+        # strips section numbers. These chunks are guaranteed to appear in
+        # final_chunks regardless of reranker scores.
+        pinned_chunks: list[dict] = []
+        for sec, hint in extract_sections_and_sources(expanded):
+            pinned_chunks.extend(vectorstore.get_by_section(sec, hint))
+        # Deduplicate pinned by chunk_id
+        _seen: set[str] = set()
+        pinned_chunks = [
+            c for c in pinned_chunks
+            if not (c["chunk_id"] in _seen or _seen.add(c["chunk_id"]))  # type: ignore[func-returns-value]
+        ]
+        pinned_ids = {c["chunk_id"] for c in pinned_chunks}
+        # ─────────────────────────────────────────────────────────────────────
+
         # Step 1: Rewrite
-        all_queries = (
+        # expanded is always first — preserves section numbers for hybrid fast path
+        rewritten = (
             query_rewriter.rewrite(expanded)
-            if self.enable_rewriting else [expanded]
+            if self.enable_rewriting else []
         )
+        all_queries = [expanded] + [q for q in rewritten if q != expanded]
 
         # Step 2: Multi-query hybrid search
         all_results = [
@@ -140,6 +165,37 @@ class RAGPipeline:
 
         # Step 3: Deduplicate
         merged = deduplicate_chunks(all_results)
+
+        # ── PATCH: inject pinned chunks at top, cannot be displaced ──────────
+        merged = pinned_chunks + [c for c in merged if c["chunk_id"] not in pinned_ids]
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── PATCH: out-of-corpus act warning ─────────────────────────────────
+        q_lower = user_query.lower()
+        if any(act in q_lower for act in OUT_OF_CORPUS_ACTS):
+            corpus_sources = {c.get("source", "").lower() for c in merged[:5]}
+            if not any(
+                kw in src
+                for src in corpus_sources
+                for kw in ["negotiable", "companies act", "income tax"]
+            ):
+                merged.insert(0, {
+                    "chunk_id":       "_corpus_warning",
+                    "text":           (
+                        "NOTE: The legal corpus does not contain the Act directly "
+                        "relevant to this query. Answer based only on available "
+                        "sources and explicitly state this limitation."
+                    ),
+                    "source":         "System",
+                    "section":        "",
+                    "section_title":  "",
+                    "chapter":        "",
+                    "doc_type":       "system",
+                    "chunk_type":     "warning",
+                    "hybrid_score":   2.0,
+                    "retrieval_source": "system",
+                })
+        # ─────────────────────────────────────────────────────────────────────
 
         if not merged:
             return LegalAnswer(
@@ -155,19 +211,29 @@ class RAGPipeline:
             )
 
         # Step 4: Rerank
-        reranker_input = merged[:self.n_reranker_input]
+        # Pinned chunks are excluded from reranker input — they bypass scoring
+        # and are re-injected at the top after reranking.
+        reranker_input = [c for c in merged[:self.n_reranker_input]
+                          if c["chunk_id"] not in pinned_ids
+                          and c["chunk_id"] != "_corpus_warning"]
         reranker_used  = False
 
         if self.enable_reranking:
-            final_chunks, reranker_used = reranker.rerank(
+            ranked_chunks, reranker_used = reranker.rerank(
                 query=expanded, chunks=reranker_input, top_n=n_final,
             )
         else:
-            final_chunks = reranker_input[:n_final]
-            for c in final_chunks:
+            ranked_chunks = reranker_input[:n_final]
+            for c in ranked_chunks:
                 c["rerank_score"] = None
 
-        # Step 5: Section-number safety fallback
+        # Recompose: pinned first, then reranked, trim to n_final
+        final_chunks = pinned_chunks + [
+            c for c in ranked_chunks if c["chunk_id"] not in pinned_ids
+        ]
+        final_chunks = final_chunks[:n_final]
+
+        # Step 5: Section-number safety fallback (unchanged + negative score gate)
         section_match = re.search(r'\bSection\s+(\d+[A-Z]?)\b', expanded, re.IGNORECASE)
         if section_match:
             target = section_match.group(1)
@@ -176,6 +242,10 @@ class RAGPipeline:
                 extra = bm25_retriever.search(expanded, n_results=3)
                 for e in extra:
                     if e.get("section", "") == target:
+                        # Skip if reranker explicitly rejected this chunk
+                        if (e.get("rerank_score") is not None
+                                and e["rerank_score"] < -3.0):
+                            continue
                         e.update({"rerank_score": None, "hybrid_score": 0.005})
                         final_chunks.append(e)
                 final_chunks = final_chunks[:n_final]

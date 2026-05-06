@@ -37,34 +37,39 @@ SECTION_NUMBER_RE = re.compile(
 )
 
 
-def extract_section_and_source(query: str) -> tuple[Optional[str], Optional[str]]:
+def extract_sections_and_sources(query: str) -> list[tuple[str, Optional[str]]]:
     """
-    Extracts (section_number, source_hint) from a query string.
-
-    Examples:
-      "What is Section 108 Indian Penal Code?"  → ("108", "Indian Penal Code")
-      "Section 420 IPC cheating"                → ("420", "Indian Penal Code")
-      "punishment for murder"                   → (None, None)
-
-    Returns (None, None) if no explicit section number is found.
+    Extracts ALL (section_number, source_hint) pairs from a query.
+    "IPC Section 302 and BNS Section 101" → [("302","Indian Penal Code"), ("101","Bharatiya Nyaya Sanhita")]
     """
-    m = SECTION_NUMBER_RE.search(query)
-    if not m:
-        return None, None
-
-    section_number = (m.group(1) or m.group(2) or "").strip().upper()
-    if not section_number:
-        return None, None
-
-    # Detect source hint from query keywords
     q_lower = query.lower()
-    source_hint = None
-    for keyword, source_name in SOURCE_KEYWORDS.items():
-        if keyword in q_lower:
-            source_hint = source_name
-            break
+    pairs: list[tuple[str, Optional[str]]] = []
 
-    return section_number, source_hint
+    for m in SECTION_NUMBER_RE.finditer(query):
+        section_number = (m.group(1) or m.group(2) or "").strip().upper()
+        if not section_number:
+            continue
+
+        # Find source hint from the surrounding context (±60 chars around match)
+        start = max(0, m.start() - 60)
+        end   = min(len(query), m.end() + 60)
+        local_ctx = query[start:end].lower()
+
+        source_hint = None
+        for keyword, source_name in SOURCE_KEYWORDS.items():
+            if keyword in local_ctx:
+                source_hint = source_name
+                break
+
+        pairs.append((section_number, source_hint))
+
+    return pairs
+
+
+# Keep old name as alias for any callers outside hybrid_search
+def extract_section_and_source(query: str) -> tuple[Optional[str], Optional[str]]:
+    pairs = extract_sections_and_sources(query)
+    return pairs[0] if pairs else (None, None)
 
 
 # ── ToC filter (unchanged) ────────────────────────────────────────────────────
@@ -141,13 +146,16 @@ class HybridSearcher:
 
         # ── Step 1: Section fast path ─────────────────────────────────────────
         section_hits: list[dict] = []
-        section_number, source_hint = extract_section_and_source(query)
+        for section_number, source_hint in extract_sections_and_sources(query):
+            hits = vectorstore.get_by_section(section_number, source_hint)
+            if hits:
+                print(f"[HybridSearch] Section fast path: {len(hits)} chunk(s) "
+                    f"section={section_number!r} source={source_hint!r}")
+                section_hits.extend(hits)
 
-        if section_number:
-            section_hits = vectorstore.get_by_section(section_number, source_hint)
-            if section_hits:
-                print(f"[HybridSearch] Section fast path: found {len(section_hits)} "
-                      f"chunk(s) for section={section_number!r} source_hint={source_hint!r}")
+        # Deduplicate section_hits by chunk_id (same section can appear in multiple sources)
+        seen: set[str] = set()
+        section_hits = [h for h in section_hits if not (h["chunk_id"] in seen or seen.add(h["chunk_id"]))]
 
         # ── Step 2: Standard vector + BM25 retrieval ─────────────────────────
         vector_raw  = vectorstore.search(query, n_results=fetch_k)

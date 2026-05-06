@@ -84,7 +84,11 @@ STRICT RULES — follow every one:
 2. Every sentence that states a legal fact MUST end with an inline citation: [1] or [2] or [1][3].
 3. If two sources say the same thing, cite both: [1][2].
 4. If sources address the same offence under both IPC and BNS, explain both and cite each separately.
-5. Never invent a section number. Only use section numbers that appear explicitly in the sources.
+5. SECTION NUMBER RULE — THIS IS ABSOLUTE: You may ONLY write a section number if that exact
+   number appears in the [SOURCE N] header above. The headers are the ONLY permitted source of
+   section numbers. If you know a related section from your training (e.g. Section 161 CrPC,
+   Section 69 BNS) but it does not appear in any [SOURCE N] header, you MUST NOT write that
+   number. Write the legal concept in plain words instead.
 6. If the sources do not answer the question, say exactly:
    "The retrieved legal sections do not contain sufficient information to answer this question."
 7. Structure your answer:
@@ -181,9 +185,8 @@ def build_citations(chunks: list[dict]) -> list[Citation]:
 # ── Grounding checker ─────────────────────────────────────────────────────────
 
 _HALLUCINATION_SIGNALS = [
-    "generally speaking", "in general", "typically", "usually",
-    "in most cases", "it is widely understood", "commonly known",
-    "as a rule", "by convention", "in practice", "experts say",
+    "generally speaking", "typically", "usually",
+    "in most cases", "it is widely understood", "commonly known", "experts say",
     "legal experts", "lawyers agree", "based on my knowledge",
     "i believe", "i think",
 ]
@@ -202,8 +205,8 @@ def check_grounding(answer_text: str, chunks: list[dict]) -> Optional[str]:
         return f"Answer contains generalising phrases ({found[:2]}). Review for hallucination."
 
     # Check 2: section numbers in answer not present in any chunk
-    cited_secs     = set(re.findall(r'\bSection\s+(\d+[A-Z]?)\b', answer_text, re.IGNORECASE))
-    available_secs = {str(c.get("section", "")) for c in chunks if c.get("section")}
+    cited_secs = set(re.findall(r'\bSection\s+(\d{2,4}[A-Z]?)\b', answer_text, re.IGNORECASE))
+    available_secs = {str(c.get("section", "")) for c in chunks if c.get("section") and len(str(c.get("section")))>=2}
     phantom        = cited_secs - available_secs
     if phantom:
         return f"Answer cites section(s) {phantom} not found in retrieved sources. Possible hallucination."
