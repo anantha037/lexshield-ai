@@ -1,42 +1,23 @@
 """
-LexShield AI — Legal Query API  (Week 2, Day 3 update)
+LexShield AI — Legal Query API
 =======================================================
-POST /api/v1/legal/query
-
-Request:
-  { "query": "What is punishment for cheating under IPC?" }
-
-Response (structured JSON):
-  {
-    "query": "...",
-    "answer": "According to [1] Section 420 of the Indian Penal Code...",
-    "citations": [
-      {
-        "source_number": 1,
-        "source": "Indian Penal Code (IPC)",
-        "section": "420",
-        "section_title": "Cheating",
-        "chapter": "CHAPTER XVII",
-        "preview": "420. Cheating.—Whoever cheats...",
-        "relevance_score": 0.9123,
-        "retrieval_source": "both",
-        "doc_type": "statute"
-      }
-    ],
-    "sources_consulted": 3,
-    "synthesis_note": "Synthesized from 3 sections across 2 sources (Statute)",
-    "grounding_warning": null,
-    "rewritten_queries": ["...", "...", "..."],
-    "reranker_used": true
-  }
+Changes in this version:
+  - category field validator added: converts "" → None before Pydantic
+    Literal validation runs. Fixes 422 error when client sends category="".
+  - era field added to CitationResponse and LegalQueryResponse.
+  - Everything else unchanged.
 """
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Literal
 
 router = APIRouter(prefix="/api/v1/legal", tags=["legal"])
 
+LegalCategory = Literal[
+    "criminal", "family", "corporate", "taxation", "property",
+    "labour", "health", "environment", "technology", "civil",
+]
 
 # ── Request model ─────────────────────────────────────────────────────────────
 
@@ -57,6 +38,27 @@ class LegalQueryRequest(BaseModel):
         default=True,
         description="Set false to skip NVIDIA reranking (faster fallback)",
     )
+    category: Optional[LegalCategory] = Field(
+        default=None,
+        description=(
+            "Restrict retrieval to a legal category. Omit (or pass null) to "
+            "search the entire corpus. Sending an empty string is treated as null. "
+            "Valid values: criminal | family | corporate | taxation | property | "
+            "labour | health | environment | technology | civil"
+        ),
+    )
+
+    # ── FIX: convert empty string → None before Literal validation ────────────
+    # When a client sends { "category": "" } Pydantic's Literal check raises a
+    # 422 because "" is not one of the allowed values. This validator runs first
+    # (mode="before") and normalises "" to None so the field is treated as
+    # "no filter" rather than an invalid value.
+    @field_validator("category", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v: object) -> object:
+        if v == "" or v is None:
+            return None
+        return v
 
 
 # ── Response models ───────────────────────────────────────────────────────────
@@ -71,6 +73,8 @@ class CitationResponse(BaseModel):
     relevance_score:  Optional[float]
     retrieval_source: str
     doc_type:         str
+    category:         str
+    era:              str = ""    # "legacy" | "current" | ""
 
 
 class LegalQueryResponse(BaseModel):
@@ -82,6 +86,7 @@ class LegalQueryResponse(BaseModel):
     grounding_warning: Optional[str]
     rewritten_queries: list[str]
     reranker_used:     bool
+    category_filter:   Optional[str]
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
@@ -91,15 +96,24 @@ async def legal_query(request: LegalQueryRequest):
     """
     Answer a legal question using the full advanced RAG pipeline.
 
-    Full pipeline on every request:
-      1. Abbreviation expansion (IPC → Indian Penal Code)
-      2. LLM query rewriting → 3 angle-diverse search queries
-      3. Hybrid vector+BM25 search on all queries
-      4. Deduplicate and merge results
-      5. NVIDIA NIM reranking (top 10 → top 5)
-      6. Multi-document synthesis with numbered [SOURCE N] citations
-      7. Grounding / hallucination check
-      8. Return structured JSON with full citation metadata
+    Pipeline steps:
+      1. Abbreviation expansion (40+ mappings)
+      2. LLM query rewriting → angle-diverse search queries
+      3. Hybrid vector+BM25 search (with optional category filter)
+      4. Section metadata fast-path — pins exact section chunks to top
+      5. Paired act retrieval (IPC↔BNS, CrPC↔BNSS, Evidence↔BSA)
+      6. NVIDIA NIM reranking
+      7. Multi-document synthesis with [SOURCE N] citations
+      8. Grounding / hallucination check
+
+    Category filter (optional):
+      Restrict to a legal domain to reduce cross-category noise.
+      Pass null or omit entirely to search the full corpus.
+      Example: { "query": "cheque bounce", "category": "corporate" }
+
+    Note: Do NOT pass category="criminal" for IPC/BNS queries unless you
+    want to restrict to criminal acts only. Omit category for paired act
+    (old law + new law) responses to work correctly.
     """
     from rag.pipeline import rag_pipeline
 
@@ -107,7 +121,6 @@ async def legal_query(request: LegalQueryRequest):
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
-    # Apply per-request overrides
     rag_pipeline.enable_rewriting = (
         request.enable_rewriting if request.enable_rewriting is not None else True
     )
@@ -115,9 +128,12 @@ async def legal_query(request: LegalQueryRequest):
         request.enable_reranking if request.enable_reranking is not None else True
     )
 
-    result = rag_pipeline.query(user_query=query, n_results=request.n_results)
+    result = rag_pipeline.query(
+        user_query      = query,
+        n_results       = request.n_results,
+        category_filter = request.category,   # None = full corpus
+    )
 
-    # Convert Citation dataclasses → CitationResponse pydantic models
     citation_responses = [
         CitationResponse(
             source_number    = c.source_number,
@@ -129,6 +145,8 @@ async def legal_query(request: LegalQueryRequest):
             relevance_score  = c.relevance_score,
             retrieval_source = c.retrieval_source,
             doc_type         = c.doc_type,
+            category         = getattr(c, "category", ""),
+            era              = getattr(c, "era",      ""),
         )
         for c in result.citations
     ]
@@ -142,4 +160,5 @@ async def legal_query(request: LegalQueryRequest):
         grounding_warning  = result.grounding_warning,
         rewritten_queries  = result.rewritten_queries,
         reranker_used      = result.reranker_used,
+        category_filter    = request.category,
     )

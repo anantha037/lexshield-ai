@@ -1,15 +1,25 @@
 """
-LexShield AI — Multi-Document Synthesizer  (Week 2, Day 3)
+LexShield AI — Multi-Document Synthesizer
 ===========================================================
-Handles everything between "chunks retrieved" and "LLM call":
-  1. Formats chunks as numbered [SOURCE N] blocks for synthesis prompt
-  2. Builds a synthesis-aware prompt that forces cross-source inline citation
-  3. Converts raw chunk dicts → structured Citation objects
-  4. Checks the answer for grounding / hallucination signals
-  5. Returns LegalAnswer — the single structured object the API serialises
+Changes in this version:
 
-LegalAnswer also carries pipeline metadata (rewritten_queries, reranker_used)
-so the API endpoint never needs to reach back into the pipeline internals.
+  NEW  Era-aware system prompt for paired act responses
+       When final_chunks contain both a "legacy" era chunk (IPC/CrPC/Evidence Act)
+       AND a "current" era chunk (BNS/BNSS/BSA) or a "paired_act" chunk,
+       SYNTHESIS_SYSTEM_PROMPT now instructs the LLM to:
+         - Explain both old and new provisions with separate citations
+         - State the July 1, 2024 cutoff explicitly
+         - Tell the user which act applies to their situation
+
+  NEW  build_synthesis_prompt() injects an era context note when both
+       era types are present in chunks — makes the LLM aware it has
+       paired act sources without any extra pipeline changes.
+
+  NEW  Citation dataclass gains era field (read from chunk metadata).
+
+  FIX  build_citations() now reads category from chunk (was missing).
+
+Everything else (grounding checker, synthesis note, LegalAnswer) unchanged.
 """
 
 import re
@@ -21,19 +31,6 @@ from typing import Optional
 
 @dataclass
 class Citation:
-    """
-    One cited source in a legal answer.
-
-    source_number    — corresponds to [1] / [2] inline markers in answer_text
-    source           — document name  e.g. "Indian Penal Code (IPC)"
-    section          — section number e.g. "420"
-    section_title    — section name   e.g. "Cheating"
-    chapter          — chapter name   e.g. "CHAPTER XVII"
-    preview          — first 200 chars of retrieved chunk text
-    relevance_score  — rerank_score if available, else hybrid_score
-    retrieval_source — "vector" / "bm25" / "both"
-    doc_type         — "statute" / "judgment" / "handbook"
-    """
     source_number:    int
     source:           str
     section:          str            = ""
@@ -43,37 +40,26 @@ class Citation:
     relevance_score:  Optional[float] = None
     retrieval_source: str            = ""
     doc_type:         str            = ""
+    category:         str            = ""
+    era:              str            = ""   # NEW: "legacy" | "current" | ""
 
 
 # ── Structured response ───────────────────────────────────────────────────────
 
 @dataclass
 class LegalAnswer:
-    """
-    Fully structured response returned by the pipeline.
-
-    answer_text       — LLM-generated text with [1][2] inline citations
-    citations         — Citation objects, one per source consulted
-    sources_consulted — count of distinct chunks used
-    synthesis_note    — human-readable note e.g. "Synthesized from 3 sources"
-    grounding_warning — set if hallucination signals detected, else None
-
-    Pipeline metadata (set by RAGPipeline, not synthesizer):
-    rewritten_queries — all queries searched (original + LLM rewrites)
-    reranker_used     — True if NVIDIA API call succeeded
-    """
     answer_text:       str
     citations:         list[Citation] = field(default_factory=list)
     sources_consulted: int            = 0
     synthesis_note:    str            = ""
     grounding_warning: Optional[str]  = None
-    # Set by RAGPipeline after calling synthesize()
     rewritten_queries: list[str]      = field(default_factory=list)
     reranker_used:     bool           = False
 
 
-# ── System prompt ─────────────────────────────────────────────────────────────
+# ── System prompts ────────────────────────────────────────────────────────────
 
+# Standard prompt — used when no paired act chunks present
 SYNTHESIS_SYSTEM_PROMPT = """You are LexShield, an AI legal assistant specialising in Indian law.
 
 You will receive several numbered legal sources retrieved from Indian statutes and court judgments.
@@ -86,9 +72,8 @@ STRICT RULES — follow every one:
 4. If sources address the same offence under both IPC and BNS, explain both and cite each separately.
 5. SECTION NUMBER RULE — THIS IS ABSOLUTE: You may ONLY write a section number if that exact
    number appears in the [SOURCE N] header above. The headers are the ONLY permitted source of
-   section numbers. If you know a related section from your training (e.g. Section 161 CrPC,
-   Section 69 BNS) but it does not appear in any [SOURCE N] header, you MUST NOT write that
-   number. Write the legal concept in plain words instead.
+   section numbers. If you know a related section from your training but it does not appear in
+   any [SOURCE N] header, you MUST NOT write that number. Write the legal concept in plain words.
 6. If the sources do not answer the question, say exactly:
    "The retrieved legal sections do not contain sufficient information to answer this question."
 7. Structure your answer:
@@ -100,14 +85,78 @@ STRICT RULES — follow every one:
 9. Write in plain English that a non-lawyer can understand.
 """
 
+# Paired act prompt — used when both legacy (IPC/CrPC/Evidence Act) and
+# current (BNS/BNSS/BSA) or paired_act chunks are present.
+PAIRED_ACT_SYSTEM_PROMPT = """You are LexShield, an AI legal assistant specialising in Indian law.
+
+You will receive numbered legal sources from BOTH old Indian laws AND their 2023 replacements.
+
+IMPORTANT CONTEXT — Indian Criminal Law Reform (effective July 1, 2024):
+  • Indian Penal Code (IPC) 1860      → replaced by Bharatiya Nyaya Sanhita (BNS) 2023
+  • Code of Criminal Procedure (CrPC) → replaced by Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023
+  • Indian Evidence Act 1872          → replaced by Bharatiya Sakshya Adhiniyam (BSA) 2023
+
+  For offences/cases BEFORE July 1, 2024 → the OLD law (IPC/CrPC/Evidence Act) applies.
+  For offences/cases ON OR AFTER July 1, 2024 → the NEW law (BNS/BNSS/BSA) applies.
+  Old cases already in court continue under the old law even after July 1, 2024.
+
+STRICT RULES — follow every one:
+1. Use ONLY the information in the provided sources. Never add outside knowledge.
+2. Every sentence that states a legal fact MUST end with an inline citation: [1] or [2] or [1][3].
+3. ALWAYS explain BOTH the old law provision AND the new law provision if both are in the sources.
+   Structure it as:
+     "Under the old law (pre-July 2024): ... [SOURCE N]"
+     "Under the new law (post-July 2024): ... [SOURCE N]"
+4. SECTION NUMBER RULE — ABSOLUTE: Only write section numbers that appear in [SOURCE N] headers.
+   Never invent or recall section numbers from training. If you don't see the section number in
+   a header, describe the provision in plain words instead.
+5. End your answer with a brief practical note:
+   "If your matter arose before July 1, 2024, the [old act] applies.
+    If it arose on or after July 1, 2024, the [new act] applies."
+6. Keep the answer between 200 and 400 words.
+7. Write in plain English that a non-lawyer can understand.
+"""
+
+
+# ── Era detection ─────────────────────────────────────────────────────────────
+
+def _has_paired_context(chunks: list[dict]) -> bool:
+    """
+    Returns True if chunks contain BOTH a legacy era chunk AND either a
+    current era chunk or a paired_act retrieval_source chunk.
+    This triggers the paired act system prompt.
+    """
+    has_legacy  = any(c.get("era") == "legacy"  for c in chunks)
+    has_current = any(
+        c.get("era") == "current" or c.get("retrieval_source") == "paired_act"
+        for c in chunks
+    )
+    return has_legacy and has_current
+
+
+def get_system_prompt(chunks: list[dict]) -> str:
+    """Returns the appropriate system prompt based on chunk era composition."""
+    return PAIRED_ACT_SYSTEM_PROMPT if _has_paired_context(chunks) else SYNTHESIS_SYSTEM_PROMPT
+
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
 def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
     """
     Formats retrieved chunks as numbered [SOURCE N] blocks.
-    The numbers here must match [1] [2] citations in the LLM answer.
+    When paired act chunks are present, injects an era context note
+    before the sources block so the LLM knows what it's looking at.
     """
+    # Era context note — only injected when paired chunks are present
+    era_note = ""
+    if _has_paired_context(chunks):
+        era_note = (
+            "[LEGAL ERA CONTEXT]\n"
+            "Sources below include BOTH pre-July 2024 laws (IPC/CrPC/Evidence Act) "
+            "AND post-July 2024 replacement laws (BNS/BNSS/BSA). "
+            "Explain provisions under both. Cutoff: July 1, 2024.\n\n"
+        )
+
     sources_block = ""
     for i, chunk in enumerate(chunks, start=1):
         source        = chunk.get("source",        "Unknown Source")
@@ -115,6 +164,8 @@ def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
         section_title = chunk.get("section_title", "")
         chapter       = chunk.get("chapter",       "")
         text          = chunk.get("text",          "")
+        era           = chunk.get("era",           "")
+        r_source      = chunk.get("retrieval_source", "")
 
         header_parts = [source]
         if chapter:
@@ -124,6 +175,12 @@ def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
             if section_title:
                 sec_label += f" ({section_title})"
             header_parts.append(sec_label)
+
+        # Era label in source header for LLM clarity
+        if era == "legacy":
+            header_parts.append("⟨PRE-JULY 2024 LAW⟩")
+        elif era == "current" or r_source == "paired_act":
+            header_parts.append("⟨POST-JULY 2024 LAW⟩")
 
         header  = " › ".join(header_parts)
         divider = "─" * min(len(header) + 4, 72)
@@ -135,6 +192,7 @@ def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
         )
 
     return (
+        f"{era_note}"
         f"[RETRIEVED LEGAL SOURCES]\n"
         f"{sources_block}\n"
         f"[USER QUESTION]\n"
@@ -143,7 +201,7 @@ def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
         f"Synthesize the above sources to answer the question.\n"
         f"- Cite every legal claim with its [SOURCE NUMBER] inline.\n"
         f"- If multiple sources address the same point, cite all of them.\n"
-        f"- If both IPC and BNS apply, explain both with separate citations.\n"
+        f"- If both old and new law sources are present, explain both separately.\n"
         f"Answer:"
     )
 
@@ -151,7 +209,6 @@ def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
 # ── Citation builder ──────────────────────────────────────────────────────────
 
 def build_citations(chunks: list[dict]) -> list[Citation]:
-    """Converts chunk dicts to Citation objects. source_number matches [SOURCE N]."""
     citations: list[Citation] = []
     for i, chunk in enumerate(chunks, start=1):
         score = (
@@ -178,6 +235,8 @@ def build_citations(chunks: list[dict]) -> list[Citation]:
             relevance_score  = score,
             retrieval_source = chunk.get("retrieval_source", ""),
             doc_type         = chunk.get("doc_type",         ""),
+            category         = chunk.get("category",         ""),   # FIX
+            era              = chunk.get("era",               ""),   # NEW
         ))
     return citations
 
@@ -193,25 +252,21 @@ _HALLUCINATION_SIGNALS = [
 
 
 def check_grounding(answer_text: str, chunks: list[dict]) -> Optional[str]:
-    """
-    Returns a warning string if the answer shows signs of hallucination.
-    Returns None if the answer looks clean.
-    """
     answer_lower = answer_text.lower()
 
-    # Check 1: hedging / generalising phrases
     found = [s for s in _HALLUCINATION_SIGNALS if s in answer_lower]
     if found:
         return f"Answer contains generalising phrases ({found[:2]}). Review for hallucination."
 
-    # Check 2: section numbers in answer not present in any chunk
-    cited_secs = set(re.findall(r'\bSection\s+(\d{2,4}[A-Z]?)\b', answer_text, re.IGNORECASE))
-    available_secs = {str(c.get("section", "")) for c in chunks if c.get("section") and len(str(c.get("section")))>=2}
-    phantom        = cited_secs - available_secs
+    cited_secs     = set(re.findall(r'\bSection\s+(\d{2,4}[A-Z]?)\b', answer_text, re.IGNORECASE))
+    available_secs = {
+        str(c.get("section", "")) for c in chunks
+        if c.get("section") and len(str(c.get("section"))) >= 2
+    }
+    phantom = cited_secs - available_secs
     if phantom:
         return f"Answer cites section(s) {phantom} not found in retrieved sources. Possible hallucination."
 
-    # Check 3: no inline citations in a substantive answer
     inline = re.findall(r'\[\d+\]', answer_text)
     if not inline and len(answer_text) > 100:
         return "No inline [N] citations found. LLM may not have followed synthesis instructions."
@@ -224,16 +279,18 @@ def check_grounding(answer_text: str, chunks: list[dict]) -> Optional[str]:
 def build_synthesis_note(chunks: list[dict]) -> str:
     if not chunks:
         return "No sources consulted."
-    n        = len(chunks)
-    sources  = {c.get("source", "") for c in chunks}
+    n         = len(chunks)
+    sources   = {c.get("source", "") for c in chunks}
     doc_types = {c.get("doc_type", "unknown") for c in chunks}
     type_label = " + ".join(sorted(dt.capitalize() for dt in doc_types if dt))
+    paired     = _has_paired_context(chunks)
+    suffix     = " (includes old + new law comparison)" if paired else ""
     if n == 1:
-        return f"Single source consulted ({type_label})."
+        return f"Single source consulted ({type_label}){suffix}."
     elif len(sources) == 1:
-        return f"Synthesized from {n} sections of {next(iter(sources))}."
+        return f"Synthesized from {n} sections of {next(iter(sources))}{suffix}."
     else:
-        return f"Synthesized from {n} sections across {len(sources)} sources ({type_label})."
+        return f"Synthesized from {n} sections across {len(sources)} sources ({type_label}){suffix}."
 
 
 # ── Main synthesize function ──────────────────────────────────────────────────
@@ -245,16 +302,6 @@ def synthesize(
     rewritten_queries: list[str] = None,
     reranker_used:     bool      = False,
 ) -> LegalAnswer:
-    """
-    Wraps the raw LLM answer into a fully structured LegalAnswer.
-
-    Call from pipeline.py:
-        prompt     = build_synthesis_prompt(query, final_chunks)
-        raw_answer = llm.generate(prompt, system_prompt=SYNTHESIS_SYSTEM_PROMPT, ...)
-        result     = synthesize(query, final_chunks, raw_answer,
-                                rewritten_queries=all_queries,
-                                reranker_used=reranker_used)
-    """
     return LegalAnswer(
         answer_text        = llm_answer.strip(),
         citations          = build_citations(chunks),
