@@ -47,7 +47,7 @@ class DraftState:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _DOC_PATTERNS = [
-    (re.compile(r'\bfir\b|first\s+information\s+report|police\s+complaint', re.IGNORECASE),           "fir"),
+    (re.compile(r'\bfir\b|first\s+information\s+report|police\s+complaint|written\s+complaint\s+to\s+police', re.IGNORECASE), "fir"),
     (re.compile(r'\bcheque\s+bounce\b|section\s+138\b|ni\s+act|negotiable\s+instrument', re.IGNORECASE), "legal_notice_ni"),
     (re.compile(r'\bbreach\s+of\s+contract\b|contract\s+(act|dispute|violation|breach)', re.IGNORECASE), "legal_notice_contract"),
     (re.compile(r'\brental\s+agreement\b|lease\s+agreement\b|landlord|tenant', re.IGNORECASE),         "rental_agreement"),
@@ -55,7 +55,7 @@ _DOC_PATTERNS = [
 ]
 
 _DOC_LABELS = {
-    "fir":                    "FIR (First Information Report) under Section 173 BNSS",
+    "fir":                    "Written Complaint to Police (for FIR Registration under Section 173 BNSS)",
     "legal_notice_ni":        "Legal Notice under Section 138 NI Act (Cheque Bounce)",
     "legal_notice_contract":  "Legal Notice for Breach of Contract",
     "rental_agreement":       "Rental Agreement",
@@ -453,7 +453,7 @@ class DraftingAgent:
         return {
             "answer": (
                 "I can help you draft the following Indian legal documents:\n\n"
-                "• FIR (First Information Report)\n"
+                "• Written Complaint to Police (for FIR registration)\n"
                 "• Legal Notice for Cheque Bounce (Section 138 NI Act)\n"
                 "• Legal Notice for Breach of Contract\n"
                 "• Rental Agreement\n"
