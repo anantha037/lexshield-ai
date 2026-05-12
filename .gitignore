@@ -24,6 +24,7 @@ secrets.json
 data/raw/
 data/processed/
 data/chroma_db/
+data/classifier_samples
 *.csv
 *.pdf
 *.json
