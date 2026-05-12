@@ -74,7 +74,17 @@ def route_by_intent(state: AgentState) -> str:
     """
     Conditional edge function.
     Maps intent → next node name.
+    Active draft sessions always route to draft_node regardless of intent.
     """
+    from agents.drafting_agent import drafting_agent
+
+    session_id = state.get("session_id", "")
+
+    # Active multi-turn draft takes priority over intent classification
+    if drafting_agent.has_active_draft(session_id):
+        print(f"[Graph] route_by_intent → active draft detected → draft_node")
+        return "draft_node"
+
     intent_to_node = {
         "legal_query":          "legal_rag_node",
         "document_analysis":    "document_node",
@@ -199,26 +209,30 @@ def risk_node(state: AgentState) -> dict:
 
 def draft_node(state: AgentState) -> dict:
     """
-    Handles draft_request intent.
-    Stub — DraftingAgent implemented in Day 3.
+    Handles draft_request intent and active multi-turn draft sessions.
+    Calls DraftingAgent which manages stage state internally.
     Writes: result, draft
     """
-    print(f"[Graph] draft_node → stub")
-    answer = (
-        "The drafting agent is being built and will be available shortly. "
-        "Please describe what document you need (e.g. FIR, legal notice, "
-        "rental agreement) and I will draft it for you once ready."
-    )
+    from agents.drafting_agent import drafting_agent
+
+    query      = state.get("query", "")
+    session_id = state.get("session_id", "")
+
+    print(f"[Graph] draft_node → session={session_id[:8]} query={query[:50]!r}")
+
+    draft_result = drafting_agent.handle(query=query, session_id=session_id)
+
     return {
-        "draft":  answer,
+        "draft": draft_result.get("draft", ""),
         "result": {
-            "answer":            answer,
+            "answer":            draft_result["answer"],
             "sources_consulted": 0,
-            "synthesis_note":    "DraftingAgent stub — Day 3",
+            "synthesis_note":    f"DraftingAgent stage={draft_result['stage']} doc_type={draft_result['doc_type']}",
             "grounding_warning": "",
             "rewritten_queries": [],
             "reranker_used":     False,
-            "mode":              "draft_node_stub",
+            "mode":              f"draft_node_stage{draft_result['stage']}",
+            "complete":          draft_result.get("complete", False),
         }
     }
 
