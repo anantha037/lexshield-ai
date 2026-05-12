@@ -30,7 +30,9 @@ app.add_middleware(
 from api.document     import router as document_router
 from api.legal        import router as legal_router
 from api.orchestator  import router as orchestrator_router
-
+from api.classify     import router as classify_router
+    
+app.include_router(classify_router)
 app.include_router(document_router)
 app.include_router(legal_router)
 app.include_router(orchestrator_router)
