@@ -285,7 +285,38 @@ class RAGPipeline:
         # Dedup pinned
         _seen: set[str] = set()
         pinned_chunks = [c for c in pinned_chunks if not (c["chunk_id"] in _seen or _seen.add(c["chunk_id"]))]  # type: ignore[func-returns-value]
-        pinned_ids    = {c["chunk_id"] for c in pinned_chunks}
+
+        # ── Knowledge Graph context injection ──────────────────────────────────
+        # When section fast-path fires, inject related sections as KG context chunk
+        if pinned_chunks:
+            try:
+                from rag.knowledge_graph import get_kg
+                kg    = get_kg()
+                notes = []
+                for sec, hint in extract_sections_and_sources(expanded):
+                    related = kg.query_related_sections(sec, source_hint=hint)
+                    if related:
+                        notes.append(kg.format_context(sec, hint, related))
+                if notes:
+                    pinned_chunks.insert(0, {
+                        "chunk_id":         "_kg_context",
+                        "text":             "\n".join(notes),
+                        "source":           "Knowledge Graph",
+                        "section":          "",
+                        "section_title":    "",
+                        "chapter":          "",
+                        "doc_type":         "system",
+                        "chunk_type":       "kg_context",
+                        "category":         "",
+                        "era":              "",
+                        "hybrid_score":     1.5,
+                        "retrieval_source": "knowledge_graph",
+                    })
+                    print(f"[Pipeline] KG injected: {len(notes)} section(s)")
+            except Exception as e:
+                print(f"[Pipeline] KG injection skipped: {e}")
+
+        pinned_ids = {c["chunk_id"] for c in pinned_chunks}
 
         # Dedup candidates (exclude already-pinned)
         _seen2: set[str] = set()
