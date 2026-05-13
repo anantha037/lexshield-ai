@@ -664,6 +664,106 @@ def eval_drafting_agent_real(all_results: list) -> dict:
     return {"keyword_coverage": kw_score, "length_score": length_score}
 
 
+def eval_structured_output_and_translation(all_results: list) -> dict:
+    print("\n" + "═" * 65)
+    print("DIMENSION 7 — STRUCTURED OUTPUT + TRANSLATION  (automated)")
+    print("═" * 65)
+
+    from rag.structured_output import build_structured_response, _extract_summary, _extract_key_clauses
+    from agents.translation_agent import detect_language, _strip_legal_content
+
+    # ── Structured output field checks ────────────────────────────────────────
+    ANSWER_SAMPLES = [
+        ("Section 302 Indian Penal Code prescribes death or life imprisonment for murder. "
+         "Section 101 BNS is the equivalent under the new law. The court considers rarest of rare cases. [1][2]",
+         "legal_query", ["Section 302", "Section 101", "BNS", "Indian Penal Code"]),
+        ("Section 138 NI Act makes cheque bounce a criminal offence punishable with "
+         "imprisonment up to 2 years or fine or both. [1]",
+         "risk_check", ["Section 138", "NI Act"]),
+        ("Your rental agreement contains a clause on maintenance. "
+         "Review Section 108 Transfer of Property Act for landlord obligations. [1]",
+         "document_analysis", ["Section 108", "Transfer of Property Act"]),
+        ("Hello! I am LexShield AI. I help with Indian legal questions.",
+         "general", []),
+        ("The drafting agent is being built.", "draft_request", []),
+    ]
+
+    field_scores  = []
+    clause_scores = []
+
+    print(f"\n  Structured Output — Field Population:")
+    for answer, intent, exp_clauses in ANSWER_SAMPLES:
+        resp = build_structured_response(
+            answer_text = answer,
+            intent      = intent,
+            session_id  = "eval",
+            confidence  = 0.9,
+            mode        = "test",
+        )
+        d = resp.to_dict()
+
+        required = ["answer_text", "summary", "key_clauses", "suggestions",
+                    "risk", "citations", "intent", "session_id"]
+        populated = sum(1 for f in required if d.get(f) is not None)
+        field_scores.append(populated / len(required))
+
+        summary_ok  = len(resp.summary) > 0
+        risk_ok     = 0.0 <= resp.risk_score <= 1.0
+        suggest_ok  = len(resp.suggestions) > 0
+
+        mark = "✓" if (summary_ok and risk_ok and suggest_ok) else "~"
+        print(f"  {mark}  [{intent:20}] fields={populated}/{len(required)} "
+              f"summary={'✓' if summary_ok else '✗'} "
+              f"risk={'✓' if risk_ok else '✗'} "
+              f"suggest={'✓' if suggest_ok else '✗'}")
+
+        # Clause extraction check
+        if exp_clauses:
+            clauses = _extract_key_clauses(answer, citations=[])
+            hits    = sum(1 for ec in exp_clauses
+                         if any(ec.lower() in c.lower() for c in clauses))
+            clause_scores.append(hits / len(exp_clauses))
+
+    avg_fields  = sum(field_scores)  / len(field_scores)  * 100
+    avg_clauses = sum(clause_scores) / len(clause_scores)  * 100 if clause_scores else 0.0
+
+    print(f"\n  Avg field population   : {avg_fields:.1f}%")
+    print(f"  Avg clause extraction  : {avg_clauses:.1f}%")
+
+    # ── Translation language detection ────────────────────────────────────────
+    LANG_CASES = [
+        ("What is Section 302 IPC?",                      True,  None,         None),
+        ("Explain Section 138 in Malayalam",              True,  None,         "Malayalam"),
+        ("Translate this to Hindi: What is bail?",        True,  None,         "Hindi"),
+        ("வகுப்பு 302 ஐபிசி என்ன?",                      False, "Tamil",      None),
+        ("धारा 302 आईपीसी क्या है?",                       False, "Hindi",      None),
+        ("വകുപ്പ് 138 NI ആക്ട് എന്താണ്?",                False, "Malayalam",  None),
+        ("Explain bail in Kannada",                       True,  None,         "Kannada"),
+        ("Section 302 IPC punishment explain in Telugu",  True,  None,         "Telugu"),
+    ]
+
+    print(f"\n  Translation Detection (n={len(LANG_CASES)}):")
+    lang_hits = 0
+    for query, exp_eng, exp_script, exp_target in LANG_CASES:
+        r  = detect_language(query)
+        ok = (r.is_english == exp_eng and
+              r.detected_script == exp_script and
+              r.target_language == exp_target)
+        lang_hits += int(ok)
+        mark = "✓" if ok else "✗"
+        print(f"  {mark}  is_eng={r.is_english} script={r.detected_script} "
+              f"target={r.target_language}  {query[:40]!r}")
+
+    lang_score = lang_hits / len(LANG_CASES) * 100
+    print(f"\n  Language Detection Accuracy : {lang_score:.1f}%  ({lang_hits}/{len(LANG_CASES)})")
+
+    overall = (avg_fields + avg_clauses + lang_score) / 3
+    all_results.append(("Structured Output Field Population", round(avg_fields, 1)))
+    all_results.append(("Clause Extraction Accuracy",         round(avg_clauses, 1)))
+    all_results.append(("Translation Detection Accuracy",     round(lang_score, 1)))
+    return {"fields": avg_fields, "clauses": avg_clauses, "lang": lang_score}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # REPORT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -737,5 +837,6 @@ if __name__ == "__main__":
     eval_rag_grounding(all_results)          # Real Groq calls (~10 queries)
     eval_rag_answer_quality(all_results)     # Real Gemini calls (~5 queries)
     eval_drafting_agent_real(all_results)    # Real Gemini calls (~2 drafts)
+    eval_structured_output_and_translation(all_results)
 
     write_final_report(all_results, time.time() - t0)
