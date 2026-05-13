@@ -244,25 +244,27 @@ def draft_node(state: AgentState) -> dict:
 def translation_node(state: AgentState) -> dict:
     """
     Handles translation_request intent.
-    Stub — MultilingualAgent implemented in Day 4-5.
+    Uses TranslationAgent: detect language → RAG → translate back.
     Writes: result, language
     """
-    print(f"[Graph] translation_node → stub")
-    answer = (
-        "The multilingual translation agent is being built and will be "
-        "available shortly. It will support Malayalam, Hindi, Tamil, "
-        "Telugu, Kannada and other Indian languages."
-    )
+    from agents.translation_agent import translation_agent
+
+    query      = state.get("query", "")
+    session_id = state.get("session_id", "")
+
+    print(f"[Graph] translation_node → processing translation request")
+    t_result = translation_agent.handle(query=query, session_id=session_id)
+
     return {
-        "language": "",
-        "result":   {
-            "answer":            answer,
-            "sources_consulted": 0,
-            "synthesis_note":    "MultilingualAgent stub — Day 4-5",
-            "grounding_warning": "",
-            "rewritten_queries": [],
-            "reranker_used":     False,
-            "mode":              "translation_node_stub",
+        "language": t_result.get("target_language", ""),
+        "result": {
+            "answer":            t_result["answer"],
+            "sources_consulted": t_result.get("sources_consulted", 0),
+            "synthesis_note":    t_result.get("synthesis_note", ""),
+            "grounding_warning": t_result.get("grounding_warning", ""),
+            "rewritten_queries": t_result.get("rewritten_queries", []),
+            "reranker_used":     t_result.get("reranker_used", False),
+            "mode":              t_result.get("mode", "translation_node"),
         }
     }
 
