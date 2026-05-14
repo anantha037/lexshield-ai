@@ -38,6 +38,7 @@ tmp/
 temp_*.jpg
 sample_order.jpg
 tests/sample_legal.jpg
+tests/eval_results
 
 # =========================
 # 5. OS & Editor Junk
