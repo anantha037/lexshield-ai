@@ -1,6 +1,14 @@
 """
-LexShield AI — Query Rewriter  (Week 2, Day 2)
-===============================================
+LexShield AI — Query Rewriter  (Week 2, Day 2 — updated Week 3)
+================================================================
+Changes in this version:
+  + decompose_query(query) added for complex multi-act queries
+    Called by pipeline.py when adaptive_router returns "complex".
+    Breaks the query into 2-3 independent sub-queries via Groq.
+    Returns list[str] — each sub-query focuses on one act / concept.
+
+Everything else is unchanged from the Week 2 version.
+
 Takes one user query → generates 3 rewritten queries covering different
 legal angles → caller runs hybrid search on all 4 (original + 3 rewrites)
 → deduplicated result pool goes to reranker.
@@ -21,7 +29,7 @@ import json
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-from rag.llm import llm  # LegalLLM singleton (Week 1, unchanged)
+from rag.llm import llm
 
 # ── Rewriter system prompt ────────────────────────────────────────────────────
 REWRITER_SYSTEM = """You are a legal search query optimizer specializing in Indian law.
@@ -49,35 +57,52 @@ Generate 3 alternative search queries covering:
 
 Return ONLY a JSON array of 3 strings."""
 
+# ── Decomposer system prompt ──────────────────────────────────────────────────
+_DECOMPOSE_SYSTEM = (
+    "You are an Indian legal query decomposer. "
+    "Your job is to break a complex multi-act legal question into independent "
+    "sub-queries that can each be retrieved separately from a legal database. "
+    "Each sub-query must focus on exactly one act or one legal concept. "
+    "Return ONLY a valid JSON array of 2-3 strings. "
+    "No markdown, no explanation, no preamble."
+)
+
+_DECOMPOSE_USER_TEMPLATE = """\
+Complex legal query: {query}
+
+Break this into 2-3 independent sub-queries.
+Rules:
+- Each sub-query must focus on ONE act or ONE legal concept
+- Sub-queries must together cover the full intent of the original query
+- Use specific section numbers and act names where present in the original
+- Keep each sub-query under 25 words
+
+Return ONLY a JSON array:
+["sub-query about act 1 / concept 1", "sub-query about act 2 / concept 2"]
+"""
+
 
 # ── Query angle injectors ─────────────────────────────────────────────────────
-# For known patterns, add a guaranteed statutory angle even before LLM call.
-# This ensures BNS/IPC parallel coverage for criminal law queries.
-
 BNS_IPC_PAIRS: dict[str, str] = {
-    "murder":          "Section 302 IPC Section 101 BNS punishment",
-    "cheating":        "Section 420 IPC Section 318 BNS fraud",
-    "theft":           "Section 378 IPC Section 303 BNS stealing",
-    "assault":         "Section 351 IPC Section 130 BNS hurt grievous",
-    "rape":            "Section 376 IPC Section 63 BNS sexual assault",
-    "kidnapping":      "Section 359 IPC Section 137 BNS abduction",
-    "extortion":       "Section 383 IPC Section 308 BNS coercion",
-    "defamation":      "Section 499 IPC Section 356 BNS reputation",
-    "sedition":        "Section 124A IPC Section 152 BNS",
-    "forgery":         "Section 463 IPC Section 334 BNS",
-    "bribery":         "Prevention of Corruption Act Section 7 bribe",
-    "eviction":        "tenant eviction grounds notice period procedure",
-    "bail":            "bail non-bailable bailable Section 437 CrPC",
-    "fir":             "First Information Report Section 154 CrPC registration",
-    "consumer":        "Consumer Protection Act complaint forum redressal",
+    "murder":      "Section 302 IPC Section 101 BNS punishment",
+    "cheating":    "Section 420 IPC Section 318 BNS fraud",
+    "theft":       "Section 378 IPC Section 303 BNS stealing",
+    "assault":     "Section 351 IPC Section 130 BNS hurt grievous",
+    "rape":        "Section 376 IPC Section 63 BNS sexual assault",
+    "kidnapping":  "Section 359 IPC Section 137 BNS abduction",
+    "extortion":   "Section 383 IPC Section 308 BNS coercion",
+    "defamation":  "Section 499 IPC Section 356 BNS reputation",
+    "sedition":    "Section 124A IPC Section 152 BNS",
+    "forgery":     "Section 463 IPC Section 334 BNS",
+    "bribery":     "Prevention of Corruption Act Section 7 bribe",
+    "eviction":    "tenant eviction grounds notice period procedure",
+    "bail":        "bail non-bailable bailable Section 437 CrPC",
+    "fir":         "First Information Report Section 154 CrPC registration",
+    "consumer":    "Consumer Protection Act complaint forum redressal",
 }
 
 
 def _get_statutory_hint(query: str) -> str | None:
-    """
-    Returns a pre-built statutory angle string if query matches a known topic.
-    Used as a guaranteed 4th query to ensure statutory coverage.
-    """
     q_lower = query.lower()
     for keyword, hint in BNS_IPC_PAIRS.items():
         if keyword in q_lower:
@@ -85,18 +110,16 @@ def _get_statutory_hint(query: str) -> str | None:
     return None
 
 
-# ── JSON parser ───────────────────────────────────────────────────────────────
+# ── JSON parser (shared) ──────────────────────────────────────────────────────
 
-def _parse_rewritten_queries(raw: str) -> list[str]:
+def _parse_json_array(raw: str) -> list[str]:
     """
-    Parses LLM output into a list of query strings.
+    Parses LLM output into a list of strings.
     Tries JSON first, falls back to line-by-line extraction.
+    Used by both rewrite() and decompose_query().
     """
-    # Strip markdown fences if present
-    cleaned = re.sub(r'```(?:json)?', '', raw).strip()
-    cleaned = cleaned.strip('`').strip()
+    cleaned = re.sub(r"```(?:json)?", "", raw).strip().strip("`").strip()
 
-    # Try direct JSON parse
     try:
         parsed = json.loads(cleaned)
         if isinstance(parsed, list):
@@ -104,8 +127,7 @@ def _parse_rewritten_queries(raw: str) -> list[str]:
     except json.JSONDecodeError:
         pass
 
-    # Try to find a JSON array anywhere in the text
-    array_match = re.search(r'\[.*?\]', cleaned, re.DOTALL)
+    array_match = re.search(r"\[.*?\]", cleaned, re.DOTALL)
     if array_match:
         try:
             parsed = json.loads(array_match.group())
@@ -114,23 +136,79 @@ def _parse_rewritten_queries(raw: str) -> list[str]:
         except json.JSONDecodeError:
             pass
 
-    # Line-by-line fallback — extract quoted strings or numbered lines
+    # Line-by-line fallback
     queries = []
     for line in cleaned.splitlines():
-        line = line.strip()
-        # Remove leading numbers/bullets: "1.", "•", "-"
-        line = re.sub(r'^[\d\.\-\•\*]+\s*', '', line)
-        # Extract content from quotes if present
+        line = re.sub(r"^[\d\.\-\•\*]+\s*", "", line.strip())
         quoted = re.findall(r'"([^"]{10,})"', line)
         if quoted:
             queries.extend(quoted)
-        elif len(line) > 10 and len(line) < 120:
+        elif 10 < len(line) < 120:
             queries.append(line)
+    return [q.strip() for q in queries if q.strip()]
 
-    return [q.strip() for q in queries if q.strip()][:3]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# QUERY DECOMPOSER  (new — Week 3)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def decompose_query(query: str) -> list[str]:
+    """
+    Breaks a complex multi-act query into 2-3 independent sub-queries.
+
+    Called by pipeline.py ONLY when adaptive_router returns "complex".
+    Each sub-query is retrieved independently via hybrid_search, then the
+    chunk pools are merged and de-duplicated before the synthesizer.
+
+    Args:
+        query: The original (possibly preprocessed) user query.
+
+    Returns:
+        list[str] of 2-3 sub-queries.  Always returns at least [query]
+        on failure so the pipeline always has something to retrieve with.
+
+    Token cost: one Groq call (~150 tokens) — only on complex queries.
+    """
+    query = query.strip()
+    if not query:
+        return [query]
+
+    try:
+        prompt = _DECOMPOSE_USER_TEMPLATE.format(query=query)
+        raw    = llm.generate(
+            prompt=prompt,
+            system_prompt=_DECOMPOSE_SYSTEM,
+            temperature=0.1,   # low temp — want deterministic decomposition
+            max_tokens=200,
+        )
+        sub_queries = _parse_json_array(raw)
+
+        # Filter: must be non-trivial (>10 chars) and different from original
+        original_lower = query.lower()
+        cleaned = [
+            sq for sq in sub_queries
+            if len(sq) > 10 and sq.lower() != original_lower
+        ]
+
+        if len(cleaned) < 2:
+            # Decomposition returned garbage — fall back to original
+            print(f"[QueryDecomposer] Decomposition insufficient ({cleaned!r}) — using original")
+            return [query]
+
+        print(f"[QueryDecomposer] Decomposed into {len(cleaned)} sub-queries:")
+        for i, sq in enumerate(cleaned, 1):
+            print(f"  [{i}] {sq}")
+
+        return cleaned[:3]   # cap at 3 sub-queries
+
+    except Exception as exc:
+        print(f"[QueryDecomposer] Failed ({exc}) — returning original query")
+        return [query]
 
 
-# ── Query rewriter class ──────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# QUERY REWRITER  (unchanged from Week 2)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class QueryRewriter:
     """
@@ -155,13 +233,9 @@ class QueryRewriter:
         if not query:
             return [query]
 
-        # Start with original
         all_queries: list[str] = [query]
-
-        # Add statutory hint if topic is recognised (guaranteed coverage)
         hint = _get_statutory_hint(query)
 
-        # Generate LLM rewrites
         try:
             prompt = REWRITER_USER_TEMPLATE.format(query=query)
             raw    = llm.generate(
@@ -170,9 +244,8 @@ class QueryRewriter:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-            rewrites = _parse_rewritten_queries(raw)
+            rewrites = _parse_json_array(raw)
 
-            # Deduplicate against original (case-insensitive)
             seen = {query.lower()}
             for r in rewrites:
                 if r.lower() not in seen and len(r) > 5:
@@ -182,14 +255,12 @@ class QueryRewriter:
         except Exception as e:
             print(f"[QueryRewriter] LLM call failed: {e} — using original query only.")
 
-        # Add statutory hint if not already covered
         if hint and hint.lower() not in {q.lower() for q in all_queries}:
             all_queries.append(hint)
 
-        return all_queries  # [original, rewrite1, rewrite2, rewrite3, (hint)]
+        return all_queries
 
     def rewrite_explain(self, query: str) -> None:
-        """Debug: prints all generated queries."""
         queries = self.rewrite(query)
         print(f"\n[QueryRewriter] Input: '{query}'")
         print(f"[QueryRewriter] Generated {len(queries)} queries:")
@@ -198,5 +269,5 @@ class QueryRewriter:
             print(f"  [{tag}]  {q}")
 
 
-# ── Singleton ─────────────────────────────────────────────────────────────────
+# ── Singletons ─────────────────────────────────────────────────────────────────
 query_rewriter = QueryRewriter()
