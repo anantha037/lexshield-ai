@@ -1,22 +1,32 @@
 """
 LexShield AI — RAG Pipeline
 =================================================================
-Changes in this version:
+Week 3 additions (wired in this version):
 
-  Uses act_resolver for section pinning — same fix as hybrid_search.
-  Section fast-path in pipeline._run() now calls
-  act_resolver.resolve_section_source() instead of relying on
-  extract_sections_and_sources() from hybrid_search for pinning
-  (hybrid_search already uses it; pipeline's own pin step now also does).
+  1. Adaptive RAG Router (rag/adaptive_router.py)
+     First step in _run().  Classifies query as simple/moderate/complex.
+     simple   → section fast-path only, skip BM25 + rewriter + CRAG
+     moderate → BM25 + vector + reranker, skip rewriter
+     complex  → full pipeline + query rewriter + CRAG + decomposition
 
-  Retrieval priority order:
-    1. Exact act + exact section   (hard-pinned, act_resolver resolved)
-    2. Exact act + semantic        (soft-pinned paired act)
-    3. Semantic act + exact section (ambiguous candidates → reranker)
-    4. Global hybrid fallback      (vector + BM25, no filter)
+  2. Multi-hop Query Decomposition (rag/query_rewriter.decompose_query)
+     Only fires when complexity == "complex".
+     Breaks query into 2-3 sub-queries, retrieves each independently,
+     merges + deduplicates chunk pools, labels them in the synthesizer.
 
-  All previous fixes (FIX-9 ambiguous candidates, auto-category,
-  dual search, soft-pinned paired act) retained unchanged.
+  3. CRAG Self-Correction (rag/crag.py)
+     Fires after initial retrieval on moderate/complex queries.
+     score >= 4 → proceed to synthesizer
+     score 2-3  → rewrite + re-retrieve once
+     score == 1 → return low-confidence grounded response immediately
+
+  AgentState field written by pipeline:
+     rag_grade: "good" | "poor"  (set in legal_rag_node / risk_check_node
+                                   in agents/graph.py from LegalAnswer)
+
+  All previous logic (FIX-9 ambiguous candidates, section fast-path,
+  act_resolver, dual search, soft-pinned paired act, KG injection,
+  section safety fallback) retained unchanged.
 """
 
 import os
@@ -28,11 +38,13 @@ os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 from rag.llm               import llm
 from rag.hybrid_search     import hybrid_searcher, extract_sections_and_sources
-from rag.query_rewriter    import query_rewriter
+from rag.query_rewriter    import query_rewriter, decompose_query
 from rag.reranker          import reranker
 from rag.vectorstore       import vectorstore
 from rag.act_resolver      import act_resolver
 from rag.category_detector import category_detector, CONFIDENCE_HIGH, CONFIDENCE_MED
+from rag.adaptive_router   import classify_query_complexity
+from rag.crag              import evaluate_retrieval
 from rag.synthesizer       import (
     build_synthesis_prompt,
     get_system_prompt,
@@ -78,9 +90,17 @@ def detect_paired_act(query_lower: str) -> Optional[str]:
     return None
 
 
-def get_paired_chunks(expanded_query: str, paired_source: str, n: int = PAIRED_ACT_MAX_CHUNKS) -> list[dict]:
-    topic_query = re.sub(r'\bSection\s+\d+[A-Z]?\b', '', expanded_query, flags=re.IGNORECASE).strip() or expanded_query
-    chunks = vectorstore.search_by_source(query=topic_query, source_partial=paired_source, n_results=n)
+def get_paired_chunks(
+    expanded_query: str,
+    paired_source: str,
+    n: int = PAIRED_ACT_MAX_CHUNKS,
+) -> list[dict]:
+    topic_query = re.sub(
+        r'\bSection\s+\d+[A-Z]?\b', '', expanded_query, flags=re.IGNORECASE
+    ).strip() or expanded_query
+    chunks = vectorstore.search_by_source(
+        query=topic_query, source_partial=paired_source, n_results=n
+    )
     for c in chunks:
         c["retrieval_source"] = "paired_act"
         c["hybrid_score"]     = 0.5
@@ -177,9 +197,13 @@ def preprocess_query(query: str) -> str:
     q = _MVA_RE.sub("Motor Vehicles Act", q)
 
     def expand_section(m: re.Match) -> str:
-        num     = m.group(1)
-        raw_act = m.group(2).upper().replace(" ", "")
-        act_name = _SECTION_ACT_MAP.get(m.group(2).upper()) or _SECTION_ACT_MAP.get(raw_act) or m.group(2).upper()
+        num      = m.group(1)
+        raw_act  = m.group(2).upper().replace(" ", "")
+        act_name = (
+            _SECTION_ACT_MAP.get(m.group(2).upper())
+            or _SECTION_ACT_MAP.get(raw_act)
+            or m.group(2).upper()
+        )
         return f"Section {num} {act_name}"
 
     q = SECTION_RE.sub(expand_section, q)
@@ -199,12 +223,76 @@ def deduplicate_chunks(all_results: list[list[dict]]) -> list[dict]:
     return sorted(best.values(), key=lambda x: x.get("hybrid_score", 0.0), reverse=True)
 
 
-def _hybrid_search_multi(queries: list[str], n_results: int, category_filter: Optional[str]) -> list[dict]:
+def _hybrid_search_multi(
+    queries: list[str],
+    n_results: int,
+    category_filter: Optional[str],
+) -> list[dict]:
     return deduplicate_chunks([
         hybrid_searcher.search(q, n_results=n_results, category_filter=category_filter)
         for q in queries
     ])
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MULTI-HOP RETRIEVAL HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _retrieve_for_subquery(
+    sub_query: str,
+    n_results: int,
+    category_filter: Optional[str],
+    label: str,
+) -> list[dict]:
+    """
+    Run hybrid search for a single sub-query and tag each chunk with its
+    sub-query label so the synthesizer can present labeled context blocks.
+    """
+    chunks = hybrid_searcher.search(
+        sub_query, n_results=n_results, category_filter=category_filter
+    )
+    for c in chunks:
+        c["subquery_label"] = label
+    return chunks
+
+
+def _build_labeled_synthesis_prompt(
+    expanded_query: str,
+    subquery_pools: list[tuple[str, list[dict]]],
+    all_chunks: list[dict],
+) -> str:
+    """
+    Builds a synthesis prompt with labeled context blocks per sub-query.
+    Falls back to the standard build_synthesis_prompt if no sub-queries.
+    """
+    if not subquery_pools:
+        return build_synthesis_prompt(expanded_query, all_chunks)
+
+    sections = []
+    for label, chunks in subquery_pools:
+        if not chunks:
+            continue
+        chunk_texts = "\n\n".join(
+            f"[Source: {c.get('source','?')[:40]} §{c.get('section','')}]\n"
+            f"{c.get('text','')[:600]}"
+            for c in chunks[:3]
+        )
+        sections.append(f"Context for {label}:\n{chunk_texts}")
+
+    labeled_context = "\n\n" + ("\n\n" + "─" * 60 + "\n\n").join(sections)
+
+    return (
+        f"Answer the following complex legal query using the labeled context blocks below.\n"
+        f"Query: {expanded_query}\n\n"
+        f"{labeled_context}\n\n"
+        f"Provide a comprehensive answer addressing ALL parts of the query. "
+        f"Cite the specific acts and sections from the relevant context block."
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class RAGPipeline:
 
@@ -226,18 +314,38 @@ class RAGPipeline:
         self.enable_rewriting = enable_rewriting
         self.enable_reranking = enable_reranking
 
-    def query(self, user_query: str, n_results: Optional[int] = None, category_filter: Optional[str] = None) -> LegalAnswer:
+    def query(
+        self,
+        user_query:      str,
+        n_results:       Optional[int] = None,
+        category_filter: Optional[str] = None,
+    ) -> LegalAnswer:
         try:
             return self._run(user_query, n_results or self.n_final, category_filter)
         except Exception as e:
             import traceback; traceback.print_exc()
-            return LegalAnswer(answer_text="An internal error occurred. Please try again.",
-                               sources_consulted=0, synthesis_note="Pipeline error.", grounding_warning=str(e))
+            return LegalAnswer(
+                answer_text="An internal error occurred. Please try again.",
+                sources_consulted=0,
+                synthesis_note="Pipeline error.",
+                grounding_warning=str(e),
+            )
 
-    def _run(self, user_query: str, n_final: int, category_filter: Optional[str] = None) -> LegalAnswer:
+    def _run(
+        self,
+        user_query:      str,
+        n_final:         int,
+        category_filter: Optional[str] = None,
+    ) -> LegalAnswer:
 
         expanded      = preprocess_query(user_query)
         paired_source = detect_paired_act(expanded.lower())
+
+        # ── STEP 0: Adaptive complexity routing ────────────────────────────────
+        complexity = classify_query_complexity(expanded)
+        # pipeline_depth is used by graph.py node (stored in AgentState)
+        # Here we just use it to control which steps fire.
+        print(f"[Pipeline] complexity={complexity!r}")
 
         # ── Auto category (hybrid keyword + semantic) ─────────────────────────
         auto_category:    Optional[str] = None
@@ -254,15 +362,11 @@ class RAGPipeline:
             else:
                 print(f"[Pipeline] Auto-category LOW: conf={auto_confidence:.2f} → global")
 
-        # ── Section fast-path with act_resolver (FIX-9 + FIX-10) ─────────────
-        # Priority 1: act_resolver resolves source_hint (longest-match-first)
-        # Three-way split: hard-pin / soft-candidate / ambiguous-reranker
+        # ── Section fast-path (always runs — priority 1 in all complexity tiers)
         pinned_chunks:      list[dict] = []
         section_candidates: list[dict] = []
 
         for sec, hint in extract_sections_and_sources(expanded):
-            # Re-resolve using act_resolver directly on the expanded query
-            # (extract_sections_and_sources already uses it, but we log here)
             hits = vectorstore.get_by_section(sec, hint)
             if hits and effective_filter:
                 hits = [h for h in hits if h.get("category", "") == effective_filter]
@@ -284,41 +388,40 @@ class RAGPipeline:
 
         # Dedup pinned
         _seen: set[str] = set()
-        pinned_chunks = [c for c in pinned_chunks if not (c["chunk_id"] in _seen or _seen.add(c["chunk_id"]))]  # type: ignore[func-returns-value]
+        pinned_chunks = [
+            c for c in pinned_chunks
+            if not (c["chunk_id"] in _seen or _seen.add(c["chunk_id"]))  # type: ignore[func-returns-value]
+        ]
 
-        # ── Knowledge Graph context injection ──────────────────────────────────
-        # When section fast-path fires, inject related sections as KG context chunk
-        if pinned_chunks:
-            try:
-                from rag.knowledge_graph import get_kg
-                kg    = get_kg()
-                notes = []
-                for sec, hint in extract_sections_and_sources(expanded):
-                    related = kg.query_related_sections(sec, source_hint=hint)
-                    if related:
-                        notes.append(kg.format_context(sec, hint, related))
-                if notes:
-                    pinned_chunks.insert(0, {
-                        "chunk_id":         "_kg_context",
-                        "text":             "\n".join(notes),
-                        "source":           "Knowledge Graph",
-                        "section":          "",
-                        "section_title":    "",
-                        "chapter":          "",
-                        "doc_type":         "system",
-                        "chunk_type":       "kg_context",
-                        "category":         "",
-                        "era":              "",
-                        "hybrid_score":     1.5,
-                        "retrieval_source": "knowledge_graph",
-                    })
-                    print(f"[Pipeline] KG injected: {len(notes)} section(s)")
-            except Exception as e:
-                print(f"[Pipeline] KG injection skipped: {e}")
+        # ── SIMPLE path: section fast-path is sufficient, skip heavy retrieval ─
+        # Only use simple path when fast-path actually found pinned chunks.
+        if complexity == "simple" and pinned_chunks:
+            print("[Pipeline] simple path — using section fast-path only")
+            # Still inject KG context and paired act if available
+            self._inject_kg(pinned_chunks, expanded)
+            soft_pinned = []
+            if paired_source:
+                paired_all = get_paired_chunks(expanded, paired_source)
+                if paired_all:
+                    soft_pinned = [paired_all[0]]
+            final_chunks = (pinned_chunks + soft_pinned)[:n_final]
+            system_prompt = get_system_prompt(final_chunks)
+            prompt        = build_synthesis_prompt(expanded, final_chunks)
+            raw_answer    = llm.generate(
+                prompt=prompt, system_prompt=system_prompt,
+                temperature=self.temperature, max_tokens=self.max_tokens,
+            )
+            return synthesize(
+                query=user_query, chunks=final_chunks, llm_answer=raw_answer,
+                rewritten_queries=[expanded], reranker_used=False,
+            )
+
+        # ── Knowledge Graph injection ─────────────────────────────────────────
+        self._inject_kg(pinned_chunks, expanded)
 
         pinned_ids = {c["chunk_id"] for c in pinned_chunks}
 
-        # Dedup candidates (exclude already-pinned)
+        # Dedup candidates
         _seen2: set[str] = set()
         section_candidates = [
             c for c in section_candidates
@@ -333,16 +436,47 @@ class RAGPipeline:
             paired_all = get_paired_chunks(expanded, paired_source)
             if paired_all:
                 soft_pinned = [paired_all[0]]
-                print(f"[Pipeline] Soft-pinned paired: section={soft_pinned[0].get('section','?')} source={soft_pinned[0].get('source','?')[:40]}")
+                print(f"[Pipeline] Soft-pinned paired: section={soft_pinned[0].get('section','?')} "
+                      f"source={soft_pinned[0].get('source','?')[:40]}")
 
         soft_pinned_ids  = {c["chunk_id"] for c in soft_pinned}
         all_reserved_ids = pinned_ids | soft_pinned_ids
 
-        # ── Query rewriting ───────────────────────────────────────────────────
-        rewritten   = query_rewriter.rewrite(expanded) if self.enable_rewriting else []
-        all_queries = [expanded] + [q for q in rewritten if q != expanded]
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 1: COMPLEX PATH — Multi-hop decomposition
+        # ═══════════════════════════════════════════════════════════════════════
+        subquery_pools:    list[tuple[str, list[dict]]] = []
+        decomposed_chunks: list[dict]                   = []
 
-        # ── Three-tier hybrid retrieval ───────────────────────────────────────
+        if complexity == "complex":
+            print("[Pipeline] complex path — decomposing query")
+            sub_queries = decompose_query(expanded)
+
+            if len(sub_queries) >= 2:
+                for i, sq in enumerate(sub_queries, 1):
+                    label  = f"Sub-query {i}"
+                    chunks = _retrieve_for_subquery(
+                        sq, self.n_retrieve, effective_filter, label
+                    )
+                    subquery_pools.append((label, chunks))
+                    decomposed_chunks.extend(chunks)
+
+                # Deduplicate decomposed pool
+                decomposed_chunks = deduplicate_chunks([decomposed_chunks])
+                print(f"[Pipeline] decomposed pool: {len(decomposed_chunks)} unique chunks")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 2: Query rewriting (moderate + complex only)
+        # ═══════════════════════════════════════════════════════════════════════
+        if complexity in ("moderate", "complex") and self.enable_rewriting:
+            rewritten   = query_rewriter.rewrite(expanded)
+            all_queries = [expanded] + [q for q in rewritten if q != expanded]
+        else:
+            all_queries = [expanded]
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 3: Hybrid retrieval
+        # ═══════════════════════════════════════════════════════════════════════
         if effective_filter:
             merged_free = _hybrid_search_multi(all_queries, self.n_retrieve, effective_filter)
         elif auto_category and auto_confidence >= CONFIDENCE_MED:
@@ -353,14 +487,19 @@ class RAGPipeline:
         else:
             merged_free = _hybrid_search_multi(all_queries, self.n_retrieve, None)
 
-        # Remove all reserved from free pool
+        # Merge decomposed chunks into free pool
+        if decomposed_chunks:
+            existing_ids = {c["chunk_id"] for c in merged_free}
+            extra = [c for c in decomposed_chunks if c["chunk_id"] not in existing_ids]
+            merged_free = merged_free + extra
+
+        # Remove reserved from free pool
         merged_free = [
             c for c in merged_free
             if c["chunk_id"] not in all_reserved_ids
             and c["chunk_id"] not in section_candidate_ids
         ]
 
-        # Combine section candidates + free pool sorted by score
         combined_free = section_candidates + merged_free
         combined_free.sort(key=lambda x: x.get("hybrid_score", 0.0), reverse=True)
         merged = pinned_chunks + combined_free
@@ -370,9 +509,11 @@ class RAGPipeline:
         if any(act in q_lower for act in OUT_OF_CORPUS_ACTS):
             merged.insert(0, {
                 "chunk_id": "_corpus_warning",
-                "text": ("NOTE: The legal corpus may not contain the specific Act directly "
-                         "relevant to this query. Base your answer only on available sources "
-                         "and explicitly state this limitation."),
+                "text": (
+                    "NOTE: The legal corpus may not contain the specific Act directly "
+                    "relevant to this query. Base your answer only on available sources "
+                    "and explicitly state this limitation."
+                ),
                 "source": "System", "section": "", "section_title": "", "chapter": "",
                 "doc_type": "system", "chunk_type": "warning", "category": "", "era": "",
                 "hybrid_score": 2.0, "retrieval_source": "system",
@@ -380,27 +521,86 @@ class RAGPipeline:
 
         if not merged and not soft_pinned:
             return LegalAnswer(
-                answer_text=("The retrieved legal sections do not contain sufficient information "
-                             "to answer this question. Please consult a qualified legal professional."),
-                sources_consulted=0, synthesis_note="No sources retrieved.",
-                grounding_warning="No chunks matched the query.", rewritten_queries=all_queries, reranker_used=False,
+                answer_text=(
+                    "The retrieved legal sections do not contain sufficient information "
+                    "to answer this question. Please consult a qualified legal professional."
+                ),
+                sources_consulted=0,
+                synthesis_note="No sources retrieved.",
+                grounding_warning="No chunks matched the query.",
+                rewritten_queries=all_queries,
+                reranker_used=False,
             )
 
-        # ── Rerank free pool ──────────────────────────────────────────────────
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 4: CRAG evaluation (moderate + complex only)
+        # ═══════════════════════════════════════════════════════════════════════
+        rag_grade      = "good"
+        crag_triggered = False
+
+        if complexity in ("moderate", "complex"):
+            eval_chunks = [
+                c for c in merged[:N_RERANKER_INPUT]
+                if c.get("chunk_id", "").startswith("_") is False
+            ]
+            crag_result = evaluate_retrieval(expanded, eval_chunks)
+            rag_grade   = "good" if crag_result["score"] >= 4 else "poor"
+
+            if crag_result["action"] == "insufficient":
+                # Retrieval completely failed — return grounded low-confidence response
+                print("[Pipeline] CRAG: insufficient — returning low-confidence response")
+                return LegalAnswer(
+                    answer_text=(
+                        "I was unable to retrieve sufficiently relevant legal information "
+                        f"for your query. {crag_result['reason']} "
+                        "Please consult a qualified legal professional or try rephrasing "
+                        "your query with the specific section number and act name."
+                    ),
+                    sources_consulted=0,
+                    synthesis_note=f"CRAG: insufficient (score={crag_result['score']})",
+                    grounding_warning=crag_result["reason"],
+                    rewritten_queries=all_queries,
+                    reranker_used=False,
+                )
+
+            elif crag_result["action"] == "rewrite" and not crag_triggered:
+                # Marginal retrieval — rewrite and re-retrieve once
+                print("[Pipeline] CRAG: rewrite triggered — re-retrieving")
+                crag_triggered = True
+                extra_rewrites = query_rewriter.rewrite(expanded)
+                extra_queries  = [q for q in extra_rewrites if q not in all_queries]
+                if extra_queries:
+                    extra_chunks = _hybrid_search_multi(
+                        extra_queries, self.n_retrieve, effective_filter
+                    )
+                    existing_ids = {c["chunk_id"] for c in merged}
+                    new_chunks   = [c for c in extra_chunks if c["chunk_id"] not in existing_ids]
+                    merged       = merged + new_chunks
+                    print(f"[Pipeline] CRAG rewrite added {len(new_chunks)} new chunks")
+                    all_queries  = all_queries + extra_queries
+
+            # else: action == "proceed" — continue normally
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 5: Rerank free pool
+        # ═══════════════════════════════════════════════════════════════════════
         reranker_input = [
             c for c in merged[:self.n_reranker_input]
-            if c["chunk_id"] not in all_reserved_ids and c["chunk_id"] != "_corpus_warning"
+            if c["chunk_id"] not in all_reserved_ids
+            and not c.get("chunk_id", "").startswith("_")
         ]
         reranker_used = False
 
         if self.enable_reranking:
-            ranked_chunks, reranker_used = reranker.rerank(query=expanded, chunks=reranker_input, top_n=n_final)
+            ranked_chunks, reranker_used = reranker.rerank(
+                query=expanded, chunks=reranker_input, top_n=n_final
+            )
         else:
             ranked_chunks = reranker_input[:n_final]
             for c in ranked_chunks:
                 c["rerank_score"] = None
 
-        # Final assembly: [hard-pinned] + [soft-pinned paired] + [reranked]
+        # Final assembly: [hard-pinned] + [soft-pinned] + [reranked]
         final_chunks = (
             pinned_chunks
             + soft_pinned
@@ -408,13 +608,15 @@ class RAGPipeline:
         )
         final_chunks = final_chunks[:n_final]
 
-        # Section safety fallback
+        # Section safety fallback (unchanged)
         section_match = re.search(r'\bSection\s+(\d+[A-Z]?)\b', expanded, re.IGNORECASE)
         if section_match:
             target = section_match.group(1)
             if not any(c.get("section", "") == target for c in final_chunks):
                 from rag.bm25_retriever import bm25_retriever
-                extra = bm25_retriever.search(expanded, n_results=3, category_filter=effective_filter)
+                extra = bm25_retriever.search(
+                    expanded, n_results=3, category_filter=effective_filter
+                )
                 for e in extra:
                     if e.get("section", "") == target:
                         if e.get("rerank_score") is not None and e["rerank_score"] < -3.0:
@@ -423,17 +625,73 @@ class RAGPipeline:
                         final_chunks.append(e)
                 final_chunks = final_chunks[:n_final]
 
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 6: Build prompt (labeled for complex, standard otherwise)
+        # ═══════════════════════════════════════════════════════════════════════
         system_prompt = get_system_prompt(final_chunks)
-        prompt        = build_synthesis_prompt(expanded, final_chunks)
-        raw_answer    = llm.generate(
+
+        if complexity == "complex" and subquery_pools:
+            # Build subquery-pool mapping for labeled prompt
+            labeled_pools: list[tuple[str, list[dict]]] = []
+            for label, pool in subquery_pools:
+                pool_ids   = {c["chunk_id"] for c in pool}
+                in_final   = [c for c in final_chunks if c["chunk_id"] in pool_ids]
+                labeled_pools.append((label, in_final))
+            prompt = _build_labeled_synthesis_prompt(expanded, labeled_pools, final_chunks)
+        else:
+            prompt = build_synthesis_prompt(expanded, final_chunks)
+
+        raw_answer = llm.generate(
             prompt=prompt, system_prompt=system_prompt,
             temperature=self.temperature, max_tokens=self.max_tokens,
         )
 
-        return synthesize(
+        answer = synthesize(
             query=user_query, chunks=final_chunks, llm_answer=raw_answer,
             rewritten_queries=all_queries, reranker_used=reranker_used,
         )
+        # Attach rag_grade so graph.py node can store it in AgentState
+        answer.synthesis_note = (
+            f"[complexity={complexity} rag_grade={rag_grade}"
+            + (f" crag_rewrite=True" if crag_triggered else "")
+            + "] "
+            + (answer.synthesis_note or "")
+        )
+        return answer
+
+    # ── KG injection helper ────────────────────────────────────────────────────
+
+    def _inject_kg(self, pinned_chunks: list[dict], expanded: str) -> None:
+        """Inject Knowledge Graph context when section fast-path fired."""
+        if not pinned_chunks:
+            return
+        try:
+            from rag.knowledge_graph import get_kg
+            kg    = get_kg()
+            notes = []
+            for sec, hint in extract_sections_and_sources(expanded):
+                related = kg.query_related_sections(sec, source_hint=hint)
+                if related:
+                    notes.append(kg.format_context(sec, hint, related))
+            if notes:
+                pinned_chunks.insert(0, {
+                    "chunk_id":         "_kg_context",
+                    "text":             "\n".join(notes),
+                    "source":           "Knowledge Graph",
+                    "section":          "",
+                    "section_title":    "",
+                    "chapter":          "",
+                    "doc_type":         "system",
+                    "chunk_type":       "kg_context",
+                    "category":         "",
+                    "era":              "",
+                    "hybrid_score":     1.5,
+                    "retrieval_source": "knowledge_graph",
+                })
+                print(f"[Pipeline] KG injected: {len(notes)} section(s)")
+        except Exception as e:
+            print(f"[Pipeline] KG injection skipped: {e}")
 
 
+# ── Singleton ──────────────────────────────────────────────────────────────────
 rag_pipeline = RAGPipeline()
