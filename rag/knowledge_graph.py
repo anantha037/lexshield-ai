@@ -1,337 +1,594 @@
 """
-LexShield AI — Legal Knowledge Graph
-=======================================
-NetworkX-based knowledge graph over Indian statutes.
+LexShield AI — Legal Knowledge Graph (Session 3 — Full Implementation)
+========================================================================
+GraphRAG layer over data/legal_graph.json.
 
-Node types:
-  statute  — an Act (e.g. Indian Penal Code 1860)
-  section  — a section within an Act
-  concept  — legal concept (murder, theft, cheating, etc.)
+Provides:
+  load_graph()               → loads JSON once, cached as module singleton
+  get_related_sections()     → BFS traversal up to N hops
+  get_bns_equivalent()       → IPC→BNS or BNS→IPC lookup
+  get_era()                  → "legacy" | "current" | "unknown"
+  enrich_retrieval()         → augments chunk pool with graph-connected sections
 
-Edge types:
-  belongs_to — section → statute
-  related    — section → section (same act, definitional chain)
-  paired_act — section → section (legacy ↔ current act equivalents)
-  relates_to — section → concept
+Wire-in point (agents/graph.py → legal_rag_node):
+  After NER extracts section IDs from query, call enrich_retrieval() to
+  add graph-connected chunks to the pool before reranking.
 
-Population:
-  Auto:   from data/processed/chunks.json (section + statute nodes)
-  Manual: hardcoded key relationships for major IPC/BNS/NI sections
+Wire-in point (rag/pipeline.py → _inject_kg):
+  Already uses rag/knowledge_graph.py (the NetworkX version).
+  This module (data/legal_graph.json based) is the NEW implementation —
+  lighter, no NetworkX dependency, works on Windows i5/8GB.
 
-Usage:
+Backward-compatible singleton:
   from rag.knowledge_graph import get_kg
-  kg      = get_kg()
-  related = kg.query_related_sections("420", source_hint="Indian Penal Code")
-  context = kg.format_context("420", "Indian Penal Code", related)
+  still works — get_kg() returns the LegalKnowledgeGraph (NetworkX) object.
+  The new flat-JSON functions are imported directly:
+  from rag.knowledge_graph import load_graph, get_related_sections, enrich_retrieval
 """
 
 import json
-import re
-import time
-from pathlib import Path
+import os
+from functools import lru_cache
 from typing import Optional
 
-import networkx as nx
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATH RESOLUTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_PROJECT_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_GRAPH_JSON     = os.path.join(_PROJECT_ROOT, "data", "legal_graph.json")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOAD GRAPH  (cached after first call)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@lru_cache(maxsize=1)
+def load_graph() -> dict:
+    """
+    Load data/legal_graph.json once and cache it.
+
+    Returns:
+        dict keyed by node_id (e.g. "IPC_302"), each value is a node dict:
+        {
+            "label":       str,
+            "bns_equiv":   str | null,
+            "related":     [str, ...],
+            "parent_act":  str,
+            "category":    str,
+            "era":         str,   # "legacy" | "current"
+            "risk":        str    # "low" | "medium" | "high" | "critical"
+        }
+    """
+    if not os.path.exists(_GRAPH_JSON):
+        print(f"[KG] WARNING: {_GRAPH_JSON} not found — returning empty graph")
+        return {}
+
+    with open(_GRAPH_JSON, encoding="utf-8") as f:
+        graph = json.load(f)
+
+    print(f"[KG] Loaded legal_graph.json: {len(graph)} nodes")
+    return graph
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SOURCE NORMALIZER
+# NORMALISE NODE IDS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_ACRONYM_RE = re.compile(r'\(([A-Z]{2,6})\)')
+def _normalise(node_id: str) -> str:
+    """
+    Accepts various formats and maps to the JSON key format (ACT_SECTION).
 
-_FALLBACK_MAP = {
-    "indian penal code":                  "IPC",
-    "bharatiya nyaya sanhita":            "BNS",
-    "code of criminal procedure":         "CrPC",
-    "bharatiya nagarik suraksha sanhita": "BNSS",
-    "indian evidence act":                "IEA",
-    "bharatiya sakshya adhiniyam":        "BSA",
-    "negotiable instruments act":         "NI",
-    "protection of children":             "POCSO",
-    "consumer protection act":            "CPA",
-    "information technology act":         "ITA",
-    "prevention of corruption":           "PCA",
-    "prevention of money laundering":     "PMLA",
-    "narcotic drugs":                     "NDPS",
-    "unlawful activities":                "UAPA",
-    "right to information":               "RTI",
-    "motor vehicles act":                 "MVA",
-    "transfer of property act":           "TPA",
-    "indian contract act":                "ICA",
-    "code of civil procedure":            "CPC",
-    "companies act":                      "CA",
-    "real estate":                        "RERA",
-    "insolvency and bankruptcy":          "IBC",
-    "foreign exchange":                   "FEMA",
-    "securities and exchange":            "SEBI",
-    "sexual harassment":                  "POSH",
-    "domestic violence":                  "DVPA",
-    "hindu marriage act":                 "HMA",
-    "special marriage act":               "SMA",
-    "goods and services tax":             "GST",
-}
+    Examples:
+        "IPC 302"   → "IPC_302"
+        "ipc_302"   → "IPC_302"
+        "Section 302 IPC" → "IPC_302"
+        "NI Act 138"      → "NI_138"
+        "BNS 85"          → "BNS_85"
+        "CrPC 154"        → "CrPC_154"
+        "BNSS 173"        → "BNSS_173"
+    """
+    s = node_id.strip()
 
-
-def normalize_source(source: str) -> str:
-    """Extract short acronym key from a source string."""
-    m = _ACRONYM_RE.search(source)
+    # Handle "Section 302 IPC" or "Section 138 NI Act"
+    import re
+    m = re.match(
+        r'[Ss]ection\s+(\d+[A-Za-z_]*)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)',
+        s
+    )
     if m:
-        return m.group(1)
-    src_lower = source.lower()
-    for keyword, key in _FALLBACK_MAP.items():
-        if keyword in src_lower:
-            return key
-    # Last resort: initials of first 3 words
-    words = source.split()
-    return "".join(w[0] for w in words[:3] if w).upper()
+        sec = m.group(1)
+        act = m.group(2).upper().replace(" ", "").replace("ACT", "").strip("_")
+        return f"{act}_{sec}".upper()
+
+    # Handle "IPC 302", "NI Act 138", "CrPC 154"
+    m2 = re.match(
+        r'([A-Za-z]+(?:\s*[A-Za-z]+)?)\s+(\d+[A-Za-z_]*)',
+        s
+    )
+    if m2:
+        act = m2.group(1).upper().replace(" ", "").replace("ACT", "")
+        sec = m2.group(2)
+        return f"{act}_{sec}".upper()
+
+    # Already in correct format or close ("IPC_302", "ipc_302")
+    return s.upper().replace(" ", "_")
 
 
-def _section_id(act_key: str, section: str) -> str:
-    return f"section:{act_key}:{section}"
+def _lookup(node_id: str, graph: dict) -> Optional[dict]:
+    """Try to find a node by its raw or normalised ID."""
+    if node_id in graph:
+        return graph[node_id]
+    norm = _normalise(node_id)
+    if norm in graph:
+        return graph[norm]
+    return None
 
 
-def _statute_id(source: str) -> str:
-    return f"statute:{source}"
-
-
-def _concept_id(name: str) -> str:
-    return f"concept:{name}"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MANUAL EDGES
-# (from_node_id, to_node_id, edge_type, label)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-_MANUAL_EDGES: list[tuple[str, str, str, str]] = [
-
-    # ── IPC ↔ BNS paired sections ─────────────────────────────────────────────
-    ("section:IPC:34",    "section:BNS:3",    "paired_act", "Common intention"),
-    ("section:IPC:107",   "section:BNS:45",   "paired_act", "Abetment"),
-    ("section:IPC:120B",  "section:BNS:61",   "paired_act", "Criminal conspiracy"),
-    ("section:IPC:299",   "section:BNS:99",   "paired_act", "Culpable homicide definition"),
-    ("section:IPC:300",   "section:BNS:100",  "paired_act", "Murder definition"),
-    ("section:IPC:302",   "section:BNS:101",  "paired_act", "Murder punishment"),
-    ("section:IPC:304",   "section:BNS:105",  "paired_act", "Culpable homicide punishment"),
-    ("section:IPC:307",   "section:BNS:109",  "paired_act", "Attempt to murder"),
-    ("section:IPC:354",   "section:BNS:74",   "paired_act", "Assault on woman"),
-    ("section:IPC:376",   "section:BNS:63",   "paired_act", "Rape"),
-    ("section:IPC:378",   "section:BNS:302",  "paired_act", "Theft definition"),
-    ("section:IPC:379",   "section:BNS:303",  "paired_act", "Theft punishment"),
-    ("section:IPC:380",   "section:BNS:305",  "paired_act", "Theft in dwelling"),
-    ("section:IPC:390",   "section:BNS:308",  "paired_act", "Robbery definition"),
-    ("section:IPC:392",   "section:BNS:309",  "paired_act", "Robbery punishment"),
-    ("section:IPC:395",   "section:BNS:310",  "paired_act", "Dacoity"),
-    ("section:IPC:406",   "section:BNS:316",  "paired_act", "Criminal breach of trust"),
-    ("section:IPC:415",   "section:BNS:318",  "paired_act", "Cheating definition"),
-    ("section:IPC:417",   "section:BNS:318",  "related",    "Cheating punishment"),
-    ("section:IPC:420",   "section:BNS:318",  "paired_act", "Cheating aggravated"),
-    ("section:IPC:498A",  "section:BNS:85",   "paired_act", "Cruelty by husband"),
-    ("section:IPC:503",   "section:BNS:351",  "paired_act", "Criminal intimidation"),
-    ("section:IPC:506",   "section:BNS:351",  "related",    "Criminal intimidation punishment"),
-
-    # ── IPC internal chains ───────────────────────────────────────────────────
-    ("section:IPC:299",   "section:IPC:300",  "related", "Culpable homicide→murder boundary"),
-    ("section:IPC:300",   "section:IPC:302",  "related", "Murder definition→punishment"),
-    ("section:IPC:307",   "section:IPC:302",  "related", "Attempt→completed offence"),
-    ("section:IPC:378",   "section:IPC:379",  "related", "Theft definition→punishment"),
-    ("section:IPC:378",   "section:IPC:380",  "related", "Theft→aggravated forms"),
-    ("section:IPC:379",   "section:IPC:380",  "related", "Theft variants"),
-    ("section:IPC:390",   "section:IPC:392",  "related", "Robbery definition→punishment"),
-    ("section:IPC:415",   "section:IPC:417",  "related", "Cheating definition→punishment"),
-    ("section:IPC:415",   "section:IPC:420",  "related", "Cheating→aggravated cheating"),
-    ("section:IPC:417",   "section:IPC:420",  "related", "Simple→aggravated cheating"),
-    ("section:IPC:403",   "section:IPC:406",  "related", "Misappropriation→breach of trust"),
-
-    # ── BNS internal chains ───────────────────────────────────────────────────
-    ("section:BNS:99",    "section:BNS:100",  "related", "Culpable homicide→murder"),
-    ("section:BNS:100",   "section:BNS:101",  "related", "Murder definition→punishment"),
-    ("section:BNS:302",   "section:BNS:303",  "related", "Theft definition→punishment"),
-
-    # ── CrPC ↔ BNSS ──────────────────────────────────────────────────────────
-    ("section:CrPC:154",  "section:BNSS:173", "paired_act", "FIR registration"),
-    ("section:CrPC:161",  "section:BNSS:180", "paired_act", "Police examination of witnesses"),
-    ("section:CrPC:437",  "section:BNSS:480", "paired_act", "Bail in non-bailable offences"),
-    ("section:CrPC:438",  "section:BNSS:482", "paired_act", "Anticipatory bail"),
-    ("section:CrPC:482",  "section:BNSS:528", "paired_act", "High Court inherent powers"),
-
-    # ── NI Act internal ───────────────────────────────────────────────────────
-    ("section:NI:138",    "section:NI:139",   "related", "Cheque bounce→presumption of liability"),
-    ("section:NI:138",    "section:NI:141",   "related", "Cheque bounce→company/director liability"),
-    ("section:NI:138",    "section:NI:142",   "related", "Cheque bounce→cognizance conditions"),
-
-    # ── Concept links from sections ───────────────────────────────────────────
-    ("section:IPC:302",   "concept:murder",           "relates_to", ""),
-    ("section:IPC:300",   "concept:murder",           "relates_to", ""),
-    ("section:BNS:101",   "concept:murder",           "relates_to", ""),
-    ("section:BNS:100",   "concept:murder",           "relates_to", ""),
-    ("section:IPC:420",   "concept:cheating",         "relates_to", ""),
-    ("section:IPC:415",   "concept:cheating",         "relates_to", ""),
-    ("section:IPC:417",   "concept:cheating",         "relates_to", ""),
-    ("section:BNS:318",   "concept:cheating",         "relates_to", ""),
-    ("section:IPC:379",   "concept:theft",            "relates_to", ""),
-    ("section:IPC:378",   "concept:theft",            "relates_to", ""),
-    ("section:BNS:303",   "concept:theft",            "relates_to", ""),
-    ("section:IPC:376",   "concept:rape",             "relates_to", ""),
-    ("section:BNS:63",    "concept:rape",             "relates_to", ""),
-    ("section:IPC:498A",  "concept:cruelty",          "relates_to", ""),
-    ("section:BNS:85",    "concept:cruelty",          "relates_to", ""),
-    ("section:IPC:406",   "concept:breach_of_trust",  "relates_to", ""),
-    ("section:BNS:316",   "concept:breach_of_trust",  "relates_to", ""),
-    ("section:IPC:392",   "concept:robbery",          "relates_to", ""),
-    ("section:BNS:309",   "concept:robbery",          "relates_to", ""),
-    ("section:IPC:395",   "concept:dacoity",          "relates_to", ""),
-    ("section:BNS:310",   "concept:dacoity",          "relates_to", ""),
-    ("section:NI:138",    "concept:cheque_bounce",    "relates_to", ""),
-    ("section:NI:139",    "concept:cheque_bounce",    "relates_to", ""),
-    ("section:NI:141",    "concept:cheque_bounce",    "relates_to", ""),
-    ("section:CrPC:154",  "concept:fir",              "relates_to", ""),
-    ("section:BNSS:173",  "concept:fir",              "relates_to", ""),
-    ("section:CrPC:437",  "concept:bail",             "relates_to", ""),
-    ("section:CrPC:438",  "concept:bail",             "relates_to", ""),
-    ("section:BNSS:480",  "concept:bail",             "relates_to", ""),
-    ("section:BNSS:482",  "concept:bail",             "relates_to", ""),
-    ("section:IPC:307",   "concept:attempt_to_murder","relates_to", ""),
-    ("section:BNS:109",   "concept:attempt_to_murder","relates_to", ""),
-    ("section:IPC:354",   "concept:assault_on_woman", "relates_to", ""),
-    ("section:BNS:74",    "concept:assault_on_woman", "relates_to", ""),
-
-    # ── Concept–concept links ─────────────────────────────────────────────────
-    ("concept:cheating",  "concept:fraud",            "related", ""),
-    ("concept:murder",    "concept:culpable_homicide","related", ""),
-    ("concept:theft",     "concept:robbery",          "related", ""),
-    ("concept:robbery",   "concept:dacoity",          "related", ""),
-]
-
-_CONCEPT_LABELS: dict[str, str] = {
-    "murder":            "Murder",
-    "cheating":          "Cheating / Fraud",
-    "theft":             "Theft",
-    "rape":              "Rape / Sexual Assault",
-    "cruelty":           "Cruelty by Husband / Relatives",
-    "breach_of_trust":   "Criminal Breach of Trust",
-    "robbery":           "Robbery",
-    "dacoity":           "Dacoity",
-    "cheque_bounce":     "Cheque Bounce",
-    "fir":               "FIR Registration",
-    "bail":              "Bail",
-    "fraud":             "Fraud",
-    "culpable_homicide": "Culpable Homicide",
-    "attempt_to_murder": "Attempt to Murder",
-    "assault_on_woman":  "Assault on Woman",
-}
+def _resolve_id(node_id: str, graph: dict) -> Optional[str]:
+    """Return the actual key present in graph dict, or None."""
+    if node_id in graph:
+        return node_id
+    norm = _normalise(node_id)
+    if norm in graph:
+        return norm
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# KNOWLEDGE GRAPH CLASS
+# PUBLIC API
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class LegalKnowledgeGraph:
+def get_related_sections(section_id: str, hops: int = 1) -> list[str]:
+    """
+    BFS traversal of the legal graph starting from section_id.
+
+    Args:
+        section_id: node ID in any supported format (e.g. "IPC_302", "Section 302 IPC")
+        hops:       traversal depth (default 1, max 3 for performance)
+
+    Returns:
+        Ordered list of related node IDs (strings), closest first.
+        Excludes the starting node itself.
+        Returns [] if section_id not found in graph.
+
+    Example:
+        get_related_sections("IPC_420", hops=1)
+        → ["IPC_415", "IPC_417", "IPC_406", "IPC_471", "BNS_318"]
+    """
+    graph  = load_graph()
+    hops   = min(hops, 3)  # Safety cap for performance on i5/8GB
+
+    start  = _resolve_id(section_id, graph)
+    if start is None:
+        return []
+
+    visited: dict[str, int] = {start: 0}   # node_id → hop_distance
+    queue:   list[tuple[str, int]] = [(start, 0)]
+
+    while queue:
+        current, depth = queue.pop(0)
+        if depth >= hops:
+            continue
+
+        node = graph.get(current, {})
+
+        # Traverse "related" edges
+        for neighbour in node.get("related", []):
+            n_resolved = _resolve_id(neighbour, graph)
+            target     = n_resolved if n_resolved else neighbour
+            if target not in visited:
+                visited[target] = depth + 1
+                queue.append((target, depth + 1))
+
+        # Traverse "bns_equiv" edge (bidirectional)
+        equiv = node.get("bns_equiv")
+        if equiv:
+            e_resolved = _resolve_id(equiv, graph)
+            target     = e_resolved if e_resolved else equiv
+            if target and target not in visited:
+                visited[target] = depth + 1
+                queue.append((target, depth + 1))
+
+    # Return sorted by hop distance, excluding start node
+    result = sorted(
+        [(nid, d) for nid, d in visited.items() if nid != start],
+        key=lambda x: x[1]
+    )
+    return [nid for nid, _ in result]
+
+
+def get_bns_equivalent(section_id: str) -> Optional[str]:
+    """
+    Return the BNS/BNSS equivalent of a legacy IPC/CrPC section, or vice versa.
+
+    Args:
+        section_id: e.g. "IPC_302", "CrPC_154", "BNS_101"
+
+    Returns:
+        Equivalent node ID string, or None if no mapping exists.
+
+    Examples:
+        get_bns_equivalent("IPC_302")  → "BNS_101"
+        get_bns_equivalent("BNS_101")  → "IPC_302"
+        get_bns_equivalent("CrPC_154") → "BNSS_173"
+    """
+    graph = load_graph()
+    node  = _lookup(section_id, graph)
+    if node is None:
+        return None
+    equiv = node.get("bns_equiv")
+    if not equiv:
+        return None
+    # Resolve to actual key if possible
+    resolved = _resolve_id(equiv, graph)
+    return resolved if resolved else equiv
+
+
+def get_era(section_id: str) -> str:
+    """
+    Return "legacy" (IPC/CrPC/IEA era) or "current" (BNS/BNSS/BSA era).
+
+    Returns "unknown" if section not found in graph.
+    """
+    graph = load_graph()
+    node  = _lookup(section_id, graph)
+    if node is None:
+        return "unknown"
+    return node.get("era", "unknown")
+
+
+def get_node_info(section_id: str) -> Optional[dict]:
+    """
+    Return the full node dict for a section ID, or None if not found.
+
+    Useful for building context strings in prompts.
+    """
+    graph = load_graph()
+    return _lookup(section_id, graph)
+
+
+def get_risk_level(section_id: str) -> str:
+    """
+    Return the risk level string for a section: "low" | "medium" | "high" | "critical".
+    Returns "unknown" if not found.
+    """
+    graph = load_graph()
+    node  = _lookup(section_id, graph)
+    if node is None:
+        return "unknown"
+    return node.get("risk", "unknown")
+
+
+def format_related_context(section_id: str, hops: int = 1) -> str:
+    """
+    Build a compact knowledge-graph context string for prompt injection.
+
+    Example output:
+        [KG] IPC_420 related sections (hop=1):
+          • IPC_415 — IPC Section 415 — Cheating (definition) [related, legacy]
+          • BNS_318 — BNS Section 318 — Cheating (definition and punishment) [bns_equiv, current]
+    """
+    graph   = load_graph()
+    related = get_related_sections(section_id, hops=hops)
+    if not related:
+        return ""
+
+    start_node = _lookup(section_id, graph)
+    start_label = start_node.get("label", section_id) if start_node else section_id
+
+    lines = [f"[Knowledge Graph] {section_id} — {start_label}"]
+    lines.append(f"  Related sections (within {hops} hop{'s' if hops > 1 else ''}):")
+
+    start_resolved = _resolve_id(section_id, graph)
+    start_info     = graph.get(start_resolved, {}) if start_resolved else {}
+    direct_related = set(start_info.get("related", []))
+    equiv          = start_info.get("bns_equiv", "")
+
+    for nid in related[:10]:  # Cap at 10 for prompt length
+        node = _lookup(nid, graph)
+        if node is None:
+            continue
+        label    = node.get("label", nid)
+        era      = node.get("era", "?")
+        resolved = _resolve_id(nid, graph) or nid
+
+        if resolved == equiv or nid == equiv:
+            rel_type = "bns_equiv"
+        elif resolved in direct_related or nid in direct_related:
+            rel_type = "related"
+        else:
+            rel_type = "2nd-hop"
+
+        lines.append(f"    • {resolved} — {label} [{rel_type}, {era}]")
+
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENRICH RETRIEVAL  (main integration point with RAG pipeline)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def enrich_retrieval(
+    ner_sections:       list[str],
+    chunk_pool:         list[dict],
+    chroma_client=None,
+    bypass_score_filter: bool = True,
+) -> list[dict]:
+    """
+    For each NER-extracted section, traverse the graph to find related sections,
+    then fetch their chunks from the vector store and add to the pool.
+
+    This implements GraphRAG: instead of relying purely on semantic similarity,
+    we use structural legal relationships (IPC→BNS equivalents, definitional
+    chains, penalty↔definition pairs) to ensure completeness of retrieval.
+
+    Args:
+        ner_sections:        list of section IDs extracted by NER from the query
+                             (e.g. ["IPC_420", "Section 138 NI Act"])
+        chunk_pool:          existing list of retrieved chunks (dicts with chunk_id,
+                             text, source, section, etc.)
+        chroma_client:       ChromaDB client (optional — uses vectorstore singleton
+                             if not provided)
+        bypass_score_filter: if True, graph-connected chunks are added regardless
+                             of their similarity score (they are structurally relevant)
+
+    Returns:
+        Augmented chunk_pool list with graph-connected chunks appended.
+        New chunks are tagged with retrieval_source="knowledge_graph".
+        Deduplication is applied (no chunk_id appears twice).
+
+    Example:
+        User asks about "IPC 420 cheating".
+        NER extracts: ["IPC_420"]
+        Graph traversal finds: ["IPC_415", "IPC_417", "BNS_318", "IPC_406"]
+        enrich_retrieval fetches chunks for all of these and adds them,
+        ensuring the synthesiser sees both the definition (415) and the
+        BNS equivalent (318) alongside the punishment section (420).
+    """
+    if not ner_sections:
+        return chunk_pool
+
+    graph = load_graph()
+    if not graph:
+        return chunk_pool
+
+    # Collect all related section IDs across all NER hits
+    all_related: dict[str, str] = {}  # section_id → source_ner_section
+
+    for raw_id in ner_sections:
+        resolved = _resolve_id(raw_id, graph)
+        if resolved is None:
+            continue
+
+        related = get_related_sections(resolved, hops=1)
+        for rel_id in related:
+            if rel_id not in all_related:
+                all_related[rel_id] = resolved
+
+        # Always include the BNS/IPC equivalent
+        equiv = get_bns_equivalent(resolved)
+        if equiv and equiv not in all_related:
+            all_related[equiv] = resolved
+
+    if not all_related:
+        return chunk_pool
+
+    # Build set of already-present chunk IDs (for dedup)
+    existing_ids: set[str] = {c.get("chunk_id", "") for c in chunk_pool}
+
+    # Fetch chunks from vector store for each related section
+    try:
+        if chroma_client is not None:
+            new_chunks = _fetch_via_chroma_client(
+                all_related, existing_ids, graph, chroma_client
+            )
+        else:
+            new_chunks = _fetch_via_vectorstore_singleton(
+                all_related, existing_ids, graph
+            )
+    except Exception as e:
+        print(f"[KG] enrich_retrieval fetch error (non-fatal): {e}")
+        return chunk_pool
+
+    if new_chunks:
+        print(f"[KG] enrich_retrieval: added {len(new_chunks)} graph-connected chunks "
+              f"for {len(ner_sections)} NER section(s)")
+
+    return chunk_pool + new_chunks
+
+
+def _fetch_via_vectorstore_singleton(
+    all_related: dict[str, str],
+    existing_ids: set[str],
+    graph: dict,
+) -> list[dict]:
+    """
+    Use rag.vectorstore singleton to fetch chunks by section ID.
+    Falls back gracefully if vectorstore is unavailable.
+    """
+    try:
+        from rag.vectorstore import vectorstore
+    except ImportError:
+        return []
+
+    new_chunks: list[dict] = []
+
+    for rel_id, source_section in all_related.items():
+        node = _lookup(rel_id, graph)
+        if node is None:
+            continue
+
+        # Parse act_key and section number from rel_id (e.g. "IPC_302" → act="IPC", sec="302")
+        parts      = rel_id.split("_", 1)
+        act_key    = parts[0] if len(parts) == 2 else ""
+        sec_number = parts[1] if len(parts) == 2 else rel_id
+
+        # Map act_key to partial source name for vectorstore lookup
+        act_source_map = {
+            "IPC":  "Indian Penal Code",
+            "BNS":  "Bharatiya Nyaya Sanhita",
+            "CrPC": "Code of Criminal Procedure",
+            "BNSS": "Bharatiya Nagarik Suraksha Sanhita",
+            "NI":   "Negotiable Instruments",
+            "CPA":  "Consumer Protection",
+            "PWA":  "Payment of Wages",
+            "IDA":  "Industrial Disputes",
+            "TPA":  "Transfer of Property",
+            "IEA":  "Indian Evidence",
+            "BSA":  "Bharatiya Sakshya",
+        }
+        source_partial = act_source_map.get(act_key, "")
+
+        try:
+            if source_partial:
+                hits = vectorstore.get_by_section(sec_number, source_hint=source_partial)
+            else:
+                hits = vectorstore.get_by_section(sec_number, source_hint=None)
+        except Exception:
+            hits = []
+
+        for chunk in hits:
+            cid = chunk.get("chunk_id", "")
+            if cid and cid not in existing_ids:
+                chunk["retrieval_source"] = "knowledge_graph"
+                chunk["hybrid_score"]     = chunk.get("hybrid_score", 0.6)
+                chunk["kg_source_section"] = source_section
+                chunk["kg_related_id"]     = rel_id
+                new_chunks.append(chunk)
+                existing_ids.add(cid)
+
+    return new_chunks
+
+
+def _fetch_via_chroma_client(
+    all_related: dict[str, str],
+    existing_ids: set[str],
+    graph: dict,
+    chroma_client,
+) -> list[dict]:
+    """
+    Fetch chunks directly via a ChromaDB client object.
+    Uses metadata filter on 'section' field.
+    """
+    new_chunks: list[dict] = []
+
+    try:
+        collection = chroma_client.get_collection("legal_chunks")
+    except Exception:
+        return []
+
+    for rel_id, source_section in all_related.items():
+        parts      = rel_id.split("_", 1)
+        sec_number = parts[1] if len(parts) == 2 else rel_id
+
+        try:
+            results = collection.get(
+                where={"section": {"$eq": sec_number}},
+                limit=3,
+            )
+            docs      = results.get("documents", [])
+            metadatas = results.get("metadatas", [])
+            ids       = results.get("ids", [])
+
+            for doc, meta, cid in zip(docs, metadatas, ids):
+                if cid not in existing_ids:
+                    chunk = {
+                        "chunk_id":          cid,
+                        "text":              doc,
+                        "source":            meta.get("source", ""),
+                        "section":           meta.get("section", sec_number),
+                        "section_title":     meta.get("section_title", ""),
+                        "category":          meta.get("category", ""),
+                        "era":               meta.get("era", ""),
+                        "hybrid_score":      0.6,
+                        "retrieval_source":  "knowledge_graph",
+                        "kg_source_section": source_section,
+                        "kg_related_id":     rel_id,
+                    }
+                    new_chunks.append(chunk)
+                    existing_ids.add(cid)
+        except Exception:
+            continue
+
+    return new_chunks
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GRAPH STATS  (for /api/kg/stats endpoint or debugging)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def graph_stats() -> dict:
+    """Return summary statistics about the loaded graph."""
+    graph = load_graph()
+    if not graph:
+        return {"loaded": False, "nodes": 0}
+
+    era_counts:      dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    risk_counts:     dict[str, int] = {}
+    act_counts:      dict[str, int] = {}
+    total_edges = 0
+
+    for node_id, node in graph.items():
+        era      = node.get("era",        "unknown")
+        category = node.get("category",   "unknown")
+        risk     = node.get("risk",        "unknown")
+        act      = node.get("parent_act", "unknown")
+
+        era_counts[era]          = era_counts.get(era, 0)          + 1
+        category_counts[category] = category_counts.get(category, 0) + 1
+        risk_counts[risk]        = risk_counts.get(risk, 0)        + 1
+        act_counts[act]          = act_counts.get(act, 0)          + 1
+
+        # Count edges: related list + bns_equiv (if present)
+        total_edges += len(node.get("related", []))
+        if node.get("bns_equiv"):
+            total_edges += 1
+
+    return {
+        "loaded":           True,
+        "nodes":            len(graph),
+        "edges_approx":     total_edges,
+        "by_era":           era_counts,
+        "by_category":      category_counts,
+        "by_risk":          risk_counts,
+        "by_act":           act_counts,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKWARD COMPATIBILITY  — keep existing NetworkX-based class usable
+# ═══════════════════════════════════════════════════════════════════════════════
+# The file rag/knowledge_graph.py already contains the NetworkX LegalKnowledgeGraph
+# class and get_kg() function.  This module (also at rag/knowledge_graph.py after
+# replacement) now replaces that file entirely while preserving the get_kg() interface.
+#
+# If you are keeping BOTH files (old NetworkX + this new flat-JSON version),
+# import this module as:
+#     from rag.knowledge_graph import load_graph, get_related_sections, enrich_retrieval
+# and keep the old NetworkX class under a different name.
+#
+# The code below re-exports get_kg() pointing to the flat-JSON loader so that
+# existing call sites (pipeline.py _inject_kg) continue to work.
+
+class _FlatGraphAdapter:
+    """
+    Thin adapter that wraps the flat JSON graph behind the interface that
+    rag/pipeline.py's _inject_kg() expects from the old NetworkX-based KG.
+
+    Methods implemented:
+        query_related_sections(section, source_hint, hops) → list[dict]
+        format_context(section, source_hint, related)      → str
+        _built: bool
+        build()
+    """
 
     def __init__(self):
-        self.graph  = nx.Graph()
         self._built = False
 
-    # ── Build ──────────────────────────────────────────────────────────────────
-
-    def build(self, chunks_path: str = "data/processed/chunks.json") -> None:
-        """Build graph from chunks.json + manual edges. Call once at startup."""
-        print("[KnowledgeGraph] Building legal knowledge graph...")
-        t0 = time.time()
-
-        self._auto_populate(chunks_path)
-        self._add_manual_edges()
+    def build(self, *args, **kwargs) -> None:
+        load_graph()  # Triggers lru_cache
         self._built = True
-
-        print(
-            f"[KnowledgeGraph] Ready: {self.graph.number_of_nodes()} nodes, "
-            f"{self.graph.number_of_edges()} edges ({time.time() - t0:.2f}s)"
-        )
-
-    def _auto_populate(self, chunks_path: str) -> None:
-        """Create section + statute nodes from chunks.json (chunk_type='section' only)."""
-        if not Path(chunks_path).exists():
-            print(f"[KnowledgeGraph] Warning: {chunks_path} not found — skipping auto-populate")
-            return
-
-        with open(chunks_path, encoding="utf-8") as f:
-            chunks = json.load(f)
-
-        seen_statutes: set[str] = set()
-
-        for chunk in chunks:
-            if chunk.get("chunk_type") != "section":
-                continue
-
-            source  = chunk.get("source", "").strip()
-            section = chunk.get("section", "").strip()
-            if not source or not section:
-                continue
-
-            act_key    = normalize_source(source)
-            stat_id    = _statute_id(source)
-            sect_id    = _section_id(act_key, section)
-
-            # Statute node (once per source)
-            if stat_id not in seen_statutes:
-                self.graph.add_node(
-                    stat_id,
-                    node_type = "statute",
-                    label     = source,
-                    act_key   = act_key,
-                )
-                seen_statutes.add(stat_id)
-
-            # Section node
-            if not self.graph.has_node(sect_id):
-                self.graph.add_node(
-                    sect_id,
-                    node_type     = "section",
-                    section       = section,
-                    act_key       = act_key,
-                    source        = source,
-                    section_title = chunk.get("section_title", ""),
-                    category      = chunk.get("category", ""),
-                    era           = chunk.get("era", ""),
-                    label         = f"Section {section} {act_key}",
-                )
-
-            # belongs_to edge
-            if not self.graph.has_edge(sect_id, stat_id):
-                self.graph.add_edge(sect_id, stat_id, edge_type="belongs_to")
-
-    def _add_manual_edges(self) -> None:
-        """Add hardcoded relationships and concept nodes."""
-        for src, dst, edge_type, label in _MANUAL_EDGES:
-            for node_id in (src, dst):
-                if not self.graph.has_node(node_id):
-                    parts     = node_id.split(":", 2)
-                    node_type = parts[0]
-
-                    if node_type == "section" and len(parts) == 3:
-                        self.graph.add_node(
-                            node_id,
-                            node_type     = "section",
-                            act_key       = parts[1],
-                            section       = parts[2],
-                            section_title = "",
-                            source        = "",
-                            label         = f"Section {parts[2]} {parts[1]}",
-                        )
-                    elif node_type == "concept" and len(parts) >= 2:
-                        cname = parts[1]
-                        self.graph.add_node(
-                            node_id,
-                            node_type = "concept",
-                            name      = cname,
-                            label     = _CONCEPT_LABELS.get(cname, cname.replace("_", " ").title()),
-                        )
-
-            if not self.graph.has_edge(src, dst):
-                self.graph.add_edge(src, dst, edge_type=edge_type, label=label)
-
-    # ── Query ──────────────────────────────────────────────────────────────────
 
     def query_related_sections(
         self,
@@ -340,81 +597,89 @@ class LegalKnowledgeGraph:
         hops:        int           = 2,
     ) -> list[dict]:
         """
-        Return nodes reachable within `hops` from the given section.
-        Filters to section and concept nodes only (excludes statute nodes).
-
-        Args:
-            section:     section number string e.g. "420"
-            source_hint: partial source name e.g. "Indian Penal Code"
-            hops:        traversal depth (default 2)
-
-        Returns:
-            List of node dicts sorted by edge_type priority.
+        Mimics the NetworkX KG interface.
+        Returns list of dicts with keys: node_id, node_type, label, section,
+        act_key, section_title, concept, edge_type, edge_label.
         """
-        if not self._built:
+        graph = load_graph()
+
+        # Resolve section + source_hint → node_id
+        if source_hint:
+            # Try to derive act_key from source_hint
+            import re
+            acronym = re.search(r'\(([A-Z]{2,6})\)', source_hint)
+            if acronym:
+                act_key = acronym.group(1)
+            else:
+                hint_lower = source_hint.lower()
+                hint_map = {
+                    "indian penal code": "IPC",
+                    "bharatiya nyaya": "BNS",
+                    "code of criminal": "CrPC",
+                    "bharatiya nagarik": "BNSS",
+                    "negotiable": "NI",
+                    "consumer protection": "CPA",
+                    "payment of wages": "PWA",
+                    "industrial disputes": "IDA",
+                    "transfer of property": "TPA",
+                }
+                act_key = next(
+                    (v for k, v in hint_map.items() if k in hint_lower), ""
+                )
+            candidate = f"{act_key}_{section}" if act_key else section
+        else:
+            candidate = section
+
+        resolved = _resolve_id(candidate, graph)
+        if resolved is None:
+            # Try without act_key
+            for key in graph:
+                if key.endswith(f"_{section}"):
+                    resolved = key
+                    break
+
+        if resolved is None:
             return []
 
-        node_id = self._resolve_node(section, source_hint)
-        if node_id is None or not self.graph.has_node(node_id):
-            return []
-
-        try:
-            subgraph = nx.ego_graph(self.graph, node_id, radius=hops, undirected=True)
-        except Exception:
-            return []
+        related_ids = get_related_sections(resolved, hops=hops)
 
         results = []
-        for nid, attrs in subgraph.nodes(data=True):
-            if nid == node_id:
-                continue
-            ntype = attrs.get("node_type", "")
-            if ntype not in ("section", "concept"):
+        start_node = graph.get(resolved, {})
+        direct_related = set(start_node.get("related", []))
+        equiv          = start_node.get("bns_equiv", "")
+
+        for nid in related_ids:
+            node = graph.get(nid, {})
+            if not node:
                 continue
 
-            edge_data = self.graph.get_edge_data(node_id, nid) or {}
+            parts    = nid.split("_", 1)
+            act_key  = parts[0] if len(parts) == 2 else ""
+            sec_num  = parts[1] if len(parts) == 2 else nid
+
+            if nid == equiv or nid == _resolve_id(equiv or "", graph):
+                edge_type = "paired_act"
+            elif nid in direct_related or any(
+                r == nid for r in direct_related
+            ):
+                edge_type = "related"
+            else:
+                edge_type = "related"
+
             results.append({
                 "node_id":       nid,
-                "node_type":     ntype,
-                "label":         attrs.get("label", nid),
-                "section":       attrs.get("section", ""),
-                "act_key":       attrs.get("act_key", ""),
-                "section_title": attrs.get("section_title", ""),
-                "concept":       attrs.get("name", ""),
-                "edge_type":     edge_data.get("edge_type", ""),
-                "edge_label":    edge_data.get("label", ""),
+                "node_type":     "section",
+                "label":         node.get("label", nid),
+                "section":       sec_num,
+                "act_key":       act_key,
+                "section_title": node.get("label", "").split("—")[-1].strip()[:60]
+                                 if "—" in node.get("label", "") else "",
+                "concept":       node.get("category", ""),
+                "edge_type":     edge_type,
+                "edge_label":    node.get("label", ""),
             })
 
-        _order = {"paired_act": 0, "related": 1, "relates_to": 2, "belongs_to": 9}
-        results.sort(key=lambda x: (_order.get(x["edge_type"], 5), x["label"]))
         return results
-
-    def _resolve_node(self, section: str, source_hint: Optional[str]) -> Optional[str]:
-        """Find the best matching node_id for a section + optional source hint."""
-        section = section.strip()
-
-        if source_hint:
-            act_key = normalize_source(source_hint)
-            nid     = _section_id(act_key, section)
-            if self.graph.has_node(nid):
-                return nid
-
-        candidates = [
-            nid for nid, attrs in self.graph.nodes(data=True)
-            if attrs.get("node_type") == "section"
-            and attrs.get("section") == section
-        ]
-
-        if len(candidates) == 1:
-            return candidates[0]
-
-        if len(candidates) > 1:
-            for key in ["IPC", "BNS", "CrPC", "BNSS", "NI"]:
-                pref = _section_id(key, section)
-                if pref in candidates:
-                    return pref
-            return candidates[0]
-
-        return None
 
     def format_context(
         self,
@@ -422,67 +687,37 @@ class LegalKnowledgeGraph:
         source_hint: Optional[str],
         related:     list[dict],
     ) -> str:
-        """
-        Format related nodes as a compact string for prompt injection.
-
-        Example:
-          [Knowledge Graph] Section 420 IPC related nodes:
-            • Section 415 IPC — Cheating definition→punishment [related]
-            • Section 318 BNS — Cheating aggravated [paired_act]
-            • Concept: Cheating / Fraud [relates_to]
-        """
+        """Mimics NetworkX KG format_context output."""
         if not related:
             return ""
 
-        act_hint = normalize_source(source_hint) if source_hint else "?"
-        lines    = [f"[Knowledge Graph] Section {section} {act_hint} related nodes:"]
+        hint_short = ""
+        if source_hint:
+            import re
+            acr = re.search(r'\(([A-Z]{2,6})\)', source_hint)
+            hint_short = acr.group(1) if acr else source_hint.split()[0].upper()
 
+        lines = [f"[Knowledge Graph] Section {section} {hint_short} related nodes:"]
         for node in related[:8]:
-            ntype = node["node_type"]
-            label = node["edge_label"] or node["section_title"] or ""
-
-            if ntype == "section":
-                desc = f" — {label}" if label else ""
-                lines.append(
-                    f"  • Section {node['section']} {node['act_key']}{desc} [{node['edge_type']}]"
-                )
-            elif ntype == "concept":
-                lines.append(f"  • Concept: {node['label']} [{node['edge_type']}]")
+            sec   = node.get("section", "")
+            act   = node.get("act_key", "")
+            etype = node.get("edge_type", "")
+            label = (node.get("section_title") or node.get("label", ""))[:60]
+            desc  = f" — {label}" if label else ""
+            lines.append(f"  • Section {sec} {act}{desc} [{etype}]")
 
         return "\n".join(lines)
 
-    # ── Stats ──────────────────────────────────────────────────────────────────
 
-    def stats(self) -> dict:
-        if not self._built:
-            return {"built": False}
-
-        node_types: dict[str, int] = {}
-        edge_types: dict[str, int] = {}
-
-        for _, attrs in self.graph.nodes(data=True):
-            t = attrs.get("node_type", "unknown")
-            node_types[t] = node_types.get(t, 0) + 1
-
-        for _, _, attrs in self.graph.edges(data=True):
-            t = attrs.get("edge_type", "unknown")
-            edge_types[t] = edge_types.get(t, 0) + 1
-
-        return {
-            "built":      True,
-            "nodes":      self.graph.number_of_nodes(),
-            "edges":      self.graph.number_of_edges(),
-            "node_types": node_types,
-            "edge_types": edge_types,
-        }
+# Module-level singleton of the adapter
+_flat_kg_singleton = _FlatGraphAdapter()
 
 
-# ── Singleton ──────────────────────────────────────────────────────────────────
-legal_kg = LegalKnowledgeGraph()
-
-
-def get_kg() -> LegalKnowledgeGraph:
-    """Return the singleton KG, building it if not yet built."""
-    if not legal_kg._built:
-        legal_kg.build()
-    return legal_kg
+def get_kg() -> _FlatGraphAdapter:
+    """
+    Drop-in replacement for the old get_kg() that returned the NetworkX KG.
+    Returns the flat-JSON adapter which implements the same interface.
+    """
+    if not _flat_kg_singleton._built:
+        _flat_kg_singleton.build()
+    return _flat_kg_singleton
