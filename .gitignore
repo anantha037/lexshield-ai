@@ -54,3 +54,4 @@ Thumbs.db
 # =========================
 models/saved/
 models/scratch.py
+*.db
