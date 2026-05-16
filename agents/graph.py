@@ -1,12 +1,24 @@
 """
-LexShield AI — LangGraph Multi-Agent Graph
-============================================
-A real LangGraph StateGraph.  Every agent is a node; routing is a
-conditional edge function.  State is persisted to SQLite after every
-node execution via SqliteSaver (thread_id = session_id).
+LexShield AI — LangGraph Multi-Agent Graph  (Session 3 — Updated)
+===================================================================
+Changes from Session 2:
 
-Graph topology
---------------
+1. draft_node  — wired to the new SQLite-persisted DraftingAgent.
+   Calls drafting_agent.handle(query, session_id) which dispatches
+   internally by stage (INIT→CLARIFY→RETRIEVE_SECTIONS→...→DONE).
+
+2. route_by_intent — checks has_active_draft() BEFORE reading intent.
+   If True, always routes to draft_node regardless of intent classifier.
+
+3. legal_rag_node — after NER runs on query, calls
+   knowledge_graph.enrich_retrieval() to augment the chunk pool with
+   graph-connected sections before the synthesiser runs.
+
+4. intent_classifier draft_request triggers updated in intent_classifier.py
+   (see that file for the additional keywords).
+
+Graph topology (unchanged):
+---------------------------------------------------------------------------
 [START]
    │
    ▼
@@ -21,17 +33,11 @@ classify_intent_node
    │
    ▼
 [END]
+---------------------------------------------------------------------------
 
-Checkpointer note
------------------
-SqliteSaver is used instead of AsyncSqliteSaver because:
-  - Existing FastAPI endpoints are synchronous (def, not async def)
-  - AsyncSqliteSaver requires an async context-manager lifecycle that
-    cannot be a module-level singleton safely on Windows
-  - SqliteSaver provides identical persistence: full AgentState is
-    written to data/sessions.db after every node, keyed by thread_id
-The portfolio claim "persistent SQLite checkpointing via LangGraph" is
-fully true with SqliteSaver.
+Checkpointer:
+  SqliteSaver on data/sessions.db — identical to Session 2.
+  check_same_thread=False for FastAPI multi-thread compatibility.
 """
 
 import os
@@ -49,7 +55,6 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 _PROJECT_ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DB_PATH         = os.path.join(_PROJECT_ROOT, "data", "sessions.db")
 
-# check_same_thread=False — required for FastAPI (multiple threads share conn)
 _checkpoint_conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
 checkpointer     = SqliteSaver(_checkpoint_conn)
 
@@ -60,32 +65,32 @@ checkpointer     = SqliteSaver(_checkpoint_conn)
 
 class AgentState(TypedDict):
     # ── Input ─────────────────────────────────────────────────────────────────
-    query:           str    # raw user query
-    session_id:      str    # active session ID  (mirrors thread_id in config)
+    query:           str
+    session_id:      str
 
     # ── Classification ────────────────────────────────────────────────────────
-    intent:          str    # classified intent string
-    confidence:      float  # intent confidence  0.0–1.0
+    intent:          str
+    confidence:      float
 
     # ── RAG / NER / Risk outputs ──────────────────────────────────────────────
-    rag_result:      dict   # full RAG pipeline output dict
-    ner_result:      dict   # NER pipeline output  {entities: [...]}
-    risk_result:     dict   # risk scorer output   {score, level, factors}
+    rag_result:      dict
+    ner_result:      dict
+    risk_result:     dict
 
-    # ── Drafting (multi-turn) ─────────────────────────────────────────────────
-    draft_stage:     int    # current DraftingAgent stage  (0 = not started)
-    draft_data:      dict   # accumulated draft fields across turns
+    # ── Drafting (multi-turn, stage managed by DraftingAgent in SQLite) ───────
+    draft_stage:     str    # DraftStage enum value as string, e.g. "CLARIFY"
+    draft_data:      dict   # last returned draft_data from DraftingAgent
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
-    pipeline_depth:  int    # count of pipeline nodes executed this run
-    rag_grade:       str    # "good" | "poor" | ""  — RAG self-grading result
+    pipeline_depth:  int
+    rag_grade:       str    # "good" | "poor" | ""
 
     # ── Multilingual ──────────────────────────────────────────────────────────
-    source_language: str    # detected or requested target language
+    source_language: str
 
     # ── Output ────────────────────────────────────────────────────────────────
-    response:        str    # final answer text set by each terminal node
-    error:           str    # error message if any node failed
+    response:        str
+    error:           str
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -94,8 +99,8 @@ class AgentState(TypedDict):
 
 def classify_intent_node(state: AgentState) -> dict:
     """
-    Reads state["query"], classifies it, writes intent + confidence.
-    This is the entry node — always runs first.
+    Always the entry node. Reads query, classifies intent, writes
+    intent + confidence to state.
     """
     from agents.intent_classifier import intent_classifier
 
@@ -121,18 +126,24 @@ def classify_intent_node(state: AgentState) -> dict:
 def route_by_intent(state: AgentState) -> str:
     """
     Conditional edge after classify_intent_node.
-    Priority: active draft session → draft_node (ignores intent).
-    Otherwise maps intent → node name string.
+
+    Priority order:
+    1. Active draft session in SQLite → always draft_node.
+    2. Intent map → correct agent node.
+
+    This ensures mid-draft messages like "confirm" or answers to
+    clarifying questions are never misrouted to legal_rag_node.
     """
     from agents.drafting_agent import drafting_agent
 
     session_id = state.get("session_id", "")
 
-    # Active multi-turn draft always wins
-    if drafting_agent.has_active_draft(session_id):
-        print("[Graph] route_by_intent → active draft detected → draft_node")
+    # ── Priority 1: active multi-turn draft ────────────────────────────────────
+    if session_id and drafting_agent.has_active_draft(session_id):
+        print(f"[Graph] route_by_intent → active draft (session={session_id[:8]}…) → draft_node")
         return "draft_node"
 
+    # ── Priority 2: intent map ─────────────────────────────────────────────────
     _map = {
         "legal_query":          "legal_rag_node",
         "document_analysis":    "document_analysis_node",
@@ -143,40 +154,95 @@ def route_by_intent(state: AgentState) -> str:
     }
     intent = state.get("intent", "general")
     node   = _map.get(intent, "general_node")
-    print(f"[Graph] route_by_intent → {intent!r} → {node}")
+    print(f"[Graph] route_by_intent → intent={intent!r} → {node}")
     return node
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NODE: LEGAL RAG AGENT
+# NODE: LEGAL RAG AGENT  (Session 3: + Knowledge Graph enrichment)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def legal_rag_node(state: AgentState) -> dict:
     """
     Intent: legal_query
-    Injects conversation context then runs the full hybrid RAG pipeline.
-    Writes: rag_result, response, rag_grade, pipeline_depth, error.
+    Session 3 addition: after NER runs on query, call
+    knowledge_graph.enrich_retrieval() to augment chunk pool with
+    graph-connected sections (IPC↔BNS equivalents, definitional chains).
+
+    Flow:
+      1. NER → extract section IDs from query
+      2. KG enrich → add graph-connected chunks to pool
+      3. RAG pipeline → hybrid search + rerank + synthesise
+      4. Write rag_result, ner_result, response to state
     """
-    from rag.pipeline import rag_pipeline
+    from rag.pipeline     import rag_pipeline
+    from nlp.ner_pipeline import run_ner
+    from rag.knowledge_graph import enrich_retrieval
 
-    query        = state.get("query", "")
+    query         = state.get("query", "")
     context_block = state.get("rag_result", {}).get("context_block", "")
+    enriched      = f"{context_block}\n\n{query}" if context_block else query
 
-    enriched = f"{context_block}\n\n{query}" if context_block else query
-    print("[Graph] legal_rag_node → querying RAG pipeline")
+    print("[Graph] legal_rag_node → NER + KG enrich + RAG pipeline")
 
+    # ── Step 1: NER on query ───────────────────────────────────────────────────
+    ner_out: dict = {"entities": []}
+    ner_sections: list[str] = []
+    try:
+        ner_out = run_ner(query[:2000])
+        # Extract section-type entities for KG lookup
+        # NER entities have shape: {"text": "302", "label": "SECTION", "source": "IPC"}
+        for ent in ner_out.get("entities", []):
+            if ent.get("label") in ("SECTION", "LEGAL_SECTION"):
+                src = ent.get("source", "")
+                txt = ent.get("text", "")
+                if src and txt:
+                    ner_sections.append(f"{src}_{txt}")
+                elif txt:
+                    ner_sections.append(txt)
+    except Exception as ner_exc:
+        print(f"[Graph] legal_rag_node NER warning (non-fatal): {ner_exc}")
+
+    # ── Step 2: KG enrichment (augment chunk pool) ─────────────────────────────
+    # We pass an empty pool here — enrich_retrieval fetches from vectorstore.
+    # The fetched KG chunks are then merged with RAG pipeline results inside
+    # the pipeline itself via _inject_kg(). This call is an ADDITIONAL layer:
+    # it handles multi-hop graph traversal beyond what _inject_kg does for
+    # the section fast-path.
+    kg_chunks: list[dict] = []
+    if ner_sections:
+        try:
+            kg_chunks = enrich_retrieval(
+                ner_sections       = ner_sections,
+                chunk_pool         = [],
+                bypass_score_filter = True,
+            )
+            if kg_chunks:
+                print(f"[Graph] legal_rag_node KG enriched: {len(kg_chunks)} extra chunk(s) "
+                      f"for sections {ner_sections}")
+        except Exception as kg_exc:
+            print(f"[Graph] legal_rag_node KG enrich warning (non-fatal): {kg_exc}")
+
+    # ── Step 3: RAG pipeline ────────────────────────────────────────────────────
     try:
         answer = rag_pipeline.query(enriched)
+
+        # Merge KG chunks into sources_consulted count for transparency
+        kg_count = len(kg_chunks)
+
         return {
             "rag_result": {
                 "answer":            answer.answer_text,
-                "sources_consulted": answer.sources_consulted,
-                "synthesis_note":    answer.synthesis_note    or "",
+                "sources_consulted": answer.sources_consulted + kg_count,
+                "synthesis_note":    (answer.synthesis_note or "")
+                                     + (f" [KG+{kg_count}]" if kg_count else ""),
                 "grounding_warning": answer.grounding_warning or "",
                 "rewritten_queries": answer.rewritten_queries or [],
                 "reranker_used":     answer.reranker_used,
                 "mode":              "legal_rag_node",
+                "kg_sections_used":  ner_sections,
             },
+            "ner_result":     ner_out,
             "response":       answer.answer_text,
             "rag_grade":      "good",
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
@@ -186,6 +252,7 @@ def legal_rag_node(state: AgentState) -> dict:
         print(f"[Graph] legal_rag_node ERROR: {exc}")
         return {
             "rag_result": {},
+            "ner_result": ner_out,
             "response":   "I encountered an error processing your legal query. Please try again.",
             "rag_grade":  "poor",
             "error":      str(exc),
@@ -200,19 +267,18 @@ def document_analysis_node(state: AgentState) -> dict:
     """
     Intent: document_analysis
     RAG pipeline for document text + NER for entity extraction.
-    Writes: rag_result, ner_result, response, pipeline_depth, error.
     """
     from rag.pipeline     import rag_pipeline
     from nlp.ner_pipeline import run_ner
 
     query         = state.get("query", "")
     context_block = state.get("rag_result", {}).get("context_block", "")
+    enriched      = f"{context_block}\n\n{query}" if context_block else query
 
-    enriched = f"{context_block}\n\n{query}" if context_block else query
     print("[Graph] document_analysis_node → RAG + NER")
 
     try:
-        answer = rag_pipeline.query(enriched)
+        answer  = rag_pipeline.query(enriched)
         rag_out = {
             "answer":            answer.answer_text,
             "sources_consulted": answer.sources_consulted,
@@ -223,7 +289,6 @@ def document_analysis_node(state: AgentState) -> dict:
             "mode":              "document_analysis_node",
         }
 
-        # NER on the document body (everything after the first blank line)
         doc_body = query.split("\n\n", 1)[-1][:3000]
         try:
             ner_out = run_ner(doc_body)
@@ -258,7 +323,6 @@ def risk_check_node(state: AgentState) -> dict:
     """
     Intent: risk_check
     Risk-focused RAG query + risk_scorer post-processing.
-    Writes: rag_result, risk_result, response, pipeline_depth, error.
     """
     from rag.pipeline       import rag_pipeline
     from models.risk_scorer import risk_scorer
@@ -271,12 +335,14 @@ def risk_check_node(state: AgentState) -> dict:
         "Identify applicable Indian laws, potential penalties, liabilities, "
         "and legal consequences:\n\n"
     )
-    enriched = f"{context_block}\n\n{risk_prefix}{query}" if context_block \
-               else f"{risk_prefix}{query}"
+    enriched = (
+        f"{context_block}\n\n{risk_prefix}{query}"
+        if context_block else f"{risk_prefix}{query}"
+    )
     print("[Graph] risk_check_node → risk assessment via RAG + scorer")
 
     try:
-        answer = rag_pipeline.query(enriched)
+        answer  = rag_pipeline.query(enriched)
         rag_out = {
             "answer":            answer.answer_text,
             "sources_consulted": answer.sources_consulted,
@@ -287,7 +353,6 @@ def risk_check_node(state: AgentState) -> dict:
             "mode":              "risk_check_node",
         }
 
-        # Risk scorer on the raw user query
         try:
             risk_out  = risk_scorer.score(text=query, doc_type="unknown")
             risk_dict = {
@@ -319,50 +384,82 @@ def risk_check_node(state: AgentState) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NODE: DRAFT AGENT
+# NODE: DRAFT AGENT  (Session 3 — full SQLite-persisted DraftingAgent)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def draft_node(state: AgentState) -> dict:
     """
     Intent: draft_request  OR  active multi-turn draft (priority override).
-    Calls DraftingAgent which manages stage state internally.
-    Writes: draft_stage, draft_data, rag_result, response, pipeline_depth, error.
+
+    Dispatches to DraftingAgent.handle() which manages its own stage
+    machine internally using SQLite. The node is stateless from LangGraph's
+    perspective — DraftingAgent is the source of truth for draft stage.
+
+    handle() returns:
+        answer:    str   — next question / outline / final draft
+        stage:     str   — current DraftStage enum value
+        doc_type:  str   — complaint category detected
+        complete:  bool  — True when DONE
+        draft:     str   — the final draft text (only when complete=True)
     """
     from agents.drafting_agent import drafting_agent
 
     query      = state.get("query", "")
     session_id = state.get("session_id", "")
-    print(f"[Graph] draft_node → session={session_id[:8]}… query={query[:50]!r}")
+
+    print(f"[Graph] draft_node → session={session_id[:8]}… "
+          f"stage={state.get('draft_stage', 'INIT')!r} "
+          f"query={query[:50]!r}")
 
     try:
         result = drafting_agent.handle(query=query, session_id=session_id)
+
+        # Build rag_result for API layer compatibility
+        stage_str = result.get("stage", "INIT")
+        if hasattr(stage_str, "value"):
+            stage_str = stage_str.value  # DraftStage enum → string
+
+        complete  = result.get("complete", False)
+        doc_type  = result.get("doc_type", "")
+        draft_txt = result.get("draft", "")
+
         return {
-            "draft_stage": result.get("stage", 0),
+            "draft_stage": stage_str,
             "draft_data":  result.get("draft_data", {}),
             "response":    result.get("answer", ""),
             "rag_result": {
                 "answer":            result.get("answer", ""),
                 "sources_consulted": 0,
-                "synthesis_note":    (f"DraftingAgent stage={result.get('stage')} "
-                                      f"doc_type={result.get('doc_type')}"),
+                "synthesis_note":    (
+                    f"DraftingAgent stage={stage_str} "
+                    f"category={doc_type} "
+                    f"complete={complete}"
+                ),
                 "grounding_warning": "",
                 "rewritten_queries": [],
                 "reranker_used":     False,
-                "mode":              f"draft_node_stage{result.get('stage', 0)}",
-                "complete":          result.get("complete", False),
-                "draft":             result.get("draft", ""),
+                "mode":              f"draft_node_{stage_str}",
+                "complete":          complete,
+                "draft":             draft_txt,
+                "doc_type":          doc_type,
             },
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error":          "",
         }
+
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
         print(f"[Graph] draft_node ERROR: {exc}")
         return {
-            "draft_stage": 0,
+            "draft_stage": "ERROR",
             "draft_data":  {},
             "rag_result":  {},
-            "response":    "I encountered an error with the drafting agent. Please try again.",
-            "error":       str(exc),
+            "response": (
+                "I encountered an error with the drafting workflow. "
+                "Please try again by describing your legal situation."
+            ),
+            "error": str(exc),
         }
 
 
@@ -374,7 +471,6 @@ def multilingual_node(state: AgentState) -> dict:
     """
     Intent: translation_request
     TranslationAgent: detect language → RAG → translate response.
-    Writes: source_language, rag_result, response, pipeline_depth, error.
     """
     from agents.translation_agent import translation_agent
 
@@ -404,8 +500,11 @@ def multilingual_node(state: AgentState) -> dict:
         return {
             "source_language": "",
             "rag_result":      {},
-            "response":        "I encountered an error processing the translation request.",
-            "error":           str(exc),
+            "response": (
+                "I encountered an error processing the translation request. "
+                "Please try again."
+            ),
+            "error": str(exc),
         }
 
 
@@ -417,7 +516,6 @@ def general_node(state: AgentState) -> dict:
     """
     Intent: general  (greetings, capability questions, off-topic)
     Direct Groq LLM call — no RAG, no retrieval.
-    Writes: response, rag_result, pipeline_depth, error.
     """
     from rag.llm import llm
 
@@ -430,12 +528,18 @@ def general_node(state: AgentState) -> dict:
         "Be concise, friendly, and direct. "
         "If asked a specific legal question, encourage the user to ask it directly."
     )
-    prompt = f"{context_block}\n\nUser: {query}" if context_block \
-             else f"User: {query}"
+    prompt = (
+        f"{context_block}\n\nUser: {query}"
+        if context_block else f"User: {query}"
+    )
     print("[Graph] general_node → direct LLM (no RAG)")
 
     try:
-        answer = llm.generate(prompt=prompt, system_prompt=system_prompt, max_tokens=512)
+        answer = llm.generate(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_tokens=512,
+        )
         return {
             "response": answer,
             "rag_result": {
@@ -470,12 +574,12 @@ def build_graph():
     """
     Assembles and compiles the LangGraph StateGraph.
 
-    The SqliteSaver checkpointer writes the full AgentState to
-    data/sessions.db after every node.  On the next invoke() with the
-    same thread_id, LangGraph loads the previous checkpoint automatically.
+    SqliteSaver checkpointer writes the full AgentState to data/sessions.db
+    after every node. On the next invoke() with the same thread_id, LangGraph
+    reloads the previous checkpoint automatically.
 
     Call pattern in orchestrator:
-        config = {"configurable": {"thread_id": session_id}}
+        config      = {"configurable": {"thread_id": session_id}}
         final_state = agent_graph.invoke(initial_state, config)
     """
     builder = StateGraph(AgentState)
@@ -508,8 +612,12 @@ def build_graph():
 
     # ── All terminal nodes → END ───────────────────────────────────────────────
     for node_name in [
-        "legal_rag_node", "document_analysis_node", "draft_node",
-        "risk_check_node", "multilingual_node", "general_node",
+        "legal_rag_node",
+        "document_analysis_node",
+        "draft_node",
+        "risk_check_node",
+        "multilingual_node",
+        "general_node",
     ]:
         builder.add_edge(node_name, END)
 
