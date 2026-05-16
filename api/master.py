@@ -3,8 +3,16 @@ LexShield AI — Master Orchestrator API
 ========================================
 Returns LexShieldResponse structured output on every endpoint.
 
-/query    — JSON body { query, session_id }
-/document — multipart/form-data file upload (PDF, DOCX, TXT, images)
+/query    — JSON body  { query, session_id }
+/document — multipart/form-data  file + session_id
+/session/{session_id}/history — reads from SQLite turns table
+/session/{session_id}         — DELETE clears SQLite turns + session row
+
+Changes from previous version
+------------------------------
+- Session history now reads from SQLite (persists across restarts)
+- Risk info is populated from state["risk_result"] when available
+- All other behaviour is identical
 """
 
 import io
@@ -19,7 +27,7 @@ from agents.memory       import session_memory
 
 router = APIRouter(prefix="/api/v1/master", tags=["Master Orchestrator"])
 
-MAX_FILE_SIZE_MB  = 10
+MAX_FILE_SIZE_MB   = 10
 SUPPORTED_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".txt", ".docx"}
 
 
@@ -30,7 +38,7 @@ SUPPORTED_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".txt", 
 class QueryRequest(BaseModel):
     query:      str
     session_id: Optional[str] = None
-    run_rag:    Optional[bool] = True   # accepted but handled by orchestrator
+    run_rag:    Optional[bool] = True   # accepted but handled by graph node selection
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -45,11 +53,11 @@ class RiskInfo(BaseModel):
 class CitationInfo(BaseModel):
     source_number:   int
     source:          str
-    section:         str            = ""
-    section_title:   str            = ""
-    preview:         str            = ""
+    section:         str             = ""
+    section_title:   str             = ""
+    preview:         str             = ""
     relevance_score: Optional[float] = None
-    era:             str            = ""
+    era:             str             = ""
 
 class StructuredResponse(BaseModel):
     answer_text:       str
@@ -75,7 +83,6 @@ class StructuredResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_text(file_bytes: bytes, filename: str) -> str:
-    """Extract plain text from uploaded file based on extension."""
     suffix = Path(filename).suffix.lower()
 
     if suffix == ".pdf":
@@ -99,12 +106,13 @@ def _extract_text(file_bytes: bytes, filename: str) -> str:
     else:
         raise HTTPException(
             status_code=415,
-            detail=f"Unsupported file type: {suffix}. Supported: PDF, DOCX, TXT, JPG, PNG"
+            detail=f"Unsupported file type: {suffix}. "
+                   f"Supported: PDF, DOCX, TXT, JPG, PNG, TIFF, BMP",
         )
 
 
 def _extract_pdf(file_bytes: bytes) -> str:
-    """Try PyMuPDF first, fall back to OCR for scanned PDFs."""
+    """PyMuPDF first (fast); falls back to CV OCR for scanned PDFs."""
     try:
         import fitz
         doc  = fitz.open(stream=file_bytes, filetype="pdf")
@@ -114,12 +122,11 @@ def _extract_pdf(file_bytes: bytes) -> str:
             return text
     except Exception:
         pass
-    # Fallback to CV OCR pipeline
     try:
         from cv.pipeline import extract_text_from_pdf_bytes
         return extract_text_from_pdf_bytes(file_bytes)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF extraction failed: {e}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF extraction failed: {exc}")
 
 
 def _extract_image(file_bytes: bytes) -> str:
@@ -132,9 +139,13 @@ def _extract_image(file_bytes: bytes) -> str:
         if image is None:
             raise ValueError("Could not decode image")
         return extract_text_from_image(preprocess_image(image))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Image OCR failed: {e}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Image OCR failed: {exc}")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESPONSE BUILDER
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _build_structured_response(resp) -> StructuredResponse:
     """Map orchestrator LexShieldResponse → API StructuredResponse."""
@@ -157,7 +168,8 @@ def _build_structured_response(resp) -> StructuredResponse:
                 preview         = c.preview,
                 relevance_score = c.relevance_score,
                 era             = c.era,
-            ) for c in resp.citations
+            )
+            for c in resp.citations
         ],
         draft             = resp.draft,
         intent            = resp.intent,
@@ -179,8 +191,12 @@ def _build_structured_response(resp) -> StructuredResponse:
 @router.post("/query", response_model=StructuredResponse)
 def master_query(request: QueryRequest):
     """
-    Answer a legal query via the multi-agent orchestrator.
+    Answer a legal query via the multi-agent LangGraph orchestrator.
     Body: { query, session_id?, run_rag? }
+
+    session_id is returned in the response — pass it back on subsequent
+    requests to continue the conversation.  State persists across restarts
+    via the SqliteSaver checkpointer.
     """
     if not request.query or not request.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
@@ -194,34 +210,34 @@ def master_query(request: QueryRequest):
 
 @router.post("/document", response_model=StructuredResponse)
 async def master_document(
-    file:       UploadFile      = File(...),
-    session_id: Optional[str]   = Form(None),
+    file:       UploadFile    = File(...),
+    session_id: Optional[str] = Form(None),
 ):
     """
     Analyse an uploaded legal document via the multi-agent orchestrator.
-    Accepts: PDF, DOCX, TXT, JPG, PNG, TIFF, BMP (max 10 MB)
+    Accepts: PDF, DOCX, TXT, JPG, PNG, TIFF, BMP  (max 10 MB)
     Form fields: file (required), session_id (optional)
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
     file_bytes = await file.read()
-
-    size_mb = len(file_bytes) / (1024 * 1024)
+    size_mb    = len(file_bytes) / (1024 * 1024)
     if size_mb > MAX_FILE_SIZE_MB:
         raise HTTPException(
             status_code=413,
-            detail=f"File too large ({size_mb:.1f} MB). Max: {MAX_FILE_SIZE_MB} MB"
+            detail=f"File too large ({size_mb:.1f} MB). Max: {MAX_FILE_SIZE_MB} MB",
         )
 
-    # Extract text from the uploaded file
     extracted_text = _extract_text(file_bytes, file.filename)
 
     if not extracted_text or len(extracted_text.strip()) < 20:
         raise HTTPException(
             status_code=422,
-            detail="Could not extract meaningful text from the document. "
-                   "File may be blank, password-protected, or heavily scanned."
+            detail=(
+                "Could not extract meaningful text from the document. "
+                "File may be blank, password-protected, or heavily scanned."
+            ),
         )
 
     resp = master_orchestrator.handle_document(
@@ -234,15 +250,33 @@ async def master_document(
 
 @router.get("/session/{session_id}/history")
 def get_session_history(session_id: str):
+    """
+    Return full conversation history for a session.
+    Reads from SQLite turns table — persists across server restarts.
+    """
     if not session_memory.session_exists(session_id):
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session '{session_id}' not found",
+        )
     history = session_memory.get_history(session_id)
-    return {"session_id": session_id, "turn_count": len(history), "history": history}
+    return {
+        "session_id": session_id,
+        "turn_count": len(history),
+        "history":    history,
+    }
 
 
 @router.delete("/session/{session_id}")
 def delete_session(session_id: str):
+    """
+    Delete a session and all its turns from SQLite.
+    Also clears any LangGraph checkpoint state for this thread_id.
+    """
     deleted = session_memory.delete_session(session_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session '{session_id}' not found",
+        )
     return {"session_id": session_id, "deleted": True}
