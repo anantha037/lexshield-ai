@@ -13,6 +13,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Create DB tables on startup (safe to run every time — skips if exist) ──────
+from models.database import create_tables
+create_tables()
+
 app = FastAPI(
     title="LexShield AI",
     description="AI-Powered Indian Legal Intelligence Platform",
@@ -21,18 +25,20 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Routers ───────────────────────────────────────────────────────────────────
-from api.document     import router as document_router
-from api.legal        import router as legal_router
-from api.orchestator  import router as orchestrator_router
-from api.classify     import router as classify_router
-from api.master import router as master_router
+# ── Routers ────────────────────────────────────────────────────────────────────
+from api.auth        import router as auth_router
+from api.document    import router as document_router
+from api.legal       import router as legal_router
+from api.orchestator import router as orchestrator_router
+from api.classify    import router as classify_router
+from api.master      import router as master_router
 
+app.include_router(auth_router)
 app.include_router(master_router)
 app.include_router(classify_router)
 app.include_router(document_router)
@@ -40,8 +46,7 @@ app.include_router(legal_router)
 app.include_router(orchestrator_router)
 
 
-
-# ── Health ────────────────────────────────────────────────────────────────────
+# ── Health ─────────────────────────────────────────────────────────────────────
 @app.get("/health", tags=["System"])
 def health_check():
     """
@@ -49,14 +54,13 @@ def health_check():
     Checks: ChromaDB connection, LLM reachability, embedding model.
     """
     status = {
-        "service": "LexShield AI",
-        "version": "1.0.0",
+        "service":  "LexShield AI",
+        "version":  "1.0.0",
         "chromadb": "unknown",
         "llm":      "unknown",
         "embedder": "unknown",
     }
 
-    # Check ChromaDB
     try:
         from rag.vectorstore import vectorstore
         count = vectorstore.count()
@@ -64,7 +68,6 @@ def health_check():
     except Exception as e:
         status["chromadb"] = f"error: {e}"
 
-    # Check embedder
     try:
         from rag.embedder import embedder
         _ = embedder.embed_single("test")
@@ -72,7 +75,6 @@ def health_check():
     except Exception as e:
         status["embedder"] = f"error: {e}"
 
-    # Check LLM (Groq)
     try:
         from rag.llm import llm
         _ = llm.generate("Reply with the single word: ok", max_tokens=5)
@@ -80,7 +82,7 @@ def health_check():
     except Exception as e:
         status["llm"] = f"error: {e}"
 
-    all_ok = all("ok" in str(v) for k, v in status.items() if k != "service" and k != "version")
+    all_ok = all("ok" in str(v) for k, v in status.items() if k not in ("service", "version"))
     status["overall"] = "healthy" if all_ok else "degraded"
 
     return status

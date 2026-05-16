@@ -69,38 +69,51 @@ class LexShieldResponse:
     rewritten_queries: list[str]
     reranker_used:     bool
 
+    @staticmethod
+    def _safe_str(value) -> str:
+        """Ensure value is a clean UTF-8 string — handles bytes from ChromaDB chunks."""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if value is None:
+            return ""
+        try:
+            return str(value).encode("utf-8", errors="replace").decode("utf-8")
+        except Exception:
+            return ""
+
     def to_dict(self) -> dict:
+        s = self._safe_str
         return {
-            "answer_text":       self.answer_text,
-            "summary":           self.summary,
-            "key_clauses":       self.key_clauses,
-            "suggestions":       self.suggestions,
+            "answer_text":       s(self.answer_text),
+            "summary":           s(self.summary),
+            "key_clauses":       [s(c) for c in self.key_clauses],
+            "suggestions":       [s(c) for c in self.suggestions],
             "risk": {
                 "score":   round(self.risk_score, 3),
-                "level":   self.risk_level,
-                "factors": self.risk_factors,
+                "level":   s(self.risk_level),
+                "factors": [s(f) for f in self.risk_factors],
             },
             "citations": [
                 {
                     "source_number":    c.source_number,
-                    "source":           c.source,
-                    "section":          c.section,
-                    "section_title":    c.section_title,
-                    "preview":          c.preview,
+                    "source":           s(c.source),
+                    "section":          s(c.section),
+                    "section_title":    s(c.section_title),
+                    "preview":          s(c.preview),
                     "relevance_score":  c.relevance_score,
-                    "era":              c.era,
+                    "era":              s(c.era),
                 }
                 for c in self.citations
             ],
-            "draft":             self.draft,
-            "intent":            self.intent,
-            "session_id":        self.session_id,
+            "draft":             s(self.draft),
+            "intent":            s(self.intent),
+            "session_id":        s(self.session_id),
             "confidence":        self.confidence,
-            "mode":              self.mode,
+            "mode":              s(self.mode),
             "sources_consulted": self.sources_consulted,
-            "synthesis_note":    self.synthesis_note,
-            "grounding_warning": self.grounding_warning,
-            "rewritten_queries": self.rewritten_queries,
+            "synthesis_note":    s(self.synthesis_note),
+            "grounding_warning": s(self.grounding_warning),
+            "rewritten_queries": [s(q) for q in self.rewritten_queries],
             "reranker_used":     self.reranker_used,
         }
 
