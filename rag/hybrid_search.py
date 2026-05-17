@@ -248,3 +248,4 @@ class HybridSearcher:
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
 hybrid_searcher = HybridSearcher(fusion="rrf", alpha=0.6, fetch_multiplier=3)
+hybrid_search   = hybrid_searcher  # alias for backward compat
