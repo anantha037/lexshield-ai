@@ -1,26 +1,16 @@
 """
-LexShield AI — Main FastAPI Application
-=========================================
+LexShield AI — Main FastAPI Application  (Session 6 — Final)
+=============================================================
 Entry point. Mounts all routers and middleware.
 
-Changes (Week 3, Day 2 Session 2):
-  - LangSmith tracing environment variables injected at startup.
-    Reads LANGCHAIN_TRACING_V2, LANGCHAIN_API_KEY, LANGCHAIN_PROJECT,
-    LANGCHAIN_ENDPOINT from .env and sets them as os.environ before
-    any LangGraph import. LangGraph auto-instruments on first graph.invoke().
-
-    Required .env additions:
-      LANGCHAIN_TRACING_V2=true
-      LANGCHAIN_API_KEY=your_key_from_smith.langchain.com
-      LANGCHAIN_PROJECT=lexshield-ai
-      LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
-
-    Free tier at smith.langchain.com — unlimited traces for personal projects.
-    To verify: make one query, then check smith.langchain.com/projects/lexshield-ai
-    for a trace showing all 8 graph nodes, Groq calls, and token counts.
+Changes in Session 6:
+  - CORS origins now read from ALLOWED_ORIGINS env var (comma-separated)
+    Fallback: http://localhost:3000,http://localhost:5173
+  - Auth router already included; no changes needed there
+  - All previous sessions' behaviour preserved
 
 Run:
-  uvicorn api.main:app --reload
+  uvicorn api.main:app --reload --port 8000
 """
 
 import os
@@ -52,8 +42,6 @@ load_dotenv()
 #   • Each Groq LLM call with prompt, completion, token counts, latency
 #   • ChromaDB retrieval with query vector and returned chunks
 #   • Total wall-clock time per node and end-to-end
-#
-# No code changes needed anywhere else — LangGraph instruments automatically.
 
 _LANGSMITH_KEYS = {
     "LANGCHAIN_TRACING_V2": os.getenv("LANGCHAIN_TRACING_V2", "false"),
@@ -100,16 +88,29 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title       = "LexShield AI",
-    description = "AI-Powered Indian Legal Intelligence Platform",
+    description = (
+        "Agentic Indian Legal Intelligence Platform — "
+        "Capstone project by Anantha Krishnan K, CS Graduate, "
+        "Hansraj College, University of Delhi."
+    ),
     version     = "1.0.0",
 )
 
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Read allowed origins from .env: ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+# Falls back to both common dev ports if env var is absent.
+_raw_origins   = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = ["http://localhost:3000", "http://localhost:3001"],
-    allow_methods = ["*"],
-    allow_headers = ["*"],
+    allow_origins     = _allowed_origins,
+    allow_credentials = True,
+    allow_methods     = ["*"],
+    allow_headers     = ["*"],
 )
+
+print(f"[LexShield] CORS allowed origins: {_allowed_origins}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -140,6 +141,8 @@ def health_check():
     """
     Returns status of all core services.
     Checks: ChromaDB, LLM (Groq), Embedding model, LangSmith tracing.
+
+    curl -s http://localhost:8000/health | python -m json.tool
     """
     status = {
         "service":  "LexShield AI",
@@ -152,6 +155,7 @@ def health_check():
             if (_tracing_enabled and _api_key_present)
             else "disabled"
         ),
+        "cors_origins": _allowed_origins,
     }
 
     try:
@@ -178,7 +182,7 @@ def health_check():
     all_ok = all(
         "ok" in str(v)
         for k, v in status.items()
-        if k not in ("service", "version", "tracing")
+        if k not in ("service", "version", "tracing", "cors_origins")
     )
     status["overall"] = "healthy" if all_ok else "degraded"
 
