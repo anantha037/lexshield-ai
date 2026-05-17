@@ -7,7 +7,7 @@ in-memory version so orchestrator.py needs no changes.
 
 Tables
 ------
-sessions (session_id PK, created_ts)
+sessions (session_id PK, created_ts, user_id TEXT nullable)
 turns    (id PK, session_id FK, role, content, intent, ts)
 
 Uses the SAME data/sessions.db file as the LangGraph SqliteSaver
@@ -16,14 +16,19 @@ checkpoints / checkpoint_blobs / checkpoint_writes).
 
 Public interface (unchanged from in-memory version)
 ----------------------------------------------------
-session_memory.ensure_session(sid)         → str
-session_memory.session_exists(sid)         → bool
-session_memory.create_session()            → str
-session_memory.delete_session(sid)         → bool
+session_memory.ensure_session(sid)              → str
+session_memory.session_exists(sid)              → bool
+session_memory.create_session()                 → str
+session_memory.delete_session(sid)              → bool
 session_memory.add_turn(sid, role, content, intent=None)
-session_memory.get_history(sid)            → list[dict]
-session_memory.get_context_block(sid)      → str
-session_memory.turn_count(sid)             → int
+session_memory.get_history(sid)                 → list[dict]  (ALL turns)
+session_memory.get_context_block(sid)           → str
+session_memory.turn_count(sid)                  → int
+
+New in Session 6 (auth)
+------------------------
+session_memory.link_session_to_user(sid, uid)   → None
+session_memory.get_user_sessions(uid)           → list[dict]
 """
 
 import os
@@ -49,7 +54,7 @@ _lock = threading.Lock()
 
 
 def _init_db() -> None:
-    """Create tables if they don't already exist."""
+    """Create tables and run idempotent migrations."""
     with _lock:
         _conn.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -70,6 +75,15 @@ def _init_db() -> None:
                 ON turns (session_id, id);
         """)
         _conn.commit()
+
+        # Idempotent migration: add user_id column to sessions if not present
+        cols = [
+            row["name"]
+            for row in _conn.execute("PRAGMA table_info(sessions)").fetchall()
+        ]
+        if "user_id" not in cols:
+            _conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
+            _conn.commit()
 
 
 _init_db()
@@ -126,6 +140,55 @@ class SessionMemory:
             _conn.commit()
         return True
 
+    # ── User ↔ Session linking (Session 6) ────────────────────────────────────
+
+    def link_session_to_user(self, session_id: str, user_id: str) -> None:
+        """
+        Associate a session with an authenticated user.
+        Idempotent — safe to call on every authenticated request.
+        """
+        with _lock:
+            _conn.execute(
+                "UPDATE sessions SET user_id = ? WHERE session_id = ?",
+                (user_id, session_id),
+            )
+            _conn.commit()
+
+    def get_user_sessions(self, user_id: str) -> list[dict]:
+        """
+        Return all sessions owned by user_id, ordered by most-recently-active first.
+
+        Each dict:
+          session_id, created_at, last_active, turn_count, first_message
+
+        first_message — first user turn content truncated to 60 chars.
+        last_active   — timestamp of the most recent turn (or session creation).
+        """
+        rows = _conn.execute(
+            """
+            SELECT
+                s.session_id,
+                s.created_ts                                            AS created_at,
+                COALESCE(MAX(t.ts), s.created_ts)                      AS last_active,
+                COUNT(t.id)                                             AS turn_count,
+                (
+                    SELECT SUBSTR(t2.content, 1, 60)
+                    FROM   turns t2
+                    WHERE  t2.session_id = s.session_id
+                    AND    t2.role = 'user'
+                    ORDER  BY t2.id ASC
+                    LIMIT  1
+                )                                                       AS first_message
+            FROM   sessions s
+            LEFT JOIN turns t ON t.session_id = s.session_id
+            WHERE  s.user_id = ?
+            GROUP  BY s.session_id
+            ORDER  BY last_active DESC
+            """,
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     # ── Turn operations ────────────────────────────────────────────────────────
 
     def add_turn(
@@ -156,7 +219,6 @@ class SessionMemory:
 
     def _trim(self, session_id: str) -> None:
         """Delete oldest turns that exceed MAX_TURNS_STORED."""
-        # Rows to delete = all rows except the newest MAX_TURNS_STORED
         rows = _conn.execute(
             """
             SELECT id FROM turns
@@ -178,7 +240,10 @@ class SessionMemory:
 
     def get_history(self, session_id: str) -> list[dict]:
         """
-        Return full stored history as list of dicts.
+        Return FULL stored history as list of dicts (no 5-turn cap).
+        Used by frontend to restore complete chat history when a user
+        reopens an old session.
+
         Each dict: { role, content, intent, ts }
         """
         rows = _conn.execute(
