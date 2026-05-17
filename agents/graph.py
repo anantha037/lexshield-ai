@@ -1,57 +1,44 @@
 """
-LexShield AI — LangGraph Multi-Agent Graph  (Week 3, Day 2 — Updated)
-=======================================================================
-Changes from Session 3:
+LexShield AI — LangGraph Multi-Agent Graph  (Week 3, Day 2 Session 2 — Updated)
+==================================================================================
+Changes from previous session:
 
-1. classify_intent_node — now calls detect_language() first.
-   Stores ISO 639-1 code in state["source_language"].
-   Non-English queries (ml/hi/ta/te/...) detected here, before routing.
+1. rights_node added as 8th node.
+   Routes on intent == "rights_check".
+   Calls RightsAgent.get_rights_with_rag_enrichment() → structured rights guide
+   from data/rights_guide.json merged with live RAG context.
 
-2. route_by_intent — Priority 3 added: if source_language != "en"
-   AND intent is legal_query, risk_check, or general → multilingual_node.
-   This ensures a Malayalam query asking about Section 302 is handled by
-   the multilingual pipeline, not raw RAG (which would get a Malayalam
-   query it can't process meaningfully).
+2. AgentState gains "case_law_result" field (dict) for case_law_node output.
 
-3. multilingual_node — split into two sub-flows:
-   - intent == "translation_request" → translation_agent.handle()
-     (explicit: "explain in Malayalam", "translate to Hindi")
-   - source_language != "en" (auto-detected) → multilingual_agent.process_multilingual_query()
-     (auto: Malayalam/Hindi query detected by script recognition)
+3. route_by_intent Priority 2 updated:
+   "rights_check" is NOT redirected to multilingual_node even for non-English
+   queries — the rights guide content is English, and translation is handled
+   by the response layer. Future: translate formatted rights response.
 
-4. case_law_node — new node (7th).
-   Calls case_law_agent.search_and_summarize() → Indian Kanoon live judgments.
-   Routes on intent == "case_law_search".
+4. All nodes registered and wired to END.
 
-5. legal_rag_node — optional case law enrichment.
-   When ENABLE_CASE_LAW_ENRICHMENT=true and NER finds section numbers,
-   appends top 2 real judgments from Indian Kanoon after RAG answer.
-
-6. AgentState — source_language field already present from Session 3.
-   No schema change needed.
-
-Graph topology:
+Graph topology (8 terminal nodes):
 ---------------------------------------------------------------------------
 [START]
    │
    ▼
-classify_intent_node  ← now also calls detect_language()
+classify_intent_node  ← detect_language() + intent_classifier.classify()
    │
-   ▼  route_by_intent() — conditional edge
-┌─────────────────────────────────────────────────────────────────────┐
-│ legal_rag_node       │ document_analysis_node │ case_law_node       │
-│ risk_check_node      │ draft_node             │ multilingual_node   │
-│ general_node         │                        │                     │
-└─────────────────────────────────────────────────────────────────────┘
+   ▼  route_by_intent() conditional edge
+┌─────────────────────────────────────────────────────────────────────────┐
+│ legal_rag_node       │ document_analysis_node │ case_law_node           │
+│ risk_check_node      │ draft_node             │ multilingual_node       │
+│ rights_node          │ general_node           │                         │
+└─────────────────────────────────────────────────────────────────────────┘
    │
    ▼
 [END]
 ---------------------------------------------------------------------------
 
 Priority order in route_by_intent:
-  1. Active draft session in SQLite     → draft_node
+  1. Active draft session in SQLite        → draft_node
   2. Non-English source_language + legal/risk/general intent → multilingual_node
-  3. Intent map                         → correct agent node
+  3. Intent map                            → correct agent node
 """
 
 import os
@@ -63,7 +50,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SQLITE CHECKPOINTER  (module-level singleton)
+# SQLITE CHECKPOINTER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _PROJECT_ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -78,36 +65,40 @@ checkpointer     = SqliteSaver(_checkpoint_conn)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class AgentState(TypedDict):
-    # ── Input ─────────────────────────────────────────────────────────────────
-    query:           str
-    session_id:      str
+    # ── Input ──────────────────────────────────────────────────────────────────
+    query:            str
+    session_id:       str
 
-    # ── Classification ────────────────────────────────────────────────────────
-    intent:          str
-    confidence:      float
+    # ── Classification ─────────────────────────────────────────────────────────
+    intent:           str
+    confidence:       float
 
-    # ── RAG / NER / Risk outputs ──────────────────────────────────────────────
-    rag_result:      dict
-    ner_result:      dict
-    risk_result:     dict
+    # ── RAG / NER / Risk outputs ───────────────────────────────────────────────
+    rag_result:       dict
+    ner_result:       dict
+    risk_result:      dict
 
-    # ── Drafting (multi-turn, stage managed by DraftingAgent in SQLite) ───────
-    draft_stage:     str    # DraftStage enum value as string
-    draft_data:      dict
+    # ── Drafting ───────────────────────────────────────────────────────────────
+    draft_stage:      str
+    draft_data:       dict
 
-    # ── Case law ──────────────────────────────────────────────────────────────
-    case_law_result: dict   # {query, results, total_found} from search_and_summarize
+    # ── Case law ───────────────────────────────────────────────────────────────
+    case_law_result:  dict    # {query, results, total_found} from search_and_summarize
 
-    # ── Diagnostics ───────────────────────────────────────────────────────────
-    pipeline_depth:  int
-    rag_grade:       str    # "good" | "poor" | ""
+    # ── Rights guide ───────────────────────────────────────────────────────────
+    rights_category:  str     # detected category: tenant/employee/consumer/women/bail
+    rights_result:    dict    # enriched rights dict from RightsAgent
 
-    # ── Multilingual ──────────────────────────────────────────────────────────
-    source_language: str    # ISO 639-1: "en", "ml", "hi", "ta", "te", ...
+    # ── Diagnostics ────────────────────────────────────────────────────────────
+    pipeline_depth:   int
+    rag_grade:        str     # "good" | "poor" | ""
 
-    # ── Output ────────────────────────────────────────────────────────────────
-    response:        str
-    error:           str
+    # ── Multilingual ───────────────────────────────────────────────────────────
+    source_language:  str     # ISO 639-1: "en", "ml", "hi", "ta", "te", ...
+
+    # ── Output ─────────────────────────────────────────────────────────────────
+    response:         str
+    error:            str
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -116,21 +107,12 @@ class AgentState(TypedDict):
 
 def classify_intent_node(state: AgentState) -> dict:
     """
-    Entry node. Runs two classifiers in sequence:
+    Entry node. Always runs first.
 
-    1. detect_language(query) — Unicode fast-path + langdetect fallback.
-       Sets state["source_language"] to ISO 639-1 code.
-       This happens BEFORE intent classification so route_by_intent
-       can redirect non-English queries to multilingual_node.
-
-    2. intent_classifier.classify(query) — keyword + regex scorer.
-       Sets state["intent"] and state["confidence"].
-
-    Non-English queries are classified by intent normally so we can
-    still distinguish "Malayalam legal query" from "Malayalam draft request".
-    The multilingual_node only handles legal_query / risk_check / general —
-    draft_request goes to draft_node even for non-English input (DraftingAgent
-    generates English drafts which are then translated in a future iteration).
+    1. detect_language(query) — Unicode fast-path + langdetect.
+       Stores ISO 639-1 code in state["source_language"].
+    2. intent_classifier.classify(query) — 8-intent keyword+regex scorer.
+       Stores intent and confidence in state.
     """
     from agents.intent_classifier  import intent_classifier
     from agents.multilingual_agent import detect_language
@@ -144,12 +126,10 @@ def classify_intent_node(state: AgentState) -> dict:
             "pipeline_depth":  1,
         }
 
-    # ── Step 1: Language detection ─────────────────────────────────────────────
     source_language = detect_language(query)
     if source_language != "en":
         print(f"[Graph] classify_intent_node → detected language: {source_language!r}")
 
-    # ── Step 2: Intent classification ─────────────────────────────────────────
     result = intent_classifier.classify(query)
     print(
         f"[Graph] classify_intent_node → intent={result.intent!r} "
@@ -165,26 +145,17 @@ def classify_intent_node(state: AgentState) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROUTING FUNCTION  (conditional edge)
+# ROUTING FUNCTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def route_by_intent(state: AgentState) -> str:
     """
     Conditional edge after classify_intent_node.
 
-    Priority order:
-      1. Active SQLite draft session → draft_node (always, regardless of language)
-      2. Non-English source_language AND intent is legal/risk/general
-         → multilingual_node (wraps translate→RAG→translate flow)
-      3. Intent map → correct agent node
-
-    Notes on Priority 2:
-    - draft_request is NOT redirected to multilingual_node — the DraftingAgent
-      generates structured English drafts regardless of query language.
-      Future enhancement: translate the final draft to user's language.
-    - document_analysis is NOT redirected — OCR already handles multilingual
-      via source_language-aware Tesseract config in cv/pipeline.py.
-    - case_law_search is NOT redirected — Indian Kanoon is English-only.
+    Priority:
+      1. Active SQLite draft → draft_node
+      2. Non-English + legal/risk/general intent → multilingual_node
+      3. Intent map → correct node
     """
     from agents.drafting_agent import drafting_agent
 
@@ -192,52 +163,46 @@ def route_by_intent(state: AgentState) -> str:
     source_language = state.get("source_language", "en")
     intent          = state.get("intent", "general")
 
-    # ── Priority 1: Active multi-turn draft ────────────────────────────────────
+    # Priority 1: active draft
     if session_id and drafting_agent.has_active_draft(session_id):
-        print(
-            f"[Graph] route_by_intent → active draft "
-            f"(session={session_id[:8]}…) → draft_node"
-        )
+        print(f"[Graph] route → active draft → draft_node")
         return "draft_node"
 
-    # ── Priority 2: Non-English auto-detection ─────────────────────────────────
-    _multilingual_eligible_intents = {"legal_query", "risk_check", "general"}
-    if source_language != "en" and intent in _multilingual_eligible_intents:
+    # Priority 2: non-English auto-detection
+    # rights_check NOT redirected — English guide content, translated at response layer
+    _multilingual_eligible = {"legal_query", "risk_check", "general"}
+    if source_language != "en" and intent in _multilingual_eligible:
         print(
-            f"[Graph] route_by_intent → non-English source_language={source_language!r} "
+            f"[Graph] route → non-English {source_language!r} "
             f"intent={intent!r} → multilingual_node"
         )
         return "multilingual_node"
 
-    # ── Priority 3: Intent map ─────────────────────────────────────────────────
-    _intent_to_node: dict[str, str] = {
+    # Priority 3: intent map
+    _map: dict[str, str] = {
         "legal_query":          "legal_rag_node",
         "document_analysis":    "document_analysis_node",
         "draft_request":        "draft_node",
         "risk_check":           "risk_check_node",
         "translation_request":  "multilingual_node",
         "case_law_search":      "case_law_node",
+        "rights_check":         "rights_node",
         "general":              "general_node",
     }
-    node = _intent_to_node.get(intent, "general_node")
-    print(f"[Graph] route_by_intent → intent={intent!r} → {node}")
+    node = _map.get(intent, "general_node")
+    print(f"[Graph] route → intent={intent!r} → {node}")
     return node
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NODE: LEGAL RAG AGENT  (+ optional case law enrichment)
+# NODE: LEGAL RAG  (+ optional case law enrichment)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def legal_rag_node(state: AgentState) -> dict:
     """
-    Intent: legal_query (English queries only — non-English routes to multilingual_node)
+    Intent: legal_query (English queries — non-English → multilingual_node)
 
-    Flow:
-      1. NER → extract section IDs from query
-      2. KG enrich → add graph-connected chunks (IPC↔BNS equivalents)
-      3. RAG pipeline → hybrid search + CRAG + rerank + synthesise
-      4. [Optional] Case law enrichment → append real judgments from Indian Kanoon
-      5. Write rag_result, ner_result, response to state
+    Flow: NER → KG enrich → RAG pipeline → optional case law enrichment
     """
     from rag.pipeline            import rag_pipeline
     from nlp.ner_pipeline        import run_ner
@@ -251,9 +216,9 @@ def legal_rag_node(state: AgentState) -> dict:
     context_block = state.get("rag_result", {}).get("context_block", "")
     enriched      = f"{context_block}\n\n{query}" if context_block else query
 
-    print("[Graph] legal_rag_node → NER + KG enrich + RAG")
+    print("[Graph] legal_rag_node → NER + KG + RAG")
 
-    # ── Step 1: NER ────────────────────────────────────────────────────────────
+    # NER
     ner_out: dict        = {"entities": []}
     ner_sections: list[str] = []
     try:
@@ -266,10 +231,10 @@ def legal_rag_node(state: AgentState) -> dict:
                     ner_sections.append(f"{src}_{txt}")
                 elif txt:
                     ner_sections.append(txt)
-    except Exception as ner_exc:
-        print(f"[Graph] legal_rag_node NER warning (non-fatal): {ner_exc}")
+    except Exception as e:
+        print(f"[Graph] legal_rag_node NER warning: {e}")
 
-    # ── Step 2: Knowledge Graph enrichment ────────────────────────────────────
+    # KG enrichment
     kg_chunks: list[dict] = []
     if ner_sections:
         try:
@@ -279,21 +244,17 @@ def legal_rag_node(state: AgentState) -> dict:
                 bypass_score_filter = True,
             )
             if kg_chunks:
-                print(
-                    f"[Graph] legal_rag_node KG: {len(kg_chunks)} chunk(s) "
-                    f"for {ner_sections}"
-                )
-        except Exception as kg_exc:
-            print(f"[Graph] legal_rag_node KG warning (non-fatal): {kg_exc}")
+                print(f"[Graph] KG: {len(kg_chunks)} extra chunk(s)")
+        except Exception as e:
+            print(f"[Graph] legal_rag_node KG warning: {e}")
 
-    # ── Step 3: RAG pipeline ───────────────────────────────────────────────────
+    # RAG pipeline
     try:
-        answer   = rag_pipeline.query(enriched)
-        kg_count = len(kg_chunks)
-
+        answer          = rag_pipeline.query(enriched)
+        kg_count        = len(kg_chunks)
         rag_answer_text = answer.answer_text
 
-        # ── Step 4: Case law enrichment (optional) ─────────────────────────────
+        # Optional case law enrichment
         if ENABLE_CASE_LAW_ENRICHMENT and ner_sections:
             from rag.llm import llm as _groq
             try:
@@ -302,9 +263,8 @@ def legal_rag_node(state: AgentState) -> dict:
                     ner_sections    = ner_sections,
                     groq_client     = _groq,
                 )
-            except Exception as cl_exc:
-                # Non-fatal: RAG answer is still valid without case law
-                print(f"[Graph] legal_rag_node case law enrichment warning: {cl_exc}")
+            except Exception as e:
+                print(f"[Graph] Case law enrichment warning: {e}")
 
         return {
             "rag_result": {
@@ -324,7 +284,6 @@ def legal_rag_node(state: AgentState) -> dict:
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error":          "",
         }
-
     except Exception as exc:
         print(f"[Graph] legal_rag_node ERROR: {exc}")
         return {
@@ -337,14 +296,10 @@ def legal_rag_node(state: AgentState) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NODE: DOCUMENT ANALYSIS AGENT
+# NODE: DOCUMENT ANALYSIS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def document_analysis_node(state: AgentState) -> dict:
-    """
-    Intent: document_analysis
-    RAG pipeline for document text + NER for entity extraction.
-    """
     from rag.pipeline     import rag_pipeline
     from nlp.ner_pipeline import run_ner
 
@@ -365,13 +320,11 @@ def document_analysis_node(state: AgentState) -> dict:
             "reranker_used":     answer.reranker_used,
             "mode":              "document_analysis_node",
         }
-
         doc_body = query.split("\n\n", 1)[-1][:3000]
         try:
             ner_out = run_ner(doc_body)
-        except Exception as ner_exc:
-            print(f"[Graph] NER warning (non-fatal): {ner_exc}")
-            ner_out = {"entities": [], "error": str(ner_exc)}
+        except Exception as e:
+            ner_out = {"entities": [], "error": str(e)}
 
         return {
             "rag_result":     rag_out,
@@ -381,7 +334,6 @@ def document_analysis_node(state: AgentState) -> dict:
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error":          "",
         }
-
     except Exception as exc:
         print(f"[Graph] document_analysis_node ERROR: {exc}")
         return {
@@ -394,21 +346,16 @@ def document_analysis_node(state: AgentState) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NODE: RISK CHECK AGENT
+# NODE: RISK CHECK
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def risk_check_node(state: AgentState) -> dict:
-    """
-    Intent: risk_check
-    Risk-focused RAG + risk_scorer post-processing.
-    """
     from rag.pipeline       import rag_pipeline
     from models.risk_scorer import risk_scorer
 
     query         = state.get("query", "")
     context_block = state.get("rag_result", {}).get("context_block", "")
-
-    risk_prefix = (
+    risk_prefix   = (
         "Provide a detailed legal risk assessment for the following situation. "
         "Identify applicable Indian laws, potential penalties, liabilities, "
         "and legal consequences:\n\n"
@@ -417,7 +364,7 @@ def risk_check_node(state: AgentState) -> dict:
         f"{context_block}\n\n{risk_prefix}{query}"
         if context_block else f"{risk_prefix}{query}"
     )
-    print("[Graph] risk_check_node → risk assessment via RAG + scorer")
+    print("[Graph] risk_check_node → RAG + scorer")
 
     try:
         answer  = rag_pipeline.query(enriched)
@@ -430,16 +377,11 @@ def risk_check_node(state: AgentState) -> dict:
             "reranker_used":     answer.reranker_used,
             "mode":              "risk_check_node",
         }
-
         try:
             risk_out  = risk_scorer.score(text=query, doc_type="unknown")
-            risk_dict = {
-                "score":   risk_out.score,
-                "level":   risk_out.level,
-                "factors": risk_out.factors,
-            }
-        except Exception as risk_exc:
-            print(f"[Graph] risk_scorer warning (non-fatal): {risk_exc}")
+            risk_dict = {"score": risk_out.score, "level": risk_out.level, "factors": risk_out.factors}
+        except Exception as e:
+            print(f"[Graph] risk_scorer warning: {e}")
             risk_dict = {"score": 0.0, "level": "unknown", "factors": []}
 
         return {
@@ -450,7 +392,6 @@ def risk_check_node(state: AgentState) -> dict:
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error":          "",
         }
-
     except Exception as exc:
         print(f"[Graph] risk_check_node ERROR: {exc}")
         return {
@@ -467,19 +408,11 @@ def risk_check_node(state: AgentState) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def draft_node(state: AgentState) -> dict:
-    """
-    Intent: draft_request  OR  active multi-turn draft (priority override).
-    Dispatches to DraftingAgent.handle() — stateless from LangGraph's perspective.
-    """
     from agents.drafting_agent import drafting_agent
 
     query      = state.get("query", "")
     session_id = state.get("session_id", "")
-
-    print(
-        f"[Graph] draft_node → session={session_id[:8] if session_id else '?'}… "
-        f"stage={state.get('draft_stage', 'INIT')!r} query={query[:50]!r}"
-    )
+    print(f"[Graph] draft_node → session={session_id[:8] if session_id else '?'}…")
 
     try:
         result    = drafting_agent.handle(query=query, session_id=session_id)
@@ -498,10 +431,7 @@ def draft_node(state: AgentState) -> dict:
             "rag_result": {
                 "answer":            result.get("answer", ""),
                 "sources_consulted": 0,
-                "synthesis_note": (
-                    f"DraftingAgent stage={stage_str} "
-                    f"category={doc_type} complete={complete}"
-                ),
+                "synthesis_note":    f"DraftingAgent stage={stage_str} category={doc_type} complete={complete}",
                 "grounding_warning": "",
                 "rewritten_queries": [],
                 "reranker_used":     False,
@@ -513,46 +443,26 @@ def draft_node(state: AgentState) -> dict:
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error":          "",
         }
-
     except Exception as exc:
-        import traceback
-        traceback.print_exc()
+        import traceback; traceback.print_exc()
         print(f"[Graph] draft_node ERROR: {exc}")
         return {
             "draft_stage": "ERROR",
             "draft_data":  {},
             "rag_result":  {},
-            "response": (
-                "I encountered an error with the drafting workflow. "
-                "Please try again by describing your legal situation."
-            ),
-            "error": str(exc),
+            "response":    "I encountered an error with the drafting workflow. Please try again.",
+            "error":       str(exc),
         }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NODE: MULTILINGUAL AGENT  (updated — two sub-flows)
+# NODE: MULTILINGUAL  (two sub-flows)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def multilingual_node(state: AgentState) -> dict:
     """
-    Handles two distinct multilingual scenarios:
-
-    Sub-flow A — Auto-detected non-English query (e.g. Malayalam, Hindi):
-      source_language != "en" in state.
-      Uses multilingual_agent.process_multilingual_query():
-        translate query → English → RAG → translate answer → source language.
-      Example: "Section 302 IPC ൽ ശിക്ഷ എന്ത്?" → Malayalam answer
-
-    Sub-flow B — Explicit translation request (English query):
-      intent == "translation_request", source_language == "en".
-      Uses translation_agent.handle():
-        strip translation instruction → RAG → translate answer to target language.
-      Example: "Explain Section 138 NI Act in Hindi" → bilingual answer
-
-    The sub-flow is selected by checking state["intent"]:
-      "translation_request" → sub-flow B
-      anything else         → sub-flow A (auto-detected non-English)
+    Sub-flow A: intent == translation_request → translation_agent.handle()
+    Sub-flow B: source_language != "en" (auto-detected) → process_multilingual_query()
     """
     from agents.multilingual_agent import process_multilingual_query
     from agents.translation_agent  import translation_agent
@@ -564,9 +474,8 @@ def multilingual_node(state: AgentState) -> dict:
     intent          = state.get("intent", "")
     source_language = state.get("source_language", "en")
 
-    # ── Sub-flow B: Explicit translation request (English query) ───────────────
     if intent == "translation_request":
-        print("[Graph] multilingual_node → sub-flow B: explicit translation request")
+        print("[Graph] multilingual_node → sub-flow B: explicit translation")
         try:
             result = translation_agent.handle(query=query, session_id=session_id)
             return {
@@ -585,19 +494,11 @@ def multilingual_node(state: AgentState) -> dict:
                 "error":          "",
             }
         except Exception as exc:
-            print(f"[Graph] multilingual_node (sub-flow B) ERROR: {exc}")
-            return {
-                "source_language": source_language,
-                "rag_result":      {},
-                "response": "I encountered an error processing the translation request. Please try again.",
-                "error":    str(exc),
-            }
+            print(f"[Graph] multilingual_node B ERROR: {exc}")
+            return {"source_language": source_language, "rag_result": {},
+                    "response": "Translation error. Please try again.", "error": str(exc)}
 
-    # ── Sub-flow A: Auto-detected non-English query ────────────────────────────
-    print(
-        f"[Graph] multilingual_node → sub-flow A: "
-        f"auto-detected {source_language!r} query"
-    )
+    print(f"[Graph] multilingual_node → sub-flow A: auto {source_language!r}")
     try:
         result = process_multilingual_query(
             query        = query,
@@ -610,10 +511,8 @@ def multilingual_node(state: AgentState) -> dict:
             "rag_result": {
                 "answer":            result.get("english_response", ""),
                 "sources_consulted": result.get("sources_consulted", 0),
-                "synthesis_note": (
-                    result.get("synthesis_note", "") +
-                    f" [translated from {result.get('original_language', 'unknown')}]"
-                ),
+                "synthesis_note":    (result.get("synthesis_note", "") +
+                                      f" [translated from {result.get('original_language', '?')}]"),
                 "grounding_warning": result.get("grounding_warning", ""),
                 "rewritten_queries": result.get("rewritten_queries", []),
                 "reranker_used":     result.get("reranker_used", False),
@@ -621,56 +520,31 @@ def multilingual_node(state: AgentState) -> dict:
                 "translated_query":  result.get("translated_query", ""),
                 "original_language": result.get("original_language", ""),
             },
-            "response":       result.get("response", ""),  # in user's language
+            "response":       result.get("response", ""),
             "rag_grade":      "good",
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error":          "",
         }
     except Exception as exc:
-        print(f"[Graph] multilingual_node (sub-flow A) ERROR: {exc}")
-        return {
-            "source_language": source_language,
-            "rag_result":      {},
-            "response": "I encountered an error processing your query. Please try again.",
-            "error":    str(exc),
-        }
+        print(f"[Graph] multilingual_node A ERROR: {exc}")
+        return {"source_language": source_language, "rag_result": {},
+                "response": "I encountered an error. Please try again.", "error": str(exc)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NODE: CASE LAW SEARCH AGENT  (new — Week 3 Day 2)
+# NODE: CASE LAW SEARCH
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def case_law_node(state: AgentState) -> dict:
-    """
-    Intent: case_law_search
-
-    Queries Indian Kanoon for live Supreme Court and High Court judgments.
-    Returns structured case law results with:
-      - Case title, court, date, citation
-      - AI-generated 2-sentence precedent summary (Groq)
-      - Clickable URL to full judgment on indiankanoon.org
-
-    This node is what differentiates LexShield from static legal chatbots —
-    it retrieves REAL, CURRENT judgments from India's primary case law database.
-
-    Flow:
-      1. search_cases(query)          → Indian Kanoon API → case list
-      2. summarize_case(case, llm)    → Groq 2-sentence summary per case
-      3. format_case_law_response()   → markdown formatted output
-      4. Write to state["response"] + state["case_law_result"]
-    """
+    """Intent: case_law_search → Indian Kanoon live judgment search."""
     from agents.case_law_agent import search_and_summarize, format_case_law_response
     from rag.llm               import llm as groq_client
 
     query = state.get("query", "")
-    print(f"[Graph] case_law_node → Indian Kanoon search for: {query[:60]!r}")
+    print(f"[Graph] case_law_node → Indian Kanoon: {query[:60]!r}")
 
     try:
-        search_result = search_and_summarize(
-            query       = query,
-            groq_client = groq_client,
-            max_results = 3,
-        )
+        search_result      = search_and_summarize(query=query, groq_client=groq_client, max_results=3)
         formatted_response = format_case_law_response(search_result)
 
         return {
@@ -678,15 +552,9 @@ def case_law_node(state: AgentState) -> dict:
             "rag_result": {
                 "answer":            formatted_response,
                 "sources_consulted": search_result["total_found"],
-                "synthesis_note": (
-                    f"Indian Kanoon: {search_result['total_found']} "
-                    f"judgment(s) found for '{query[:40]}'"
-                ),
-                "grounding_warning": (
-                    ""
-                    if search_result["total_found"] > 0
-                    else "No judgments found — query may need refinement."
-                ),
+                "synthesis_note":    f"Indian Kanoon: {search_result['total_found']} judgment(s)",
+                "grounding_warning": "" if search_result["total_found"] > 0
+                                     else "No judgments found — refine query.",
                 "rewritten_queries": [],
                 "reranker_used":     False,
                 "mode":              "case_law_node",
@@ -696,32 +564,188 @@ def case_law_node(state: AgentState) -> dict:
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error":          "",
         }
-
     except Exception as exc:
-        import traceback
-        traceback.print_exc()
+        import traceback; traceback.print_exc()
         print(f"[Graph] case_law_node ERROR: {exc}")
         return {
             "case_law_result": {"query": query, "results": [], "total_found": 0},
             "rag_result":      {},
-            "response": (
-                "I encountered an error searching for case law. "
-                "Please check that INDIANKANOON_API_KEY is set in .env and try again."
-            ),
-            "rag_grade": "poor",
-            "error":     str(exc),
+            "response":        "Error searching case law. Check INDIANKANOON_API_KEY in .env.",
+            "rag_grade":       "poor",
+            "error":           str(exc),
         }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NODE: GENERAL AGENT
+# NODE: RIGHTS AGENT  (new — Week 3 Day 2 Session 2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def rights_node(state: AgentState) -> dict:
+    """
+    Intent: rights_check
+
+    Detects the rights category from the query, loads the structured guide
+    from data/rights_guide.json, and enriches with live RAG context.
+
+    Category detection strategy:
+      1. Keyword scan of query for: tenant, employee/worker/labour,
+         consumer, women/woman/wife/domestic, bail/arrest/accused/detained
+      2. Falls back to presenting all categories if no match found
+
+    Output: formatted markdown rights guide with legal sections + what-to-do.
+    """
+    from agents.rights_agent import (
+        get_rights_with_rag_enrichment,
+        format_rights_response,
+        get_all_categories,
+    )
+    from rag.pipeline import rag_pipeline
+
+    query = state.get("query", "").lower()
+    print(f"[Graph] rights_node → detecting category from: {query[:60]!r}")
+
+    # ── Category detection ─────────────────────────────────────────────────────
+    category = _detect_rights_category(query)
+
+    if category:
+        print(f"[Graph] rights_node → category={category!r}")
+        try:
+            rights_dict = get_rights_with_rag_enrichment(
+                category     = category,
+                rag_pipeline = rag_pipeline,
+            )
+            formatted   = format_rights_response(rights_dict)
+
+            return {
+                "rights_category": category,
+                "rights_result":   rights_dict,
+                "rag_result": {
+                    "answer":            formatted,
+                    "sources_consulted": rights_dict.get("rag_enrichment", {}).get("sources_consulted", 0),
+                    "synthesis_note":    f"RightsAgent: category={category}, RAG enriched",
+                    "grounding_warning": "",
+                    "rewritten_queries": [],
+                    "reranker_used":     False,
+                    "mode":              f"rights_node_{category}",
+                },
+                "response":       formatted,
+                "rag_grade":      "good",
+                "pipeline_depth": state.get("pipeline_depth", 1) + 1,
+                "error":          "",
+            }
+        except Exception as exc:
+            print(f"[Graph] rights_node ERROR for category={category!r}: {exc}")
+            return {
+                "rights_category": category,
+                "rights_result":   {},
+                "rag_result":      {},
+                "response": (
+                    f"I encountered an error loading rights for '{category}'. "
+                    "Please try again or ask a specific legal question."
+                ),
+                "rag_grade": "poor",
+                "error":     str(exc),
+            }
+
+    # ── No category detected — show menu ──────────────────────────────────────
+    print("[Graph] rights_node → no category detected, showing menu")
+    try:
+        categories    = get_all_categories()
+        menu_lines    = [
+            "⚖️ **Know Your Rights — LexShield AI**",
+            "",
+            "Please specify which rights you'd like to explore:",
+            "",
+        ]
+        for cat in categories:
+            menu_lines.append(
+                f"{cat['icon']} **{cat['display']}** — "
+                f"{cat['num_rights']} rights covered"
+            )
+        menu_lines.extend([
+            "",
+            "**Examples:**",
+            '  • "What are my rights as a tenant?"',
+            '  • "Know my rights as an employee"',
+            '  • "Bail rights of arrested person"',
+            '  • "Consumer rights India"',
+            '  • "Women\'s rights domestic violence"',
+        ])
+        menu_response = "\n".join(menu_lines)
+    except Exception:
+        menu_response = (
+            "Please specify which rights you need: tenant, employee, consumer, women, or bail."
+        )
+
+    return {
+        "rights_category": "",
+        "rights_result":   {},
+        "rag_result":      {"answer": menu_response, "sources_consulted": 0,
+                            "mode": "rights_node_menu"},
+        "response":       menu_response,
+        "rag_grade":      "good",
+        "pipeline_depth": state.get("pipeline_depth", 1) + 1,
+        "error":          "",
+    }
+
+
+def _detect_rights_category(query_lower: str) -> str:
+    """
+    Detect rights category from query text.
+
+    Returns category key or empty string if ambiguous.
+    Detection order matters — "domestic violence" should hit "women",
+    not "bail" even though arrest is mentioned in the same query.
+    """
+    import re
+
+    _CATEGORY_PATTERNS: list[tuple[re.Pattern, str]] = [
+        # women — check before bail (domestic violence / protection order overlap)
+        (re.compile(
+            r'\b(women?|wife|wife\'s|domestic\s+violence|dowry|498[aA]|'
+            r'maternity|dv\s+act|pwdva|sexual\s+harassment|posh)\b',
+            re.IGNORECASE,
+        ), "women"),
+        # bail/arrested person — check before general legal
+        (re.compile(
+            r'\b(bail|arrested|arrest|detained|detention|accused|custody|'
+            r'lockup|police\s+station|remand|chargesheet|default\s+bail)\b',
+            re.IGNORECASE,
+        ), "bail"),
+        # tenant
+        (re.compile(
+            r'\b(tenant|tenants?|renter|landlord|rent|evict|eviction|'
+            r'security\s+deposit|lease|rental)\b',
+            re.IGNORECASE,
+        ), "tenant"),
+        # employee/worker
+        (re.compile(
+            r'\b(employee|employees?|worker|workers?|labour|employer|'
+            r'salary|wages?|gratuity|pf|provident\s+fund|epf|'
+            r'termination|fired|dismissed|workplace)\b',
+            re.IGNORECASE,
+        ), "employee"),
+        # consumer
+        (re.compile(
+            r'\b(consumer|consumers?|buyer|customer|product|refund|'
+            r'defective|e.commerce|amazon|flipkart|complaint\s+forum|'
+            r'consumer\s+commission|ncdrc|scdrc|dcdrc)\b',
+            re.IGNORECASE,
+        ), "consumer"),
+    ]
+
+    for pattern, category in _CATEGORY_PATTERNS:
+        if pattern.search(query_lower):
+            return category
+
+    return ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NODE: GENERAL
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def general_node(state: AgentState) -> dict:
-    """
-    Intent: general  (greetings, capability questions, off-topic)
-    Direct Groq call — no RAG, no retrieval.
-    """
     from rag.llm import llm
 
     query         = state.get("query", "")
@@ -734,39 +758,25 @@ def general_node(state: AgentState) -> dict:
         "If asked a specific legal question, encourage the user to ask it directly. "
         "You support queries in Malayalam, Hindi, Tamil, Telugu, and other Indian languages."
     )
-    prompt = (
-        f"{context_block}\n\nUser: {query}"
-        if context_block else f"User: {query}"
-    )
-    print("[Graph] general_node → direct LLM (no RAG)")
+    prompt = f"{context_block}\n\nUser: {query}" if context_block else f"User: {query}"
+    print("[Graph] general_node → direct LLM")
 
     try:
-        answer = llm.generate(
-            prompt        = prompt,
-            system_prompt = system_prompt,
-            max_tokens    = 512,
-        )
+        answer = llm.generate(prompt=prompt, system_prompt=system_prompt, max_tokens=512)
         return {
             "response": answer,
             "rag_result": {
-                "answer":            answer,
-                "sources_consulted": 0,
-                "synthesis_note":    "",
-                "grounding_warning": "",
-                "rewritten_queries": [],
-                "reranker_used":     False,
-                "mode":              "general_node",
+                "answer": answer, "sources_consulted": 0,
+                "synthesis_note": "", "grounding_warning": "",
+                "rewritten_queries": [], "reranker_used": False, "mode": "general_node",
             },
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
-            "error":          "",
+            "error": "",
         }
     except Exception as exc:
         print(f"[Graph] general_node ERROR: {exc}")
         return {
-            "response": (
-                "Hello! I'm LexShield AI, your Indian legal assistant. "
-                "How can I help you today?"
-            ),
+            "response":   "Hello! I'm LexShield AI, your Indian legal assistant. How can I help you today?",
             "rag_result": {},
             "error":      str(exc),
         }
@@ -778,24 +788,21 @@ def general_node(state: AgentState) -> dict:
 
 def build_graph():
     """
-    Assembles and compiles the 7-node LangGraph StateGraph.
+    Assemble and compile the 8-node LangGraph StateGraph.
 
-    Node registry:
-      classify_intent_node   — entry point, always runs
-      legal_rag_node         — English legal queries
+    Nodes:
+      classify_intent_node   — entry, always runs
+      legal_rag_node         — English legal Q&A
       document_analysis_node — uploaded document analysis
       draft_node             — 8-category complaint drafting
       risk_check_node        — legal risk assessment
-      multilingual_node      — Malayalam/Hindi/Tamil/Telugu auto + explicit
-      case_law_node          — Indian Kanoon live case law search
+      multilingual_node      — Malayalam/Hindi auto + explicit translation
+      case_law_node          — Indian Kanoon live judgment search
+      rights_node            — Know Your Rights structured guide
       general_node           — greetings and capability questions
-
-    SqliteSaver checkpointer: writes full AgentState to data/sessions.db
-    after every node. LangGraph reloads previous checkpoint on same thread_id.
     """
     builder = StateGraph(AgentState)
 
-    # ── Register all nodes ─────────────────────────────────────────────────────
     builder.add_node("classify_intent_node",   classify_intent_node)
     builder.add_node("legal_rag_node",         legal_rag_node)
     builder.add_node("document_analysis_node", document_analysis_node)
@@ -803,12 +810,11 @@ def build_graph():
     builder.add_node("risk_check_node",        risk_check_node)
     builder.add_node("multilingual_node",      multilingual_node)
     builder.add_node("case_law_node",          case_law_node)
+    builder.add_node("rights_node",            rights_node)
     builder.add_node("general_node",           general_node)
 
-    # ── Entry point ────────────────────────────────────────────────────────────
     builder.set_entry_point("classify_intent_node")
 
-    # ── Conditional routing from classifier ────────────────────────────────────
     builder.add_conditional_edges(
         "classify_intent_node",
         route_by_intent,
@@ -819,24 +825,19 @@ def build_graph():
             "risk_check_node":        "risk_check_node",
             "multilingual_node":      "multilingual_node",
             "case_law_node":          "case_law_node",
+            "rights_node":            "rights_node",
             "general_node":           "general_node",
         },
     )
 
-    # ── All terminal nodes → END ───────────────────────────────────────────────
     for node_name in [
-        "legal_rag_node",
-        "document_analysis_node",
-        "draft_node",
-        "risk_check_node",
-        "multilingual_node",
-        "case_law_node",
-        "general_node",
+        "legal_rag_node", "document_analysis_node", "draft_node",
+        "risk_check_node", "multilingual_node", "case_law_node",
+        "rights_node", "general_node",
     ]:
         builder.add_edge(node_name, END)
 
     return builder.compile(checkpointer=checkpointer)
 
 
-# ── Singleton compiled graph ───────────────────────────────────────────────────
 agent_graph = build_graph()
