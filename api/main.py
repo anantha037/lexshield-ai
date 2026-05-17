@@ -1,36 +1,121 @@
 """
 LexShield AI — Main FastAPI Application
-========================================
+=========================================
 Entry point. Mounts all routers and middleware.
+
+Changes (Week 3, Day 2 Session 2):
+  - LangSmith tracing environment variables injected at startup.
+    Reads LANGCHAIN_TRACING_V2, LANGCHAIN_API_KEY, LANGCHAIN_PROJECT,
+    LANGCHAIN_ENDPOINT from .env and sets them as os.environ before
+    any LangGraph import. LangGraph auto-instruments on first graph.invoke().
+
+    Required .env additions:
+      LANGCHAIN_TRACING_V2=true
+      LANGCHAIN_API_KEY=your_key_from_smith.langchain.com
+      LANGCHAIN_PROJECT=lexshield-ai
+      LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
+
+    Free tier at smith.langchain.com — unlimited traces for personal projects.
+    To verify: make one query, then check smith.langchain.com/projects/lexshield-ai
+    for a trace showing all 8 graph nodes, Groq calls, and token counts.
 
 Run:
   uvicorn api.main:app --reload
 """
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+import os
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 1: Load .env FIRST — before any other import
+# ═══════════════════════════════════════════════════════════════════════════════
+# dotenv must run before LangGraph imports so LangSmith tracing is active
+# from the first graph compilation, not just from the first request.
+
+from dotenv import load_dotenv
 load_dotenv()
 
-# ── Create DB tables on startup (safe to run every time — skips if exist) ──────
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 2: LangSmith observability setup
+# ═══════════════════════════════════════════════════════════════════════════════
+# Must be set in os.environ (not just .env file) before LangGraph is imported.
+# LangGraph reads these at import time to configure the LangSmith callback handler.
+#
+# How it works:
+#   - LANGCHAIN_TRACING_V2=true  → enables automatic trace instrumentation
+#   - LANGCHAIN_API_KEY          → authenticates to LangSmith
+#   - LANGCHAIN_PROJECT          → groups traces under "lexshield-ai" project
+#   - LANGCHAIN_ENDPOINT         → LangSmith API endpoint (default is correct)
+#
+# Once active, EVERY graph.invoke() call creates a trace showing:
+#   • classify_intent_node → route_by_intent → [node] → END
+#   • Each Groq LLM call with prompt, completion, token counts, latency
+#   • ChromaDB retrieval with query vector and returned chunks
+#   • Total wall-clock time per node and end-to-end
+#
+# No code changes needed anywhere else — LangGraph instruments automatically.
+
+_LANGSMITH_KEYS = {
+    "LANGCHAIN_TRACING_V2": os.getenv("LANGCHAIN_TRACING_V2", "false"),
+    "LANGCHAIN_API_KEY":    os.getenv("LANGCHAIN_API_KEY",    ""),
+    "LANGCHAIN_PROJECT":    os.getenv("LANGCHAIN_PROJECT",    "lexshield-ai"),
+    "LANGCHAIN_ENDPOINT":   os.getenv("LANGCHAIN_ENDPOINT",   "https://api.smith.langchain.com"),
+}
+
+for _key, _val in _LANGSMITH_KEYS.items():
+    os.environ[_key] = _val
+
+_tracing_enabled = _LANGSMITH_KEYS["LANGCHAIN_TRACING_V2"].lower() == "true"
+_api_key_present = bool(_LANGSMITH_KEYS["LANGCHAIN_API_KEY"])
+
+if _tracing_enabled and _api_key_present:
+    print(
+        f"[LexShield] LangSmith tracing ENABLED — "
+        f"project='{_LANGSMITH_KEYS['LANGCHAIN_PROJECT']}' | "
+        f"dashboard: https://smith.langchain.com/projects/lexshield-ai"
+    )
+elif _tracing_enabled and not _api_key_present:
+    print(
+        "[LexShield] WARNING: LANGCHAIN_TRACING_V2=true but LANGCHAIN_API_KEY "
+        "is not set. Add it to .env — get key from smith.langchain.com"
+    )
+else:
+    print("[LexShield] LangSmith tracing DISABLED (set LANGCHAIN_TRACING_V2=true to enable)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 3: Database tables (safe — skips if exist)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 from models.database import create_tables
 create_tables()
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 4: FastAPI app
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
-    title="LexShield AI",
-    description="AI-Powered Indian Legal Intelligence Platform",
-    version="1.0.0",
+    title       = "LexShield AI",
+    description = "AI-Powered Indian Legal Intelligence Platform",
+    version     = "1.0.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins = ["http://localhost:3000", "http://localhost:3001"],
+    allow_methods = ["*"],
+    allow_headers = ["*"],
 )
 
-# ── Routers ────────────────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 5: Routers
+# ═══════════════════════════════════════════════════════════════════════════════
+
 from api.auth        import router as auth_router
 from api.document    import router as document_router
 from api.legal       import router as legal_router
@@ -46,12 +131,15 @@ app.include_router(legal_router)
 app.include_router(orchestrator_router)
 
 
-# ── Health ─────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# HEALTH CHECK
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @app.get("/health", tags=["System"])
 def health_check():
     """
     Returns status of all core services.
-    Checks: ChromaDB connection, LLM reachability, embedding model.
+    Checks: ChromaDB, LLM (Groq), Embedding model, LangSmith tracing.
     """
     status = {
         "service":  "LexShield AI",
@@ -59,6 +147,11 @@ def health_check():
         "chromadb": "unknown",
         "llm":      "unknown",
         "embedder": "unknown",
+        "tracing":  (
+            f"enabled — project={_LANGSMITH_KEYS['LANGCHAIN_PROJECT']}"
+            if (_tracing_enabled and _api_key_present)
+            else "disabled"
+        ),
     }
 
     try:
@@ -82,7 +175,11 @@ def health_check():
     except Exception as e:
         status["llm"] = f"error: {e}"
 
-    all_ok = all("ok" in str(v) for k, v in status.items() if k not in ("service", "version"))
+    all_ok = all(
+        "ok" in str(v)
+        for k, v in status.items()
+        if k not in ("service", "version", "tracing")
+    )
     status["overall"] = "healthy" if all_ok else "degraded"
 
     return status
