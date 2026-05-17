@@ -1,29 +1,35 @@
 """
-LexShield AI — Master Orchestrator API
-========================================
+LexShield AI — Master Orchestrator API  (Session 6 — Final)
+=============================================================
 Returns LexShieldResponse structured output on every endpoint.
 
-/query    — JSON body  { query, session_id }
-/document — multipart/form-data  file + session_id
-/session/{session_id}/history — reads from SQLite turns table
-/session/{session_id}         — DELETE clears SQLite turns + session row
+Endpoints
+---------
+POST   /api/v1/master/query              — JSON body { query, session_id, language? }
+POST   /api/v1/master/document           — multipart/form-data file + session_id
+GET    /api/v1/master/session/{sid}/history  — session turn history (all turns)
+DELETE /api/v1/master/session/{sid}      — delete session
+GET    /api/v1/master/sessions           — NEW: list sessions for authenticated user
 
-Changes from previous version
-------------------------------
-- Session history now reads from SQLite (persists across restarts)
-- Risk info is populated from state["risk_result"] when available
-- All other behaviour is identical
+Auth (optional)
+---------------
+All /query and /document endpoints accept an optional Authorization: Bearer <token>.
+If a valid token is present, the session is linked to the user in SQLite.
+If no token, anonymous session (existing behaviour unchanged).
+
+GET /api/v1/master/sessions requires a valid Bearer token.
 """
 
 import io
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Request
 from pydantic import BaseModel
 
 from agents.orchestrator import master_orchestrator
 from agents.memory       import session_memory
+from api.auth            import get_current_user, get_optional_user
 
 router = APIRouter(prefix="/api/v1/master", tags=["Master Orchestrator"])
 
@@ -38,6 +44,7 @@ SUPPORTED_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".txt", 
 class QueryRequest(BaseModel):
     query:      str
     session_id: Optional[str] = None
+    language:   Optional[str] = None   # e.g. "ml", "hi" — passed for multilingual routing
     run_rag:    Optional[bool] = True   # accepted but handled by graph node selection
 
 
@@ -76,6 +83,14 @@ class StructuredResponse(BaseModel):
     grounding_warning: str
     rewritten_queries: List[str]
     reranker_used:     bool
+
+
+class SessionSummary(BaseModel):
+    session_id:    str
+    created_at:    float
+    last_active:   float
+    turn_count:    int
+    first_message: Optional[str] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -189,14 +204,23 @@ def _build_structured_response(resp) -> StructuredResponse:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/query", response_model=StructuredResponse)
-def master_query(request: QueryRequest):
+def master_query(
+    request:      QueryRequest,
+    current_user: Optional[dict] = Depends(get_optional_user),
+):
     """
     Answer a legal query via the multi-agent LangGraph orchestrator.
-    Body: { query, session_id?, run_rag? }
+    Body: { query, session_id?, language?, run_rag? }
 
     session_id is returned in the response — pass it back on subsequent
     requests to continue the conversation.  State persists across restarts
     via the SqliteSaver checkpointer.
+
+    If a valid Bearer token is included, the session is linked to the user.
+
+    curl -s -X POST http://localhost:8000/api/v1/master/query \\
+      -H "Content-Type: application/json" \\
+      -d '{"query":"What is Section 138 NI Act?","session_id":null}' | python -m json.tool
     """
     if not request.query or not request.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
@@ -205,18 +229,28 @@ def master_query(request: QueryRequest):
         query      = request.query.strip(),
         session_id = request.session_id,
     )
+
+    # Link session to user if authenticated
+    if current_user:
+        session_memory.link_session_to_user(resp.session_id, current_user["id"])
+
     return _build_structured_response(resp)
 
 
 @router.post("/document", response_model=StructuredResponse)
 async def master_document(
-    file:       UploadFile    = File(...),
-    session_id: Optional[str] = Form(None),
+    file:         UploadFile      = File(...),
+    session_id:   Optional[str]   = Form(None),
+    current_user: Optional[dict]  = Depends(get_optional_user),
 ):
     """
     Analyse an uploaded legal document via the multi-agent orchestrator.
     Accepts: PDF, DOCX, TXT, JPG, PNG, TIFF, BMP  (max 10 MB)
     Form fields: file (required), session_id (optional)
+
+    curl -s -X POST http://localhost:8000/api/v1/master/document \\
+      -F "file=@rental_agreement.pdf" \\
+      -F "session_id=" | python -m json.tool
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -245,14 +279,22 @@ async def master_document(
         session_id     = session_id,
         filename       = file.filename,
     )
+
+    # Link session to user if authenticated
+    if current_user:
+        session_memory.link_session_to_user(resp.session_id, current_user["id"])
+
     return _build_structured_response(resp)
 
 
 @router.get("/session/{session_id}/history")
 def get_session_history(session_id: str):
     """
-    Return full conversation history for a session.
+    Return FULL conversation history for a session (all turns, no cap).
     Reads from SQLite turns table — persists across server restarts.
+    Used by frontend to restore complete chat history when user reopens session.
+
+    curl -s http://localhost:8000/api/v1/master/session/<session_id>/history | python -m json.tool
     """
     if not session_memory.session_exists(session_id):
         raise HTTPException(
@@ -272,6 +314,8 @@ def delete_session(session_id: str):
     """
     Delete a session and all its turns from SQLite.
     Also clears any LangGraph checkpoint state for this thread_id.
+
+    curl -s -X DELETE http://localhost:8000/api/v1/master/session/<session_id>
     """
     deleted = session_memory.delete_session(session_id)
     if not deleted:
@@ -280,3 +324,24 @@ def delete_session(session_id: str):
             detail=f"Session '{session_id}' not found",
         )
     return {"session_id": session_id, "deleted": True}
+
+
+@router.get("/sessions", response_model=List[SessionSummary])
+def get_user_sessions(current_user: dict = Depends(get_current_user)):
+    """
+    Return all chat sessions belonging to the authenticated user.
+    Ordered by most-recently-active first.
+    Requires: Authorization: Bearer <token>
+
+    Each item includes:
+      - session_id
+      - created_at (Unix timestamp)
+      - last_active (Unix timestamp of most recent turn)
+      - turn_count
+      - first_message (first user message, truncated to 60 chars)
+
+    curl -s http://localhost:8000/api/v1/master/sessions \\
+      -H "Authorization: Bearer <your_token>" | python -m json.tool
+    """
+    sessions = session_memory.get_user_sessions(current_user["id"])
+    return [SessionSummary(**s) for s in sessions]
