@@ -1,68 +1,36 @@
 """
-LexShield AI — Document Analysis API  (Week 2, Day 5 update)
-=============================================================
-POST /api/v1/document/analyze
+LexShield AI — Document Analysis API  (Session 6 — Final)
+===========================================================
+POST /api/v1/document/analyze  — full pipeline with proactive rights_alerts
+POST /api/v1/document/query    — Q&A on a previously analyzed document
 
-Full pipeline on every document upload:
-  1. Extract text  (PyMuPDF for digital PDFs, OCR for scanned/images)
-  2. Classify      (XGBoost → document type + confidence)
-  3. NER           (spaCy + regex → structured entities)
-  4. Risk Score    (clause-level risk with legal references)
-  5. RAG Q&A       (optional: pass extracted text to RAG pipeline for legal explanation)
+/analyze pipeline
+-----------------
+1. Extract text  (PyMuPDF for digital PDFs, OCR for scanned/images)
+2. Classify      (XGBoost → document type + confidence)
+3. NER           (spaCy + regex → structured entities)
+4. Risk Score    (clause-level risk with legal references)
+5. Rights Alerts (rule-based proactive rights violation detection — NEW)
+6. RAG Q&A       (optional: pass extracted text to RAG pipeline)
 
-Response JSON structure:
-  {
-    "filename":          "rental_agreement.pdf",
-    "text":              "THIS RENTAL AGREEMENT...",
-    "word_count":        342,
-    "ocr_used":          false,
-    "page_count":        2,
+/query endpoint
+---------------
+Takes OCR-extracted doc_text + a user question, constructs a Groq prompt
+with the document as context, runs multilingual pipeline if needed,
+stores turn in session memory.
 
-    "classification": {
-      "label":           0,
-      "label_name":      "rental_agreement",
-      "confidence":      0.97,
-      "all_scores":      {...}
+Response additions
+-------------------
+DocumentAnalysisResponse now includes:
+  "rights_alerts": [
+    {
+      "right":     "Right to Provident Fund",
+      "violation": "Contract does not mention EPF contribution",
+      "section":   "EPF Act 1952",
+      "severity":  "high"
     },
-
-    "entities": {
-      "persons":         ["Rajesh Kumar", "Priya Sharma"],
-      "organizations":   [...],
-      "dates":           [...],
-      "locations":       [...],
-      "monetary":        ["₹15,000", "₹90,000"],
-      "ipc_sections":    [],
-      "case_numbers":    [],
-      "acts":            ["Kerala Buildings (Lease and Rent Control) Act"],
-      "entity_counts":   {...}
-    },
-
-    "risk": {
-      "overall_score":   72,
-      "risk_level":      "high",
-      "high_risk_count": 2,
-      "summary":         "HIGH RISK: 2 clauses contain high-risk terms...",
-      "clause_risks": [
-        {
-          "clause_number":  3,
-          "clause_text":    "The deposit shall be non-refundable...",
-          "score":          80,
-          "risk_level":     "critical",
-          "flags":          ["NON_REFUNDABLE_DEPOSIT"],
-          "legal_refs":     ["Section 10 of the Kerala Buildings..."],
-          "explanation":    "Non-refundable deposit clauses are void..."
-        }
-      ]
-    },
-
-    "legal_explanation": {
-      "answer":    "Based on the retrieved sections...",
-      "citations": [...],
-      "sources_consulted": 3
-    },
-
-    "warning": null
-  }
+    ...
+  ]
 """
 
 import io
@@ -140,6 +108,13 @@ class LegalExplanationModel(BaseModel):
     grounding_warning: Optional[str]       = None
 
 
+class RightsAlertModel(BaseModel):
+    right:     str
+    violation: str
+    section:   str
+    severity:  str   # "info" | "low" | "medium" | "high" | "critical"
+
+
 class DocumentAnalysisResponse(BaseModel):
     filename:           str
     text:               str
@@ -149,8 +124,23 @@ class DocumentAnalysisResponse(BaseModel):
     classification:     ClassificationResult
     entities:           EntitiesModel
     risk:               RiskModel
+    rights_alerts:      list[RightsAlertModel] = []   # NEW — proactive rights violation alerts
     legal_explanation:  Optional[LegalExplanationModel] = None
     warning:            Optional[str]                   = None
+
+
+class DocQueryRequest(BaseModel):
+    doc_text:   str
+    question:   str
+    session_id: str
+    language:   Optional[str] = "en"
+
+
+class DocQueryResponse(BaseModel):
+    answer:               str
+    applicable_sections:  list[str] = []
+    risk_note:            str       = ""
+    session_id:           str
 
 
 # ── Text extraction helpers ───────────────────────────────────────────────────
@@ -196,7 +186,7 @@ def _extract_image(file_bytes: bytes) -> tuple[str, int, bool]:
         raise HTTPException(status_code=500, detail=f"Image OCR failed: {e}")
 
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+# ── Analyze endpoint ──────────────────────────────────────────────────────────
 
 @router.post("/analyze", response_model=DocumentAnalysisResponse)
 async def analyze_document(
@@ -206,17 +196,20 @@ async def analyze_document(
                                                    "(uses Groq API — slower)"),
 ):
     """
-    Full document analysis pipeline.
+    Full document analysis pipeline with proactive rights alerting.
 
     Steps:
       1. Extract text from uploaded file
-      2. Classify document type (XGBoost, 8 categories)
+      2. Classify document type (XGBoost, 15 categories)
       3. Extract entities (spaCy + custom regex NER)
       4. Score legal risk per clause
-      5. (Optional) RAG legal explanation — set run_rag=true
+      5. Detect rights violations (rule-based, zero LLM cost) — NEW
+      6. (Optional) RAG legal explanation — set run_rag=true
 
-    No Groq API calls by default. Set run_rag=true only when needed.
     Supported: PDF, JPEG, PNG, TIFF, BMP, TXT (max 10 MB)
+
+    curl -s -X POST http://localhost:8000/api/v1/document/analyze \\
+      -F "file=@employment_contract.pdf" | python -m json.tool
     """
     # ── Read file ─────────────────────────────────────────────────────────────
     file_bytes = await file.read()
@@ -276,7 +269,7 @@ async def analyze_document(
 
     # ── Step 4: Risk scoring ──────────────────────────────────────────────────
     from models.risk_scorer import risk_scorer
-    doc_risk   = risk_scorer.score(text, doc_type=doc_type)
+    doc_risk   = risk_scorer.score_document(text, doc_type=doc_type)
     risk_model = RiskModel(
         overall_score   = doc_risk.overall_score,
         risk_level      = doc_risk.risk_level,
@@ -289,12 +282,16 @@ async def analyze_document(
         ],
     )
 
-    # ── Step 5: RAG (optional — costs Groq API call) ──────────────────────────
+    # ── Step 5: Proactive rights alerts (rule-based, zero cost) ───────────────
+    from models.risk_scorer import detect_rights_violations
+    raw_alerts    = detect_rights_violations(doc_type, ent_dict, text)
+    rights_alerts = [RightsAlertModel(**a) for a in raw_alerts]
+
+    # ── Step 6: RAG (optional — costs Groq API call) ──────────────────────────
     legal_explanation = None
     if run_rag and text.strip():
         try:
             from rag.pipeline import rag_pipeline
-            # Build a focused query from doc type + top entities
             doc_label  = doc_type.replace("_", " ")
             acts_found = entities.acts[:2]
             secs_found = entities.ipc_sections[:2]
@@ -337,6 +334,139 @@ async def analyze_document(
         classification    = classification,
         entities          = entities,
         risk              = risk_model,
+        rights_alerts     = rights_alerts,
         legal_explanation = legal_explanation,
         warning           = warning,
+    )
+
+
+# ── Document Q&A endpoint ─────────────────────────────────────────────────────
+
+@router.post("/query", response_model=DocQueryResponse)
+def document_query(req: DocQueryRequest):
+    """
+    Ask a question about a previously analyzed document.
+
+    The caller provides:
+      - doc_text   : the OCR-extracted text from the document (from /analyze response)
+      - question   : e.g. "Is this eviction notice valid?" / "What does clause 3 mean?"
+      - session_id : existing session to add the turn to
+      - language   : optional — pass "ml" for Malayalam, "hi" for Hindi, etc.
+
+    The endpoint:
+      1. Builds a Groq prompt with doc_text injected as context (first 3000 chars)
+      2. Runs through the multilingual pipeline if language != "en"
+      3. Stores user question + assistant answer in session memory
+      4. Returns: answer, applicable_sections, risk_note, session_id
+
+    curl -s -X POST http://localhost:8000/api/v1/document/query \\
+      -H "Content-Type: application/json" \\
+      -d '{"doc_text":"THIS RENTAL AGREEMENT...","question":"Is this notice valid?","session_id":"<sid>"}' | python -m json.tool
+    """
+    if not req.doc_text.strip():
+        raise HTTPException(status_code=400, detail="doc_text must not be empty")
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="question must not be empty")
+
+    # ── Multilingual: translate question to English if needed ─────────────────
+    question_en = req.question.strip()
+    detected_lang = req.language or "en"
+
+    if detected_lang not in ("en", "english", None, ""):
+        try:
+            from agents.multilingual_agent import multilingual_agent
+            question_en = multilingual_agent.translate_to_english(req.question.strip())
+        except Exception:
+            pass  # fall through with original question
+
+    # ── Build Groq prompt ─────────────────────────────────────────────────────
+    doc_excerpt = req.doc_text[:3000]
+    prompt = (
+        "You are LexShield AI, an expert in Indian law.\n\n"
+        "The user has uploaded the following legal document. "
+        "Answer their question based on this document and your Indian legal knowledge. "
+        "Be specific, cite the relevant clauses from the document where applicable, "
+        "and mention any relevant Indian law sections.\n\n"
+        f"Document:\n{doc_excerpt}\n\n"
+        f"Question: {question_en}\n\n"
+        "Provide:\n"
+        "1. A clear answer to the question\n"
+        "2. The relevant clauses or sections from the document\n"
+        "3. Any legal risk the user should be aware of\n\n"
+        "Format your response as:\n"
+        "ANSWER: <your answer>\n"
+        "SECTIONS: <comma-separated list of applicable sections/clauses>\n"
+        "RISK NOTE: <any risk or caution>\n"
+    )
+
+    answer_text        = ""
+    applicable_sections = []
+    risk_note          = ""
+
+    try:
+        from rag.llm import llm
+        raw_response = llm.generate(prompt, max_tokens=600, temperature=0.2)
+
+        # Parse structured response
+        lines = raw_response.strip().split("\n")
+        current_section = None
+        answer_lines    = []
+        sections_lines  = []
+        risk_lines      = []
+
+        for line in lines:
+            line_upper = line.strip().upper()
+            if line_upper.startswith("ANSWER:"):
+                current_section = "answer"
+                rest = line[line.upper().find("ANSWER:") + 7:].strip()
+                if rest:
+                    answer_lines.append(rest)
+            elif line_upper.startswith("SECTIONS:"):
+                current_section = "sections"
+                rest = line[line.upper().find("SECTIONS:") + 9:].strip()
+                if rest:
+                    sections_lines.append(rest)
+            elif line_upper.startswith("RISK NOTE:"):
+                current_section = "risk"
+                rest = line[line.upper().find("RISK NOTE:") + 10:].strip()
+                if rest:
+                    risk_lines.append(rest)
+            elif current_section == "answer":
+                answer_lines.append(line)
+            elif current_section == "sections":
+                sections_lines.append(line)
+            elif current_section == "risk":
+                risk_lines.append(line)
+
+        answer_text = " ".join(answer_lines).strip() or raw_response.strip()
+        if sections_lines:
+            raw_secs = " ".join(sections_lines)
+            applicable_sections = [s.strip() for s in raw_secs.split(",") if s.strip()]
+        risk_note = " ".join(risk_lines).strip()
+
+    except Exception as e:
+        answer_text = f"Unable to process query: {e}"
+
+    # ── Translate answer back to source language if needed ────────────────────
+    if detected_lang not in ("en", "english", None, "") and answer_text:
+        try:
+            from agents.multilingual_agent import multilingual_agent
+            answer_text = multilingual_agent.translate_to_source(answer_text, detected_lang)
+        except Exception:
+            pass
+
+    # ── Store in session memory ────────────────────────────────────────────────
+    try:
+        from agents.memory import session_memory
+        session_memory.ensure_session(req.session_id)
+        session_memory.add_turn(req.session_id, "user",      req.question.strip(), intent="document_query")
+        session_memory.add_turn(req.session_id, "assistant", answer_text,           intent="document_query")
+    except Exception:
+        pass  # non-fatal — don't fail the request over memory error
+
+    return DocQueryResponse(
+        answer              = answer_text,
+        applicable_sections = applicable_sections,
+        risk_note           = risk_note,
+        session_id          = req.session_id,
     )
