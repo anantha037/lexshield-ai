@@ -608,5 +608,525 @@ def _infer_acts_from_doctype(doc_type: str) -> list[str]:
     return _DOCTYPE_ACT_MAP.get(doc_type, ["IPC", "CrPC"])
 
 
+# ── DocumentRisk result (for api/document.py analyze endpoint) ────────────────
+
+@dataclass
+class DocumentClauseRisk:
+    """Per-clause risk result returned by score_document()."""
+    clause_number: int
+    clause_text:   str
+    score:         int          # 0-100
+    risk_level:    str
+    flags:         list[str] = field(default_factory=list)
+    legal_refs:    list[str] = field(default_factory=list)
+    explanation:   str        = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "clause_number": self.clause_number,
+            "clause_text":   self.clause_text,
+            "score":         self.score,
+            "risk_level":    self.risk_level,
+            "flags":         self.flags,
+            "legal_refs":    self.legal_refs,
+            "explanation":   self.explanation,
+        }
+
+
+@dataclass
+class DocumentRisk:
+    """Structured risk result for document analysis endpoint."""
+    overall_score:   int              # 0-100
+    risk_level:      str
+    high_risk_count: int
+    summary:         str
+    clause_risks:    list[DocumentClauseRisk] = field(default_factory=list)
+
+
+# ── Clause-level risk patterns for document analysis ─────────────────────────
+_CLAUSE_RISK_PATTERNS: list[tuple[re.Pattern, str, str, list[str], list[str]]] = [
+    # (pattern, flag, explanation, legal_refs, risk_keyword for level)
+    (re.compile(r'\bnon[- ]refundable\b', re.IGNORECASE),
+     "NON_REFUNDABLE_DEPOSIT",
+     "Non-refundable deposit/payment clauses may be void under Indian law.",
+     ["Section 74 Indian Contract Act", "State Rent Control Acts"],
+     "high"),
+    (re.compile(r'\bunilateral\b.*\btermination\b|\bwithout\s+notice\b', re.IGNORECASE),
+     "UNILATERAL_TERMINATION",
+     "Unilateral or no-notice termination clauses may be challenged under Indian contract law.",
+     ["Section 73-74 Indian Contract Act"],
+     "high"),
+    (re.compile(r'\bindemnify\b.*\ball.*\blosses\b|\bindemnify.*harmless\b', re.IGNORECASE),
+     "BROAD_INDEMNITY",
+     "Broad indemnity clauses expose a party to unlimited liability.",
+     ["Section 124-125 Indian Contract Act"],
+     "high"),
+    (re.compile(r'\bnon[- ]compete\b|\bnot\s+to\s+compete\b', re.IGNORECASE),
+     "NON_COMPETE",
+     "Non-compete clauses are generally unenforceable under Section 27 of the Indian Contract Act.",
+     ["Section 27 Indian Contract Act"],
+     "medium"),
+    (re.compile(r'\barbitration\b.*\bDelhi\b|\barbitration\s+clause\b', re.IGNORECASE),
+     "ARBITRATION_CLAUSE",
+     "Arbitration clause detected. Ensure venue/jurisdiction is acceptable.",
+     ["Arbitration and Conciliation Act 1996"],
+     "medium"),
+    (re.compile(r'\bpenalty\b.*\b(\d+)\s*(?:times?|x)\b|\bliquidated\s+damages\b', re.IGNORECASE),
+     "PENALTY_CLAUSE",
+     "Penalty/liquidated damages clause detected. May be subject to court reduction.",
+     ["Section 74 Indian Contract Act"],
+     "medium"),
+    (re.compile(r'\bwithout\s+prejudice\b', re.IGNORECASE),
+     "WITHOUT_PREJUDICE",
+     "Without-prejudice clause restricts admissibility of communications.",
+     ["Indian Evidence Act"],
+     "low"),
+    (re.compile(r'\bforce\s+majeure\b', re.IGNORECASE),
+     "FORCE_MAJEURE",
+     "Force majeure clause detected. Check scope and notice requirements.",
+     ["Section 56 Indian Contract Act"],
+     "low"),
+]
+
+
+def _score_clause(text: str) -> tuple[int, str, list[str], list[str], str]:
+    """Score a clause 0-100, returning (score, level, flags, legal_refs, explanation)."""
+    score    = 0
+    flags    = []
+    refs     = []
+    explain  = ""
+    highest  = "low"
+
+    for pattern, flag, exp, legal_refs, level in _CLAUSE_RISK_PATTERNS:
+        if pattern.search(text):
+            flags.append(flag)
+            refs.extend(legal_refs)
+            explain = exp
+            if level == "high":
+                score = max(score, 80)
+                highest = "high"
+            elif level == "medium":
+                score = max(score, 50)
+                if highest not in ("high",):
+                    highest = "medium"
+            elif level == "low":
+                score = max(score, 25)
+
+    if score == 0:
+        return 0, "low", [], [], ""
+    return score, highest, flags, list(dict.fromkeys(refs)), explain
+
+
+class RiskScorer:
+
+    def __init__(self, use_llm: bool = True):
+        self.use_llm = use_llm
+
+    def score(
+        self,
+        text:     str,
+        doc_type: str,
+        entities: Optional[dict] = None,
+        use_llm:  Optional[bool] = None,
+    ) -> RiskResult:
+
+        should_use_llm = use_llm if use_llm is not None else self.use_llm
+        entities       = entities or {}
+        factors        = []
+
+        # ── Layer 1: Document type base risk ──────────────────────────────────
+        doc_risk = _DOC_TYPE_BASE_RISK.get(doc_type, 0.50)
+        if doc_risk >= 0.66:
+            factors.append(f"Document type '{doc_type.replace('_', ' ')}' carries inherent high legal risk")
+        elif doc_risk >= 0.40:
+            factors.append(f"Document type '{doc_type.replace('_', ' ')}' carries moderate legal risk")
+
+        # ── Layer 2: Section + Act cross-reference ────────────────────────────
+        entity_risk    = 0.0
+        entity_factors = []
+
+        if doc_type == "consumer_complaint":
+            entity_risk = max(entity_risk, 0.40)
+            factors.append("Consumer dispute — Medium risk floor applied")
+
+        ipc_sections = entities.get("ipc_sections", [])
+        acts_raw     = entities.get("acts", [])
+
+        canonical_acts: list[str] = []
+        for act_str in acts_raw:
+            canonical = _normalize_act(act_str)
+            if canonical:
+                canonical_acts.append(canonical)
+
+        if not canonical_acts:
+            canonical_acts = _infer_acts_from_doctype(doc_type)
+
+        for section_str in ipc_sections:
+            sec_num = _extract_section_number(section_str)
+            if not sec_num:
+                continue
+
+            matched = False
+            for act in canonical_acts:
+                key        = (act, sec_num)
+                risk_level = _SECTION_RISK.get(key)
+                if risk_level == "HIGH":
+                    entity_risk = max(entity_risk, 0.82)
+                    entity_factors.append(
+                        f"High-risk provision: Section {sec_num} of {act.replace('_', ' ')}"
+                    )
+                    matched = True
+                    break
+                elif risk_level == "MEDIUM":
+                    entity_risk = max(entity_risk, 0.50)
+                    entity_factors.append(
+                        f"Medium-risk provision: Section {sec_num} of {act.replace('_', ' ')}"
+                    )
+                    matched = True
+
+            if not matched and sec_num and canonical_acts:
+                high_in_any = [
+                    act for act in canonical_acts
+                    if _SECTION_RISK.get((act, sec_num)) == "HIGH"
+                ]
+                if high_in_any:
+                    entity_risk = max(entity_risk, 0.70)
+                    entity_factors.append(
+                        f"Potentially high-risk section {sec_num} "
+                        f"(matched in {high_in_any[0].replace('_', ' ')})"
+                    )
+
+        # ── Layer 3: Monetary amounts ─────────────────────────────────────────
+        for amt_str in entities.get("monetary", []):
+            amount = _normalize_monetary(amt_str)
+            if amount >= _RISK_AMOUNTS_HIGH:
+                entity_risk = max(entity_risk, 0.60)
+                entity_factors.append(f"High monetary amount involved: {amt_str}")
+            elif amount >= _RISK_AMOUNTS_MEDIUM:
+                entity_risk = max(entity_risk, 0.38)
+                entity_factors.append(f"Significant monetary amount: {amt_str}")
+
+        # ── Layer 4: Text keyword signals ─────────────────────────────────────
+        keyword_boost = 0.0
+        for pat in _RISK_KEYWORDS_HIGH:
+            if pat.search(text[:5000]):
+                keyword_boost = max(keyword_boost, 0.20)
+                factors.append("High-risk legal term detected in document")
+                break
+        for pat in _RISK_KEYWORDS_MEDIUM:
+            if pat.search(text[:5000]):
+                keyword_boost = max(keyword_boost, 0.10)
+                break
+
+        factors.extend(entity_factors)
+        entity_risk = min(entity_risk + keyword_boost, 1.0)
+
+        # ── Layer 5: Combine ──────────────────────────────────────────────────
+        if entity_factors:
+            rule_score = 0.40 * doc_risk + 0.60 * entity_risk
+        else:
+            rule_score = 0.80 * doc_risk + 0.20 * entity_risk
+
+        rule_score = min(rule_score, 1.0)
+        method     = "rule_based"
+        llm_risk   = None
+
+        # ── Layer 6: LLM (high-stakes docs only) ─────────────────────────────
+        run_llm = (
+            should_use_llm
+            and doc_type in {"fir", "cheque_bounce_notice", "bail_application",
+                             "court_notice_summons", "sc_judgment", "hc_judgment"}
+            and len(text.strip()) > 200
+        )
+        if run_llm:
+            llm_risk = self._llm_score(text, doc_type)
+            if llm_risk is not None:
+                rule_score = 0.60 * rule_score + 0.40 * llm_risk
+                method     = "rule_llm_hybrid"
+
+        final_score = round(min(rule_score, 1.0), 3)
+        level       = _score_to_level(final_score)
+
+        if not factors:
+            factors.append("No specific high-risk signals detected in document")
+
+        return RiskResult(
+            score               = final_score,
+            level               = level,
+            factors             = factors,
+            recommended_actions = _get_actions(doc_type, level),
+            doc_type_risk       = round(doc_risk, 3),
+            entity_risk         = round(entity_risk, 3),
+            llm_risk            = round(llm_risk, 3) if llm_risk else None,
+            method              = method,
+        )
+
+    def score_document(
+        self,
+        text:     str,
+        doc_type: str,
+    ) -> DocumentRisk:
+        """
+        Clause-level risk scoring for the document analysis endpoint.
+        Splits text into clauses, scores each with rule-based patterns,
+        returns a DocumentRisk with overall_score, risk_level, clause_risks.
+        """
+        # Split into clauses (numbered clauses or double-newline paragraphs)
+        clause_split = re.split(
+            r'\n{2,}|\d+\.\s+(?=[A-Z])|(?:CLAUSE|ARTICLE|SECTION)\s+\d+\.',
+            text[:8000],
+        )
+        clauses = [c.strip() for c in clause_split if len(c.strip()) > 30][:20]
+
+        clause_risks = []
+        for i, clause in enumerate(clauses, start=1):
+            score, level, flags, refs, explain = _score_clause(clause)
+            if score > 0:
+                clause_risks.append(DocumentClauseRisk(
+                    clause_number = i,
+                    clause_text   = clause[:200],
+                    score         = score,
+                    risk_level    = level,
+                    flags         = flags,
+                    legal_refs    = refs,
+                    explanation   = explain,
+                ))
+
+        high_risk_count = sum(1 for c in clause_risks if c.risk_level in ("high", "critical"))
+
+        # Overall score: max of clause scores or base doc risk
+        base = _DOC_TYPE_BASE_RISK.get(doc_type, 0.5)
+        max_clause_score = max((c.score for c in clause_risks), default=0) / 100.0
+        overall_float    = max(base, max_clause_score)
+        overall_score    = int(round(overall_float * 100))
+        level            = _score_to_level(overall_float)
+
+        if high_risk_count > 0:
+            summary = f"{level.upper()} RISK: {high_risk_count} clause(s) contain high-risk terms. Review before signing."
+        elif clause_risks:
+            summary = f"{level.upper()} RISK: {len(clause_risks)} clause(s) flagged for review."
+        else:
+            summary = f"{level.upper()} RISK: No specific clause-level risk flags detected."
+
+        return DocumentRisk(
+            overall_score   = overall_score,
+            risk_level      = level,
+            high_risk_count = high_risk_count,
+            summary         = summary,
+            clause_risks    = clause_risks,
+        )
+
+    def _llm_score(self, text: str, doc_type: str) -> Optional[float]:
+        try:
+            from rag.llm import llm
+            import json
+
+            prompt = (
+                f"You are a legal risk assessment AI for Indian law.\n\n"
+                f"Analyze this {doc_type.replace('_', ' ')} document excerpt and assess "
+                f"the legal risk to the person named or receiving it.\n\n"
+                f"Document:\n{text[:1500]}\n\n"
+                f"Respond ONLY with this JSON (no markdown, no extra text):\n"
+                f'{{ "risk_score": 0.75, "key_risk": "one sentence reason" }}\n\n'
+                f"risk_score: float 0.0 (no risk) to 1.0 (critical risk)."
+            )
+            response = llm.generate(prompt, max_tokens=80, temperature=0.1)
+            m        = re.search(r'\{[^}]+\}', response)
+            if m:
+                data  = json.loads(m.group(0))
+                score = float(data.get("risk_score", 0.5))
+                return max(0.0, min(1.0, score))
+        except Exception as e:
+            logger.warning("LLM risk scoring failed: %s", e)
+        return None
+
+
+def _infer_acts_from_doctype(doc_type: str) -> list[str]:
+    """
+    Fallback: if NER finds no acts, infer likely acts from document type.
+    This prevents false negatives when NER misses the act name.
+    """
+    _DOCTYPE_ACT_MAP: dict[str, list[str]] = {
+        "fir":                  ["IPC", "BNS", "CrPC", "BNSS"],
+        "bail_application":     ["IPC", "BNS", "CrPC", "BNSS", "NDPS", "POCSO"],
+        "cheque_bounce_notice": ["NI_ACT"],
+        "court_notice_summons": ["CrPC", "CPC", "BNSS"],
+        "legal_notice":         ["CONTRACT_ACT", "IPC", "CPC"],
+        "consumer_complaint":   ["CONSUMER_ACT"],
+        "employment_contract":  ["ID_ACT", "WAGES_ACT"],
+        "rental_agreement":     ["KERALA_RENT_ACT", "CONTRACT_ACT", "TP_ACT"],
+        "property_deed":        ["TP_ACT", "REGISTRATION_ACT"],
+        "loan_agreement":       ["CONTRACT_ACT", "NI_ACT"],
+        "sc_judgment":          ["IPC", "BNS", "CPC", "CONSTITUTION"],
+        "hc_judgment":          ["IPC", "BNS", "CPC", "CONSTITUTION"],
+    }
+    return _DOCTYPE_ACT_MAP.get(doc_type, ["IPC", "CrPC"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROACTIVE RIGHTS VIOLATION DETECTOR  (Task 3)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Rule-based — no LLM, instant, zero extra API cost.
+# Called by api/document.py after every /analyze request.
+
+def detect_rights_violations(
+    doc_type:   str,
+    ner_result: dict,
+    doc_text:   str,
+) -> list[dict]:
+    """
+    Detect likely rights violations in a document based on its type and content.
+
+    Returns a list of alert dicts:
+      {
+        "right":     str,   # name of the right
+        "violation": str,   # description of the potential violation
+        "section":   str,   # applicable legal provision
+        "severity":  str    # "info" | "low" | "medium" | "high" | "critical"
+      }
+
+    All checks are rule-based (regex + keyword), with zero LLM cost.
+    """
+    alerts: list[dict] = []
+    text_lower = doc_text.lower()
+
+    # ── Rental agreement checks ───────────────────────────────────────────────
+    if doc_type == "rental_agreement":
+
+        # Check: excess security deposit (> 2 months rent)
+        # Heuristic: if "security deposit" appears and a high amount is present
+        # Monetary NER extracts amounts — compare deposit vs monthly rent mentions
+        monetary = ner_result.get("monetary", [])
+        if "security deposit" in text_lower and len(monetary) >= 2:
+            # Extract all numbers from monetary strings
+            amounts = []
+            for m in monetary:
+                nums = re.findall(r'[\d,]+', m.replace(",", ""))
+                for n in nums:
+                    try:
+                        amounts.append(int(n))
+                    except ValueError:
+                        pass
+            if amounts:
+                max_amt = max(amounts)
+                min_amt = min(amounts)
+                # If max is more than 2× min, likely exceeds 2 months
+                if min_amt > 0 and max_amt / min_amt > 2.5:
+                    alerts.append({
+                        "right":     "Excess security deposit",
+                        "violation": "Deposit may exceed the legal limit of 2 months rent in most states.",
+                        "section":   "State Rent Control Acts",
+                        "severity":  "medium",
+                    })
+
+        # Check: no notice period for termination
+        has_notice = any(kw in text_lower for kw in [
+            "notice period", "termination notice", "days notice", "days' notice",
+            "months notice", "months' notice", "written notice",
+        ])
+        if not has_notice:
+            alerts.append({
+                "right":     "Right to notice before eviction",
+                "violation": "Agreement may not specify the legally required notice period before termination.",
+                "section":   "Transfer of Property Act S.106",
+                "severity":  "high",
+            })
+
+    # ── Employment contract checks ─────────────────────────────────────────────
+    elif doc_type == "employment_contract":
+
+        # Check: PF/EPF not mentioned
+        has_pf = any(kw in text_lower for kw in [
+            "provident fund", "epf", "pf contribution", "employees' provident",
+            "employee provident", "pf act",
+        ])
+        if not has_pf:
+            alerts.append({
+                "right":     "Right to Provident Fund",
+                "violation": "Contract does not mention EPF contribution as required by law.",
+                "section":   "Employees' Provident Funds and Miscellaneous Provisions Act 1952",
+                "severity":  "high",
+            })
+
+        # Check: non-compete clause
+        has_non_compete = any(kw in text_lower for kw in [
+            "non-compete", "non compete", "not compete", "not to compete",
+            "restrictive covenant", "restraint of trade",
+        ])
+        if has_non_compete:
+            alerts.append({
+                "right":     "Right to employment after resignation",
+                "violation": "Non-compete clause detected — such clauses are generally unenforceable in India.",
+                "section":   "Indian Contract Act S.27",
+                "severity":  "medium",
+            })
+
+        # Check: no gratuity mention for long-term contracts
+        has_gratuity = any(kw in text_lower for kw in [
+            "gratuity", "payment of gratuity",
+        ])
+        if not has_gratuity:
+            alerts.append({
+                "right":     "Right to Gratuity",
+                "violation": "Contract does not mention gratuity entitlement (payable after 5 years of service).",
+                "section":   "Payment of Gratuity Act 1972",
+                "severity":  "low",
+            })
+
+    # ── Loan agreement checks ─────────────────────────────────────────────────
+    elif doc_type == "loan_agreement":
+
+        # Check: no foreclosure/prepayment clause
+        has_prepay = any(kw in text_lower for kw in [
+            "foreclosure", "prepayment", "pre-payment", "pre-closure",
+            "part payment", "early repayment",
+        ])
+        if not has_prepay:
+            alerts.append({
+                "right":     "Right to prepay loan",
+                "violation": "Agreement may not specify prepayment rights — you may be charged penalties.",
+                "section":   "RBI Guidelines on Prepayment of Loans",
+                "severity":  "medium",
+            })
+
+        # Check: no cooling-off period
+        has_cooling = any(kw in text_lower for kw in [
+            "cooling off", "cooling-off", "cancellation period", "right to cancel",
+        ])
+        if not has_cooling:
+            alerts.append({
+                "right":     "Right to cooling-off period",
+                "violation": "Loan agreement may not provide a cooling-off / cancellation window.",
+                "section":   "RBI Fair Practices Code for Lenders",
+                "severity":  "low",
+            })
+
+    # ── Criminal / court documents ────────────────────────────────────────────
+    if doc_type in ("fir", "court_notice_summons", "bail_application"):
+        alerts.append({
+            "right":     "Right to free legal aid",
+            "violation": (
+                "Criminal matter detected — if you cannot afford a lawyer, "
+                "you are entitled to free legal aid under Article 39A."
+            ),
+            "section":   "Legal Services Authorities Act 1987 / Article 39A Constitution",
+            "severity":  "info",
+        })
+
+    # ── Cheque bounce notice ──────────────────────────────────────────────────
+    if doc_type == "cheque_bounce_notice":
+        alerts.append({
+            "right":     "Right to reply within 15 days",
+            "violation": (
+                "Cheque dishonour notice: you have 15 days from receipt to pay "
+                "the amount — failing this triggers criminal prosecution under S.138."
+            ),
+            "section":   "Negotiable Instruments Act S.138",
+            "severity":  "high",
+        })
+
+    return alerts
+
+
 # ── Singleton ─────────────────────────────────────────────────────────────────
 risk_scorer = RiskScorer(use_llm=True)
