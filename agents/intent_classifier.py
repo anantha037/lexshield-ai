@@ -1,30 +1,38 @@
 """
-LexShield AI — Intent Classifier  (Session 3 — Updated)
-=========================================================
-Changes from Session 2:
-  - draft_request keywords expanded to cover all 8 DraftingAgent categories:
-    wage_theft, illegal_eviction, cheque_bounce, consumer_complaint,
-    fir_complaint, domestic_violence, employment_termination, loan_default
-  - New draft trigger phrases added to both _KEYWORDS and _PATTERNS.
+LexShield AI — Intent Classifier  (Week 3, Day 2 — Updated)
+=============================================================
+Changes from Session 3:
+  - case_law_search added as 7th intent → case_law_node
+    Triggered by: judgment references, case names, precedent queries,
+    court ruling references, "SC order", "landmark case"
 
-6 intents (unchanged):
-  legal_query        → RAG pipeline
-  document_analysis  → CV pipeline + RAG
-  draft_request      → DraftingAgent (multi-turn, SQLite-persisted)
-  risk_check         → RAG pipeline + risk prompt modifier
-  translation_request→ MultilingualAgent
-  general            → Direct LLM
+7 intents:
+  legal_query         → RAG pipeline (explain/define Indian law)
+  document_analysis   → CV pipeline + RAG (uploaded documents)
+  draft_request       → DraftingAgent, 8 complaint categories
+  risk_check          → RAG pipeline + risk_scorer modifier
+  translation_request → TranslationAgent (explicit: "explain in Malayalam")
+  case_law_search     → CaseLawAgent → Indian Kanoon live judgments
+  general             → Direct LLM (greetings, capability questions)
 
-Method:
-  keyword match = 1 pt each
-  regex pattern match = 2 pts each
-  Highest total score wins.
-  Confidence = min(raw_score / 10, 1.0), +0.2 bonus if any pattern matched.
+Scoring:
+  keyword match  = +1 pt
+  regex pattern  = +2 pts
+  hard override  = +5 pts (applied before scoring)
+  Winner:        max total score
+  Confidence:    min(score / 10, 1.0) + 0.2 bonus if any regex matched
+
+Design rationale for case_law_search:
+  "What did the Supreme Court hold in Maneka Gandhi case?" should NOT route
+  to legal_query (which searches the knowledge base) but to case_law_search
+  (which queries Indian Kanoon live). The distinction: legal_query answers
+  "what does Section 302 say", case_law_search answers "what did courts decide".
+  Overlap is handled by scoring — section number + judgment keywords together
+  score higher on case_law_search than legal_query.
 """
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -37,97 +45,140 @@ INTENTS = [
     "draft_request",
     "risk_check",
     "translation_request",
+    "case_law_search",
     "general",
 ]
 
 # ── Keywords (1 pt each) ───────────────────────────────────────────────────────
 
 _KEYWORDS: dict[str, list[str]] = {
+
     "legal_query": [
         "section", "article", "provision", "act", "ipc", "bns", "crpc", "bnss",
-        "bsa", "evidence", "court", "judgment", "bail", "arrest", "fir", "charge",
+        "bsa", "evidence", "court", "bail", "arrest", "fir", "charge",
         "offense", "offence", "punishment", "penalty", "conviction", "acquittal",
         "warrant", "custody", "rights", "legal", "law", "constitution", "writ",
         "petition", "appeal", "tribunal", "magistrate", "sessions", "high court",
         "supreme court", "divorce", "maintenance", "property", "inheritance",
         "consumer", "cheque", "bounce", "pocso", "ndps", "pmla", "uapa",
         "what", "explain", "define", "meaning", "scope", "applicability",
+        "rera", "rti", "income tax", "gst", "companies act", "sebi",
+        "specific relief", "transfer of property", "hindu marriage",
+        "limitation act", "arbitration", "insolvency", "bankruptcy",
     ],
+
     "document_analysis": [
         "document", "file", "pdf", "image", "scan", "ocr", "upload", "attached",
         "extract", "read", "text", "contract", "deed", "agreement", "notice",
         "this document", "the document", "check document", "review document",
-        "analyze document", "analyse document",
+        "analyze document", "analyse document", "attached file",
     ],
+
     "draft_request": [
         # Generic drafting verbs
         "draft", "write", "create", "generate", "prepare", "compose", "format",
         "template", "sample", "make", "help me write", "help me draft",
-        # Document types (generic)
+        # Document types
         "legal notice", "rental agreement", "employment contract", "affidavit",
         "power of attorney", "bail application",
-        # Session 3: complaint categories
+        # Complaint filing triggers
         "fir complaint", "police complaint", "complaint to police",
         "complaint against", "file a complaint", "file complaint",
         "help me file", "write a complaint",
-        # wage_theft triggers
+        # wage_theft
         "salary not paid", "salary not received", "wage theft", "unpaid salary",
         "unpaid wages", "salary complaint", "labour complaint",
         "payment of wages", "employer not paying",
-        # illegal_eviction triggers
+        # illegal_eviction
         "eviction", "evicted", "landlord complaint", "illegal eviction",
         "thrown out", "locked out", "dispossessed",
-        # cheque_bounce triggers
+        # cheque_bounce
         "cheque bounce complaint", "138 ni act", "cheque dishonour",
         "cheque bounce notice", "demand notice cheque",
-        # consumer_complaint triggers
+        # consumer_complaint
         "consumer complaint", "consumer forum", "consumer court",
         "defective product", "deficiency in service",
-        # domestic_violence triggers
+        # domestic_violence
         "domestic violence", "498a complaint", "cruelty complaint",
         "dv act complaint", "protection order",
-        # employment_termination triggers
+        # employment_termination
         "wrongful termination", "illegal termination", "unfair dismissal",
         "termination complaint", "labour court complaint",
-        # loan_default triggers
+        # loan_default
         "loan complaint", "bank complaint", "rbi complaint",
         "loan harassment", "recovery agent harassment",
     ],
+
     "risk_check": [
         "risk", "risky", "safe", "dangerous", "liable", "liability", "exposure",
-        "consequence", "consequences", "breach", "violation", "penalty", "enforceable",
+        "consequence", "consequences", "breach", "violation", "enforceable",
         "valid", "binding", "legal standing", "what happens if", "can i be",
         "will i be", "am i liable", "legal risk", "is it legal", "is it safe",
+        "penalty for", "what if i", "am i at risk",
     ],
+
     "translation_request": [
         "translate", "translation", "malayalam", "hindi", "tamil", "telugu",
         "kannada", "marathi", "bengali", "gujarati", "punjabi", "odia",
         "regional language", "vernacular", "in malayalam", "in hindi",
         "explain in", "say in", "convert to",
     ],
+
+    "case_law_search": [
+        # Core case law vocabulary
+        "case law", "judgment", "judgement", "landmark", "precedent", "ruling",
+        "verdict", "court held", "held that", "bench", "division bench",
+        "constitution bench", "full bench", "PIL", "public interest litigation",
+        # Common citation patterns
+        "AIR", "SCC", "SCR", "CrLJ", "DLT", "BomCR", "KerLT", "MLJ",
+        # Specific court query terms
+        "SC order", "HC order", "apex court", "top court",
+        # Common landmark case vocabulary
+        "case of", "in the matter of", "versus", "v.", "vs",
+        # Action verbs for case research
+        "cited", "overruled", "upheld", "quashed", "dismissed", "allowed",
+        "set aside", "remanded", "observed", "directed", "declared",
+    ],
+
     "general": [
         "hello", "hi", "hey", "help", "what can you do", "about you",
         "who are you", "tell me", "thanks", "thank you", "good morning",
         "good evening", "how are you", "what is lexshield", "features",
-        "capabilities", "bye", "goodbye",
+        "capabilities", "bye", "goodbye", "welcome", "start",
     ],
 }
 
 # ── Regex patterns (2 pts each) ────────────────────────────────────────────────
 
 _PATTERNS: dict[str, list[re.Pattern]] = {
+
     "legal_query": [
-        re.compile(r'\b(section|article|clause)\s+\d+[A-Z]?\b', re.IGNORECASE),
-        re.compile(r'\b(ipc|bns|crpc|bnss|bsa|pocso|pmla|ndps|uapa|rti|rera|ni\s?act)\b', re.IGNORECASE),
-        re.compile(r'\bwhat\s+(is|are|does)\b.{0,40}\b(law|act|section|legal|offence|offense|punishment)\b', re.IGNORECASE),
+        re.compile(r'\b(section|article|clause)\s+\d+[A-Za-z]?\b', re.IGNORECASE),
+        re.compile(
+            r'\b(ipc|bns|crpc|bnss|bsa|pocso|pmla|ndps|uapa|rti|rera|'
+            r'ni\s?act|companies\s+act|sebi\s+act)\b',
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r'\bwhat\s+(is|are|does)\b.{0,40}\b(law|act|section|legal|offence|'
+            r'offense|punishment|provision)\b',
+            re.IGNORECASE,
+        ),
         re.compile(r'\b(punishment|penalty|sentence|imprisonment)\s+for\b', re.IGNORECASE),
-        re.compile(r'\b(high\s+court|supreme\s+court|district\s+court|sessions\s+court)\b', re.IGNORECASE),
+        re.compile(
+            r'\b(high\s+court|supreme\s+court|district\s+court|sessions\s+court|'
+            r'magistrate\s+court|family\s+court)\b',
+            re.IGNORECASE,
+        ),
         re.compile(
             r'\bhow\s+(do|can|does|to)\b.{0,40}\b(file|register|apply|get|obtain)\b'
             r'.{0,40}\b(fir|bail|writ|petition|complaint)\b',
             re.IGNORECASE,
         ),
+        re.compile(r'\b(bailable|non.bailable|cognizable|non.cognizable)\b', re.IGNORECASE),
+        re.compile(r'\b(anticipatory\s+bail|regular\s+bail|default\s+bail)\b', re.IGNORECASE),
     ],
+
     "document_analysis": [
         re.compile(
             r'\b(analyze|analyse|review|check|read|scan|extract)\s+(this\s+)?'
@@ -144,11 +195,12 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
             re.IGNORECASE,
         ),
     ],
+
     "draft_request": [
-        # Generic drafting patterns
         re.compile(
             r'\b(draft|write|create|generate|prepare|compose)\b.{0,40}'
-            r'\b(notice|agreement|contract|complaint|petition|affidavit|deed|letter|application)\b',
+            r'\b(notice|agreement|contract|complaint|petition|affidavit|deed|'
+            r'letter|application|reply|response)\b',
             re.IGNORECASE,
         ),
         re.compile(
@@ -162,7 +214,7 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
             r'\b(draft|write|create|file|format|template)\b',
             re.IGNORECASE,
         ),
-        # Session 3: wage_theft
+        # wage_theft
         re.compile(
             r'\b(salary|wages?)\s+(not\s+paid|withheld|pending|dues|not\s+received|stolen)\b',
             re.IGNORECASE,
@@ -172,26 +224,26 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
             re.IGNORECASE,
         ),
         re.compile(r'\blabour\s+commissioner\b', re.IGNORECASE),
-        # Session 3: illegal_eviction
+        # illegal_eviction
         re.compile(
             r'\b(illegally?\s+evict(ed|ion)?|forcible\s+eviction|unlawful\s+eviction|'
             r'thrown\s+out|locked\s+out|dispossess(ed|ion)?)\b',
             re.IGNORECASE,
         ),
         re.compile(r'\b(landlord).{0,30}\b(evict|lock|threaten|harass)\b', re.IGNORECASE),
-        # Session 3: cheque_bounce
+        # cheque_bounce
         re.compile(
             r'\b(cheque\s+bounce|cheque\s+dishonour(ed)?|section\s+138|'
             r'ni\s+act\s+complaint|demand\s+notice.{0,20}cheque)\b',
             re.IGNORECASE,
         ),
-        # Session 3: consumer_complaint
+        # consumer_complaint
         re.compile(
             r'\b(consumer\s+(complaint|forum|court|commission)|defective\s+product|'
             r'deficiency\s+in\s+service|refund\s+complaint)\b',
             re.IGNORECASE,
         ),
-        # Session 3: fir_complaint
+        # fir_complaint
         re.compile(
             r'\b(write\s+a?\s*complaint\s+to\s+police|complaint\s+against.{0,30}'
             r'(theft|assault|fraud|cheating|robbery)|help\s+me\s+file.{0,20}fir)\b',
@@ -202,25 +254,26 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
             r'(police|court|forum|commission|tribunal))\b',
             re.IGNORECASE,
         ),
-        # Session 3: domestic_violence
+        # domestic_violence
         re.compile(
             r'\b(domestic\s+violence\s+complaint|498[aA]\s+complaint|dv\s+act|'
             r'protection\s+order|cruelty\s+by\s+husband)\b',
             re.IGNORECASE,
         ),
-        # Session 3: employment_termination
+        # employment_termination
         re.compile(
             r'\b(wrongful\s+termination|illegal\s+termination|unfair\s+dismissal|'
             r'terminated.{0,20}complaint|labour\s+court.{0,20}(complaint|application))\b',
             re.IGNORECASE,
         ),
-        # Session 3: loan_default
+        # loan_default
         re.compile(
             r'\b(loan\s+(harassment|complaint)|rbi\s+ombudsman|recovery\s+agent.{0,20}'
             r'(harassment|complaint)|sarfaesi|drt\s+complaint)\b',
             re.IGNORECASE,
         ),
     ],
+
     "risk_check": [
         re.compile(
             r'\b(legal\s+risk|risk\s+of|am\s+i\s+(liable|at\s+risk)|'
@@ -238,6 +291,7 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
             re.IGNORECASE,
         ),
     ],
+
     "translation_request": [
         re.compile(
             r'\b(translate|translation)\b.{0,40}'
@@ -260,11 +314,72 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
             re.IGNORECASE,
         ),
     ],
+
+    "case_law_search": [
+        # Citation patterns — most reliable signal
+        re.compile(
+            r'\b\d{4}\s+(?:SCC|AIR|SCR|CrLJ|DLT|BomCR|KerLT|MLJ|'
+            r'SCALE|SLT|GLR|KLT|RCR)\s*\(?(?:Cri|Crl|Criminal)?\)?\s*\d+\b',
+            re.IGNORECASE,
+        ),
+        # "Supreme Court / High Court" + judgment action verbs
+        re.compile(
+            r'\b(supreme\s+court|high\s+court|apex\s+court)\s+'
+            r'.{0,30}\b(held|ruled|decided|observed|stated|declared|directed|'
+            r'quashed|upheld|dismissed|allowed|set\s+aside)\b',
+            re.IGNORECASE,
+        ),
+        # Landmark / leading case phrases
+        re.compile(
+            r'\b(landmark|leading|important|significant|notable)\s+'
+            r'(case|judgment|judgement|ruling|verdict|decision)\b',
+            re.IGNORECASE,
+        ),
+        # Case name patterns: "X v. Y", "X vs Y", "X versus Y"
+        re.compile(
+            r'\b(?:state|union\s+of\s+india|cbi)\s+(?:v\.?|vs\.?|versus)\s+\w+',
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r'\b\w+\s+(?:v\.?|vs\.?|versus)\s+(?:state|union\s+of\s+india|cbi|cci)\b',
+            re.IGNORECASE,
+        ),
+        # Search intent for case law
+        re.compile(
+            r'\b(find|search|show|give)\s+(me\s+)?(cases?|judgments?|judgements?|'
+            r'precedents?|rulings?)\b',
+            re.IGNORECASE,
+        ),
+        # Explicit precedent queries
+        re.compile(
+            r'\bwhat\s+(did|has)\s+.{0,30}(court|bench)\s+'
+            r'(held?|ruled?|decided?|said?)\b',
+            re.IGNORECASE,
+        ),
+        # PIL / writ petition search
+        re.compile(
+            r'\b(pil|public\s+interest\s+litigation)\b.{0,30}'
+            r'\b(filed?|decided?|case|judgment)\b',
+            re.IGNORECASE,
+        ),
+        # Famous landmark case name triggers
+        re.compile(
+            r'\b(kesavananda\s+bharati|maneka\s+gandhi|vishaka|'
+            r'mohd\.\s+ahmed\s+khan|shah\s+bano|indira\s+gandhi|'
+            r'bandhua\s+mukti\s+morcha|olga\s+tellis|navtej\s+johar|'
+            r'puttaswamy|triple\s+talaq|sabarimala|ayodhya)\b',
+            re.IGNORECASE,
+        ),
+    ],
+
     "general": [
-        re.compile(r'^(hi|hello|hey|good\s+(morning|evening|afternoon|night))[\s!?.]*$', re.IGNORECASE),
+        re.compile(
+            r'^(hi|hello|hey|good\s+(morning|evening|afternoon|night))[\s!?.]*$',
+            re.IGNORECASE,
+        ),
         re.compile(
             r'\b(who\s+are\s+you|what\s+can\s+you\s+do|what\s+is\s+lexshield|'
-            r'tell\s+me\s+about\s+yourself)\b',
+            r'tell\s+me\s+about\s+yourself|your\s+capabilities)\b',
             re.IGNORECASE,
         ),
         re.compile(r'^(thanks?|thank\s+you|bye|goodbye|ok|okay|sure)[\s!.]*$', re.IGNORECASE),
@@ -290,15 +405,21 @@ class IntentResult:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class IntentClassifier:
+    """
+    Keyword + regex scorer for 7 LexShield intents.
 
-    # ── Hard-override regex patterns (applied before scoring) ──────────────────
-    # These catch unambiguous draft-request phrasing that the scorer might miss.
+    Hard-override patterns are applied first (+5 pts) to catch unambiguous
+    phrasing that keyword/regex scoring might split evenly. Winner is the
+    intent with the highest cumulative score. Ties break in favour of the
+    more specific intent (draft > legal > general).
+    """
+
+    # ── Hard overrides (+5 pts each, applied before keyword/pattern scoring) ───
 
     _DRAFT_OVERRIDE = re.compile(
         r'\bhelp\s+me\s+(draft|write|create|prepare)\b'
         r'|\b(draft|write|create|prepare)\s+a\s+\w+\s+'
         r'(notice|agreement|contract|complaint|petition|affidavit|deed|application|letter)\b'
-        # Session 3 complaint triggers
         r'|\b(salary|wages?)\s+(not\s+paid|withheld|not\s+received)\b'
         r'|\b(cheque\s+bounce|cheque\s+dishonour)\s+complaint\b'
         r'|\billegal(ly)?\s+evict(ed|ion)?\b'
@@ -320,23 +441,44 @@ class IntentClassifier:
         re.IGNORECASE,
     )
 
+    _CASE_LAW_OVERRIDE = re.compile(
+        # Citation with year+reporter+volume — unambiguous case law intent
+        r'\b\d{4}\s+(?:SCC|AIR|SCR|CrLJ|DLT|BomCR|KerLT|MLJ|SCALE)\b'
+        # Famous landmark case names
+        r'|\b(kesavananda\s+bharati|maneka\s+gandhi|vishaka|shah\s+bano|'
+        r'navtej\s+johar|puttaswamy|triple\s+talaq)\b'
+        # "What did [court] hold/rule/decide"
+        r'|\bwhat\s+did\s+.{0,30}\s+(court|bench)\s+(hold|rule|decide|say)\b'
+        # "find/show me cases on"
+        r'|\b(find|show|search)\s+(me\s+)?(case|cases|judgment|judgments)\b',
+        re.IGNORECASE,
+    )
+
     def classify(self, text: str) -> IntentResult:
         """
-        Classify input text into one of 6 intents.
+        Classify input text into one of 7 intents.
 
-        Returns IntentResult with intent name, confidence, and debug info.
+        Args:
+            text: Raw user query string (any language — for auto-detection,
+                  language detection runs separately in classify_intent_node)
+
+        Returns:
+            IntentResult with intent, confidence [0.0–1.0], raw scores, and debug info.
         """
-        text_lower       = text.lower().strip()
+        text_lower        = text.lower().strip()
         scores: dict[str, float] = {intent: 0.0 for intent in INTENTS}
         matched_patterns: list[str] = []
-        pattern_hit      = False
+        pattern_hit       = False
 
-        # ── Hard overrides (strong signal, applied first) ──────────────────────
+        # ── Hard overrides ─────────────────────────────────────────────────────
         if self._DRAFT_OVERRIDE.search(text):
             scores["draft_request"] += 5.0
 
         if self._TRANSLATION_OVERRIDE.search(text):
             scores["translation_request"] += 5.0
+
+        if self._CASE_LAW_OVERRIDE.search(text):
+            scores["case_law_search"] += 5.0
 
         # ── Keyword scoring (1 pt each) ────────────────────────────────────────
         for intent, keywords in _KEYWORDS.items():
@@ -350,7 +492,7 @@ class IntentClassifier:
                 if pat.search(text):
                     scores[intent] += 2.0
                     pattern_hit = True
-                    matched_patterns.append(f"{intent}:{pat.pattern[:50]}")
+                    matched_patterns.append(f"{intent}:{pat.pattern[:55]}")
 
         # ── Pick winner ────────────────────────────────────────────────────────
         best_intent = max(scores, key=lambda k: scores[k])
@@ -360,7 +502,7 @@ class IntentClassifier:
             best_intent = "general"
 
         confidence = min(raw_score / 10.0, 1.0)
-        if pattern_hit and scores[best_intent] > 0:
+        if pattern_hit and scores.get(best_intent, 0) > 0:
             confidence = min(confidence + 0.2, 1.0)
 
         return IntentResult(
