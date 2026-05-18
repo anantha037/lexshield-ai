@@ -1,0 +1,293 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useStore } from '../store';
+import { sendQuery, adaptQueryResponse } from '../api';
+import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown } from '../icons';
+
+const LANGS = [
+  { code: 'en', label: 'EN' }, { code: 'ml', label: 'ML' },
+  { code: 'hi', label: 'HI' }, { code: 'ta', label: 'TA' }, { code: 'te', label: 'TE' },
+];
+
+const QUICK = [
+  { q: 'What is Section 302 IPC and its punishment?' },
+  { q: 'What are tenant rights under the Transfer of Property Act?' },
+  { q: 'How do I file an FIR? What are my rights?' },
+  { q: 'Rights of an arrested person under BNSS 2023' },
+];
+
+const DOC_RE   = /analys[ei]s?\s+(a\s+)?document|upload\s+document|check\s+this\s+(document|file)|review\s+this\s+file/i;
+const DRAFT_RE = /draft\s+a?\s+complaint|write\s+a?\s+complaint|help\s+me\s+file|draft\s+an?\s+(fir|legal\s+notice)/i;
+const RIGHT_RE = /what\s+are\s+my\s+rights|know\s+my\s+rights|my\s+rights\s+as/i;
+
+function detectRedirect(text) {
+  if (DOC_RE.test(text))   return { view: 'document', label: 'Document Analysis' };
+  if (DRAFT_RE.test(text)) return { view: 'draft',    label: 'Draft Complaint' };
+  if (RIGHT_RE.test(text)) return { view: 'rights',   label: 'Know Your Rights' };
+  return null;
+}
+
+function timeAgo(ts) {
+  if (!ts) return '';
+  const s = Math.floor(Date.now() / 1000 - ts);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+function parseText(text) {
+  if (!text) return null;
+  // Use parseResponse logic as requested
+  let html = text.replace(/\[(IPC|BNS|CrPC|BNSS|IEA|BSA)\s*§\d+[a-zA-Z]*\]|Section\s+\d+[a-zA-Z]*(\s+of\s+the)?\s+([A-Za-z\s]+Act|IPC|BNS|CrPC|BNSS|IEA|BSA)/gi, match => `<span class="citation-badge" style="margin:0 4px">${match}</span>`);
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--c-text);font-weight:600">$1</strong>');
+  html = html.replace(/--(.*?)--/g, ''); 
+  
+  const blocks = html.split(/\n\s*\n/);
+  return blocks.map((block, i) => {
+    const lines = block.split('\n');
+    if (lines[0].match(/^(\*|-|•)\s/)) {
+      return <ul key={i} style={{ margin: '8px 0', paddingLeft: 24, lineHeight: 1.7 }}>
+        {lines.map((l, j) => {
+          const content = l.replace(/^(\*|-|•)\s/, '');
+          return <li key={j} dangerouslySetInnerHTML={{ __html: content }} />;
+        })}
+      </ul>;
+    }
+    if (lines[0].match(/^\d+\.\s/)) {
+      return <ol key={i} style={{ margin: '8px 0', paddingLeft: 24, lineHeight: 1.7 }}>
+        {lines.map((l, j) => {
+          const content = l.replace(/^\d+\.\s/, '');
+          return <li key={j} dangerouslySetInnerHTML={{ __html: content }} />;
+        })}
+      </ol>;
+    }
+    return <p key={i} dangerouslySetInnerHTML={{ __html: block.replace(/\n/g, '<br/>') }} style={{ marginBottom: 12, lineHeight: 1.6 }} />;
+  });
+}
+
+function CopyBtn({ text }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button 
+      style={{ position: 'absolute', top: 8, right: 8, opacity: 0, transition: 'opacity 150ms', background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 4, padding: 4, cursor: 'pointer', color: 'var(--c-text2)' }}
+      className="copy-btn"
+      onClick={() => {
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+    >
+      {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
+    </button>
+  );
+}
+
+export default function ChatView() {
+  const { activeSession, setActiveSession, refreshSessions, toast, setLastResponse, chatMessages, setChatMessages, prefillInput, setPrefillInput, setActiveView, language, setLanguage } = useStore();
+
+  const [loading, setLoading] = useState(false);
+  const [input, setInput] = useState('');
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const endRef = useRef(null);
+  const areaRef = useRef(null);
+  const inputRef = useRef(null);
+  const inputValRef = useRef('');
+  const sessionRef = useRef(activeSession);
+  const langRef = useRef(language);
+  const abortRef = useRef(null);
+
+  useEffect(() => { sessionRef.current = activeSession; }, [activeSession]);
+  useEffect(() => { langRef.current = language; }, [language]);
+  
+  const scrollToBottom = () => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => { 
+    if (!areaRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = areaRef.current;
+    if (scrollHeight - scrollTop - clientHeight < 150) {
+      scrollToBottom(); 
+    }
+  }, [chatMessages, loading]);
+
+  const handleScroll = (e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.target;
+    setShowScrollBtn(scrollHeight - scrollTop - clientHeight > 200);
+  };
+
+  useEffect(() => {
+    if (prefillInput) {
+      const q = prefillInput;
+      setPrefillInput('');
+      handleSend(q);
+    }
+  }, [prefillInput, setPrefillInput]);
+
+  const handleSend = useCallback(async (textOverride) => {
+    const q = (textOverride ?? inputValRef.current).trim();
+    if (!q || loading) return;
+    setInput(''); inputValRef.current = '';
+
+    const redirect = detectRedirect(q);
+    if (redirect) {
+      setChatMessages(m => [...m,
+        { role: 'user', content: q, ts: Date.now() / 1000 },
+        { role: 'assistant', content: q, ts: Date.now() / 1000, redirect },
+      ]);
+      return;
+    }
+
+    if (abortRef.current) abortRef.current.abort(new Error('superseded'));
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    setChatMessages(m => [...m, { role: 'user', content: q, ts: Date.now() / 1000 }]);
+    setLoading(true);
+    try {
+      const raw = await sendQuery(q, sessionRef.current, langRef.current, ctrl.signal);
+      if (!raw) return;
+      const r = adaptQueryResponse(raw);
+      if (!r) return;
+      if (!sessionRef.current && r.sessionId) { setActiveSession(r.sessionId); refreshSessions(); }
+      setChatMessages(m => [...m, {
+        role: 'assistant', content: r.answer || r.draft || r.summary || 'No response received.',
+        intent: r.intent, riskLevel: r.riskLevel, riskScore: r.riskScore, citations: r.citations,
+        ts: Date.now() / 1000,
+      }]);
+      setLastResponse(r);
+    } catch (err) {
+      if (err.name === 'AbortError' || err.message === 'Request superseded' || err.message?.includes('superseded')) return;
+      toast(err.message || 'Query failed', 'error');
+      setChatMessages(m => [...m, { role: 'assistant', content: `Error: ${err.message}`, ts: Date.now() / 1000 }]);
+    } finally { setLoading(false); abortRef.current = null; }
+  }, [loading, setActiveSession, refreshSessions, setChatMessages, setLastResponse, toast]);
+
+  const onInput = (e) => { 
+    setInput(e.target.value); 
+    inputValRef.current = e.target.value; 
+    e.target.style.height = 'auto';
+    e.target.style.height = Math.min(Math.max(e.target.scrollHeight, 44), 140) + 'px';
+  };
+  
+  const onKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
+
+  return (
+    <div className="chat-container view-enter" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--c-bg)', position: 'relative' }}>
+      <div className="view-header" style={{ padding: '32px 40px 24px', borderBottom: '1px solid var(--c-border2)', flexShrink: 0 }}>
+        <h1 style={{ fontFamily: 'var(--f-head)', fontSize: 32, fontWeight: 700, color: 'var(--c-text)', letterSpacing: '-0.01em', margin: 0 }}>Legal Q&A</h1>
+        <p style={{ fontSize: 14, color: 'var(--c-text2)', marginTop: 6, margin: 0 }}>Ask any question grounded in Indian law</p>
+      </div>
+
+      <div className="messages-area" ref={areaRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: 20, scrollBehavior: 'smooth' }}>
+        {chatMessages.length === 0 && !loading && (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 40 }}>
+            <IconScale size={48} color="var(--c-gold-dim)" />
+            <h2 style={{ fontFamily: 'var(--f-head)', fontSize: 28, fontWeight: 600, color: 'var(--c-text)', margin: 0 }}>Ask a Legal Question</h2>
+            <p style={{ fontSize: 14, color: 'var(--c-text2)', textAlign: 'center', maxWidth: 400, margin: 0 }}>
+              Grounded in Indian statutes, case law, and constitutional provisions.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 8, maxWidth: 520 }}>
+              {QUICK.map((q, i) => (
+                <div key={i} className="card-hover" onClick={() => handleSend(q.q)} style={{ padding: '16px 20px', background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)', fontSize: 13, color: 'var(--c-text2)', cursor: 'pointer', textAlign: 'left', animation: `fadeIn 200ms ease forwards ${i * 60}ms`, opacity: 0 }}>
+                  {q.q}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {chatMessages.map((m, i) => {
+          if (m.redirect) return (
+            <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '82%' }}>
+              <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <IconScale size={16} />
+              </div>
+              <div style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }}>
+                <div style={{ fontSize: 14, color: 'var(--c-text2)', marginBottom: 12 }}>
+                  Looks like you want to use <strong style={{ color: 'var(--c-text)' }}>{m.redirect.label}</strong>.
+                </div>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <button className="btn-gold" onClick={() => setActiveView(m.redirect.view)}>Go to {m.redirect.label} →</button>
+                  <button className="btn-ghost" onClick={() => {
+                    setChatMessages(msgs => msgs.filter((_, j) => j !== i));
+                    inputValRef.current = m.content + ' (legal question)';
+                    handleSend(m.content + ' (legal question)');
+                  }}>I have a legal question instead</button>
+                </div>
+              </div>
+            </div>
+          );
+
+          if (m.role === 'user') return (
+            <div key={i} className="msg-enter" style={{ alignSelf: 'flex-end', maxWidth: '65%', background: 'var(--c-gold-dim)', border: '1px solid rgba(196,149,42,0.18)', borderRadius: '16px 16px 4px 16px', padding: '12px 16px', fontSize: 14, color: 'var(--c-text)', lineHeight: 1.6 }}>
+              {m.content}
+              <div style={{ fontSize: 11, color: 'var(--c-text3)', textAlign: 'right', marginTop: 6 }}>{timeAgo(m.ts)}</div>
+            </div>
+          );
+
+          return (
+            <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '82%' }}>
+              <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <IconScale size={16} />
+              </div>
+              <div style={{ position: 'relative', background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }} className="msg-bubble-wrap">
+                <style>{`.msg-bubble-wrap:hover .copy-btn { opacity: 1 !important; }`}</style>
+                <div style={{ fontSize: 14, color: 'var(--c-text2)', lineHeight: 1.75 }}>
+                  {parseText(m.content)}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--c-text3)', textAlign: 'right', marginTop: 6 }}>{timeAgo(m.ts)}</div>
+                <CopyBtn text={m.content} />
+              </div>
+            </div>
+          );
+        })}
+
+        {loading && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start' }}>
+            <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <IconScale size={16} />
+            </div>
+            <div className="typing" style={{ display: 'flex', gap: 5, padding: '16px 20px', alignSelf: 'flex-start' }}>
+              <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite' }} />
+              <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite 0.2s' }} />
+              <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite 0.4s' }} />
+            </div>
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+
+      {showScrollBtn && (
+        <button 
+          onClick={scrollToBottom}
+          style={{ position: 'absolute', bottom: 120, right: 60, width: 36, height: 36, borderRadius: '50%', background: 'var(--c-surface)', border: '1px solid var(--c-border)', color: 'var(--c-gold)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'fadeIn 150ms ease forwards', zIndex: 10 }}
+        >
+          <IconArrowDown size={18} />
+        </button>
+      )}
+
+      <div className="chat-input-area" style={{ padding: '16px 40px 20px', borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+          {LANGS.map(l => (
+            <button key={l.code} 
+              style={{ padding: '3px 12px', borderRadius: 99, fontSize: 12, fontWeight: 600, border: `1px solid ${language === l.code ? 'var(--c-gold)' : 'var(--c-border)'}`, color: language === l.code ? 'var(--c-gold)' : 'var(--c-text3)', background: language === l.code ? 'var(--c-gold-dim)' : 'transparent', cursor: 'pointer', transition: 'all 150ms' }}
+              onMouseDown={(e) => e.currentTarget.style.transform = 'scale(0.95)'}
+              onMouseUp={(e) => e.currentTarget.style.transform = 'scale(1)'}
+              onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+              onClick={() => setLanguage(l.code)}>
+              {l.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+          <textarea ref={inputRef} className="textarea" value={input} onChange={onInput} onKeyDown={onKey}
+            placeholder="Ask a legal question..." style={{ flex: 1, minHeight: 44, maxHeight: 140, resize: 'none' }} rows={1} />
+          <button className="btn-send" onClick={() => handleSend()} disabled={loading || !input.trim()}>
+            <IconSend />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
