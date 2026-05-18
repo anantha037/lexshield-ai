@@ -96,24 +96,25 @@ _init_auth_tables()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from datetime import datetime, timedelta
 
 _SECRET_KEY  = os.getenv("JWT_SECRET_KEY", "lexshield-dev-secret-please-change-me-in-prod")
 _ALGORITHM   = "HS256"
 _EXPIRY_DAYS = 7
 
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-
-# ── Password helpers ──────────────────────────────────────────────────────────
+# ── Password helpers (direct bcrypt — no passlib) ────────────────────────────
 
 def _hash_password(plain: str) -> str:
-    return _pwd_ctx.hash(plain)
+    # bcrypt max input is 72 bytes — truncate to be safe
+    pw = plain.encode("utf-8")[:72]
+    return bcrypt.hashpw(pw, bcrypt.gensalt()).decode("utf-8")
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
-    return _pwd_ctx.verify(plain, hashed)
+    pw = plain.encode("utf-8")[:72]
+    return bcrypt.checkpw(pw, hashed.encode("utf-8"))
 
 
 # ── JWT helpers ───────────────────────────────────────────────────────────────

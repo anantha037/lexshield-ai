@@ -143,6 +143,26 @@ class DocQueryResponse(BaseModel):
     session_id:           str
 
 
+class DocSaveSessionRequest(BaseModel):
+    """
+    Lightweight persist of a document analysis result to session memory.
+    No LLM call — writes one session row + two turns to SQLite directly.
+    """
+    filename:    str
+    doc_type:    str
+    risk_level:  str
+    risk_score:  int
+    summary:     str                     # risk.summary from /analyze
+    confidence:  float
+    session_id:  Optional[str] = None   # if None, a new UUID is generated
+    user_id:     Optional[str] = None   # pass when user is authenticated
+
+
+class DocSaveSessionResponse(BaseModel):
+    session_id:    str
+    first_message: str
+
+
 # ── Text extraction helpers ───────────────────────────────────────────────────
 
 def _extract_pdf(file_bytes: bytes) -> tuple[str, int, bool]:
@@ -470,3 +490,62 @@ def document_query(req: DocQueryRequest):
         risk_note           = risk_note,
         session_id          = req.session_id,
     )
+
+
+# ── Document save-session endpoint ────────────────────────────────────────────
+
+@router.post("/save-session", response_model=DocSaveSessionResponse)
+def document_save_session(req: DocSaveSessionRequest):
+    """
+    Persist a document analysis result to session memory with zero LLM cost.
+
+    Writes:
+      • One sessions row (reuses existing session_id if provided)
+      • One user turn:      "Document: {filename}"          intent=document_analysis
+      • One assistant turn: formatted summary string        intent=document_analysis
+
+    The frontend calls this immediately after /analyze returns, so the session
+    appears in the sidebar without requiring any LLM round-trip.
+
+    curl -s -X POST http://localhost:8000/api/v1/document/save-session \\
+      -H "Content-Type: application/json" \\
+      -d '{"filename":"contract.pdf","doc_type":"rental_agreement","risk_level":"high",
+           "risk_score":72,"summary":"High-risk contract.","confidence":0.91}' \\
+      | python -m json.tool
+    """
+    from agents.memory import session_memory
+
+    # Resolve or create session
+    sid = session_memory.ensure_session(req.session_id)
+
+    # Link to authenticated user when user_id is supplied
+    if req.user_id:
+        session_memory.link_session_to_user(sid, req.user_id)
+
+    first_message = f"Document: {req.filename}"
+
+    # User turn — becomes the sidebar first_message
+    session_memory.add_turn(
+        sid,
+        "user",
+        first_message,
+        intent="document_analysis",
+    )
+
+    # Assistant turn — structured summary stored as plain text for history display
+    summary_content = (
+        f"[DOCUMENT ANALYSIS]\n"
+        f"File: {req.filename}\n"
+        f"Type: {req.doc_type.replace('_', ' ').title()}\n"
+        f"Risk Level: {req.risk_level.upper()} ({req.risk_score}/100)\n"
+        f"Confidence: {round(req.confidence * 100)}%\n\n"
+        f"{req.summary}"
+    )
+    session_memory.add_turn(
+        sid,
+        "assistant",
+        summary_content,
+        intent="document_analysis",
+    )
+
+    return DocSaveSessionResponse(session_id=sid, first_message=first_message)

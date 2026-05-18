@@ -8,8 +8,9 @@ Endpoints
 POST   /api/v1/master/query              — JSON body { query, session_id, language? }
 POST   /api/v1/master/document           — multipart/form-data file + session_id
 GET    /api/v1/master/session/{sid}/history  — session turn history (all turns)
-DELETE /api/v1/master/session/{sid}      — delete session
-GET    /api/v1/master/sessions           — NEW: list sessions for authenticated user
+GET    /api/v1/master/session/new        -- BUG FIX 4: guaranteed fresh session_id
+DELETE /api/v1/master/session/{sid}      -- delete session
+GET    /api/v1/master/sessions           -- list sessions (?type=chat|document|draft|all)
 
 Auth (optional)
 ---------------
@@ -21,6 +22,7 @@ GET /api/v1/master/sessions requires a valid Bearer token.
 """
 
 import io
+import uuid
 from pathlib import Path
 from typing import Optional, List
 
@@ -327,7 +329,7 @@ def delete_session(session_id: str):
 
 
 @router.get("/sessions", response_model=List[SessionSummary])
-def get_user_sessions(current_user: dict = Depends(get_current_user)):
+def get_user_sessions(request: Request, current_user: dict = Depends(get_current_user)):
     """
     Return all chat sessions belonging to the authenticated user.
     Ordered by most-recently-active first.
@@ -344,4 +346,51 @@ def get_user_sessions(current_user: dict = Depends(get_current_user)):
       -H "Authorization: Bearer <your_token>" | python -m json.tool
     """
     sessions = session_memory.get_user_sessions(current_user["id"])
-    return [SessionSummary(**s) for s in sessions]
+
+    # BUG FIX 5: filter by ?type= query parameter
+    session_type = request.query_params.get("type", "all")
+    if session_type == "chat":
+        sessions = [
+            s for s in sessions
+            if not (s.get('first_message') or '').startswith('Document:')
+            and not (s.get('first_message') or '').lower().startswith('draft')
+            and 'drafting' not in (s.get('first_message') or '').lower()
+            and 'i need help drafting' not in (s.get('first_message') or '').lower()
+        ]
+    elif session_type == "document":
+        sessions = [s for s in sessions if (s.get('first_message') or '').startswith('Document:')]
+    elif session_type == "draft":
+        sessions = [
+            s for s in sessions
+            if (s.get('first_message') or '').lower().startswith('draft')
+            or 'drafting' in (s.get('first_message') or '').lower()
+            or 'complaint' in (s.get('first_message') or '').lower()
+            or (s.get('first_message') or '').startswith('I need help drafting')
+        ]
+
+    # Add session_type field to each dict (BUG FIX 5)
+    def _infer_type(fm: str) -> str:
+        if fm.startswith('Document:'):
+            return 'document'
+        fm_l = fm.lower()
+        if fm_l.startswith('draft') or 'drafting' in fm_l or 'complaint' in fm_l or fm_l.startswith('i need help drafting'):
+            return 'draft'
+        return 'chat'
+
+    for s in sessions:
+        s['session_type'] = _infer_type(s.get('first_message') or '')
+
+    return [SessionSummary(**{k: v for k, v in s.items() if k in SessionSummary.__fields__}) for s in sessions]
+
+
+@router.get("/session/new")
+def new_session_id():
+    """
+    BUG FIX 4: Return a guaranteed-fresh session_id.
+    Frontend calls this before each 'Ask about this' click from RightsView
+    to guarantee the resulting chat starts in a new session, not an existing one.
+
+    Returns: {"session_id": "LX-XXXXXXXX"}
+    """
+    fresh_id = "LX-" + uuid.uuid4().hex[:8].upper()
+    return {"session_id": fresh_id}
