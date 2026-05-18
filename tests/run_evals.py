@@ -263,9 +263,16 @@ def run_rag_evaluation(fresh: bool = False) -> dict:
         from ragas.metrics     import (faithfulness, answer_relevancy,
                                        context_precision, context_recall)
         from ragas.llms        import LangchainLLMWrapper
+        from ragas.embeddings  import LangchainEmbeddingsWrapper
         from datasets          import Dataset
     except ImportError as e:
         logger.error(f"RAGAS missing: {e}\nInstall: pip install ragas datasets")
+        return _rag_error_result(str(e))
+
+    try:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+    except ImportError as e:
+        logger.error(f"langchain_community missing: {e}\nInstall: pip install langchain-community")
         return _rag_error_result(str(e))
 
     # Load eval dataset
@@ -354,10 +361,19 @@ def run_rag_evaluation(fresh: bool = False) -> dict:
     logger.info(f"\nRunning RAGAS on {len(ragas_rows)} question(s)…")
     try:
         dataset      = Dataset.from_list(ragas_rows)
+
+        ragas_embeddings = LangchainEmbeddingsWrapper(
+            HuggingFaceEmbeddings(
+                model_name="all-MiniLM-L6-v2",
+                model_kwargs={"device": "cpu"},
+            )
+        )
+
         ragas_result = evaluate(
-            dataset  = dataset,
-            metrics  = [faithfulness, answer_relevancy, context_precision, context_recall],
-            llm      = eval_llm,
+            dataset    = dataset,
+            metrics    = [faithfulness, answer_relevancy, context_precision, context_recall],
+            llm        = eval_llm,
+            embeddings = ragas_embeddings,
         )
         scores = dict(ragas_result)
 
