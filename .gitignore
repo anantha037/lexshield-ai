@@ -56,3 +56,6 @@ Thumbs.db
 models/saved/
 models/scratch.py
 *.db
+*.db-*
+DOCUMENTATION.md
+lexshield_context_final.md
