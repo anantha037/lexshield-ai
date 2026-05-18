@@ -28,6 +28,49 @@ from rag.act_resolver   import act_resolver
 
 RRF_K = 60
 
+
+# ── Act hint extractor (exported — used by KG and pipeline) ──────────────────
+
+def _extract_act_hint(query: str) -> Optional[str]:
+    """
+    Extract which act the user is asking about from free-text query.
+    Order matters: more-specific patterns checked before general ones.
+    Returns None when no act is identifiable — no filter applied.
+    """
+    q = query.lower()
+
+    # CrPC — check BEFORE IPC (more specific, different act)
+    if any(x in q for x in ['crpc', 'cr.p.c', 'criminal procedure code',
+                              'code of criminal procedure']):
+        return 'Code of Criminal Procedure'
+
+    # BNSS — replacement for CrPC
+    if any(x in q for x in ['bnss', 'bharatiya nagarik suraksha']):
+        return 'Bharatiya Nagarik Suraksha Sanhita'
+
+    # BNS — check BEFORE IPC (different act, same section numbers)
+    if any(x in q for x in ['bns', 'bharatiya nyaya sanhita']):
+        return 'Bharatiya Nyaya Sanhita'
+
+    # IPC
+    if any(x in q for x in ['ipc', 'indian penal code', 'i.p.c']):
+        return 'Indian Penal Code'
+
+    # NI Act
+    if any(x in q for x in ['ni act', 'negotiable instruments',
+                              'cheque bounce', 'section 138']):
+        return 'Negotiable Instruments Act'
+
+    # Evidence Act / BSA
+    if any(x in q for x in ['evidence act', 'bsa', 'bharatiya sakshya']):
+        return 'Indian Evidence Act'
+
+    return None  # unknown — no act filter applied
+
+
+# Export alias used by pipeline.py and knowledge_graph.py
+extract_act_hint = _extract_act_hint
+
 # ── Section number detection regex ───────────────────────────────────────────
 _ACT_ABBREVIATIONS = (
     r"IPC|BNS|BNSS|BSA"
@@ -97,6 +140,74 @@ def extract_section_and_source(query: str) -> tuple[Optional[str], Optional[str]
     return pairs[0] if pairs else (None, None)
 
 
+def _format_results(raw: dict) -> list[dict]:
+    results: list[dict] = []
+    if not raw or not raw.get("ids") or not raw["ids"][0]:
+        return results
+    for cid, doc, dist, meta in zip(
+        raw["ids"][0], raw["documents"][0], raw["distances"][0], raw["metadatas"][0]
+    ):
+        score = max(0.0, 1.0 - dist / 2.0)
+        results.append({
+            "chunk_id":         cid,
+            "text":             doc,
+            "source":           meta.get("source",        ""),
+            "doc_type":         meta.get("doc_type",      ""),
+            "section":          meta.get("section",       ""),
+            "section_title":    meta.get("section_title", ""),
+            "chapter":          meta.get("chapter",       ""),
+            "chunk_type":       meta.get("chunk_type",    ""),
+            "category":         meta.get("category",      ""),
+            "era":              meta.get("era",           ""),
+            "score":            round(score, 4),
+            "vector_score":     round(score, 4),
+            "bm25_score":       1.0,
+            "bm25_score_norm":  1.0,
+            "hybrid_score":     1.0,
+            "retrieval_source": "metadata",
+            "rerank_score":     None,
+        })
+    return results
+
+
+def _section_fast_path(section: str, query: str, collection, k: int = 5) -> list[dict]:
+    act_hint = _extract_act_hint(query)
+    
+    where_filter = {"section": {"$eq": section}}
+    
+    if act_hint:
+        # Filter to only the intended act
+        where_filter = {
+            "$and": [
+                {"section": {"$eq": section}},
+                {"source": {"$contains": act_hint.split()[0]}}
+            ]
+        }
+    
+    results = collection.query(
+        query_texts=[f"Section {section}"],
+        where=where_filter,
+        n_results=min(k, 10)
+    )
+    
+    chunks = _format_results(results)
+    
+    # If act_hint was specified but no chunks found with filter,
+    # fall back to unfiltered (corpus may use different source name)
+    if act_hint and len(chunks) == 0:
+        results = collection.query(
+            query_texts=[f"Section {section}"],
+            where={"section": {"$eq": section}},
+            n_results=min(k, 10)
+        )
+        chunks = _format_results(results)
+        # Filter client-side by checking source string
+        chunks = [c for c in chunks 
+                  if act_hint.split()[0].lower() in c.get('source', '').lower()]
+    
+    return chunks
+
+
 # ── ToC filter ────────────────────────────────────────────────────────────────
 
 def _is_toc_chunk(text: str) -> bool:
@@ -153,13 +264,14 @@ class HybridSearcher:
         min_vector_score: float         = 0.05,
         filter_toc:       bool          = True,
         category_filter:  Optional[str] = None,
+        act_hint:         Optional[str] = None,
     ) -> list[dict]:
         fetch_k = n_results * self.fetch_multiplier
 
         # Section fast path — uses act_resolver via extract_sections_and_sources
         section_hits: list[dict] = []
         for section_number, source_hint in extract_sections_and_sources(query):
-            hits = vectorstore.get_by_section(section_number, source_hint)
+            hits = _section_fast_path(section_number, query, vectorstore.collection, k=5)
             if hits and category_filter:
                 hits = [h for h in hits if h.get("category", "") == category_filter]
             if hits:
@@ -226,6 +338,26 @@ class HybridSearcher:
 
         if filter_toc:
             merged = [r for r in merged if not _is_toc_chunk(r.get("text", "")) and len(r.get("text", "").split()) >= 15]
+
+        # ── BUG FIX 1: act-aware post-filter ─────────────────────────────────
+        # When act_hint is known, filter the merged pool to same act family.
+        # This prevents cross-act contamination (e.g. "302 CrPC" returning IPC 302).
+        final_act_hint = act_hint or _extract_act_hint(query)
+        if final_act_hint:
+            act_kw = final_act_hint.split()[0].lower()  # e.g. "code" / "bharatiya" / "indian"
+            # Use first two words for more precise matching
+            act_kw2 = " ".join(final_act_hint.lower().split()[:2])  # e.g. "code of" / "indian penal"
+            act_filtered = [
+                r for r in merged
+                if act_kw2 in r.get("source", "").lower()
+                or act_kw  in r.get("source", "").lower()
+            ]
+            if act_filtered:
+                # Only apply filter if it leaves enough results
+                merged = act_filtered
+                print(f"[HybridSearch] act_hint={final_act_hint!r} → filtered to {len(merged)} chunk(s)")
+            else:
+                print(f"[HybridSearch] act_hint={final_act_hint!r} → filter yielded 0; keeping all {len(merged)} chunks")
 
         return merged[:n_results]
 

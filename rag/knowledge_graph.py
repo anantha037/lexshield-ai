@@ -304,15 +304,44 @@ def format_related_context(section_id: str, hops: int = 1) -> str:
     return "\n".join(lines)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────────────
+# ACT PAIRING HELPER  (BUG FIX 2)
+# ───────────────────────────────────────────────────────────────────────────────
+
+_PAIRED_ACTS = [
+    ('Indian Penal Code',          'Bharatiya Nyaya Sanhita'),
+    ('Code of Criminal Procedure', 'Bharatiya Nagarik Suraksha Sanhita'),
+    ('Indian Evidence Act',        'Bharatiya Sakshya Adhiniyam'),
+]
+
+
+def _is_paired_act(act1: str, act2: str) -> bool:
+    """
+    IPC↔BNS and CrPC↔BNSS and IEA↔BSA are valid substitution pairs.
+    All other cross-act combinations are NOT valid pairs.
+    Used by enrich_retrieval to allow BNS equivalent injection when
+    querying IPC sections (same crime, different era), while blocking
+    CrPC sections appearing when querying IPC sections.
+    """
+    a1 = act1.lower()
+    a2 = act2.lower()
+    for p1, p2 in _PAIRED_ACTS:
+        if (p1.lower() in a1 and p2.lower() in a2) or \
+           (p2.lower() in a1 and p1.lower() in a2):
+            return True
+    return False
+
+
+# ───────────────────────────────────────────────────────────────────────────────
 # ENRICH RETRIEVAL  (main integration point with RAG pipeline)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────────────
 
 def enrich_retrieval(
-    ner_sections:       list[str],
-    chunk_pool:         list[dict],
+    ner_sections:        list[str],
+    chunk_pool:          list[dict],
     chroma_client=None,
     bypass_score_filter: bool = True,
+    act_hint:            Optional[str] = None,   # BUG FIX 2
 ) -> list[dict]:
     """
     For each NER-extracted section, traverse the graph to find related sections,
@@ -360,15 +389,44 @@ def enrich_retrieval(
         if resolved is None:
             continue
 
-        related = get_related_sections(resolved, hops=1)
+        related_all = get_related_sections(resolved, hops=1)
+
+        # BUG FIX 2: when act_hint is known, filter related nodes to same act family
+        if act_hint:
+            act_kw = act_hint.split()[0].lower()
+            related: list[str] = []
+            for rel_id in related_all:
+                node = graph.get(rel_id, {})
+                node_act = node.get('parent_act', '')
+                # Accept: same act keyword in parent_act OR acts are a valid pair
+                same_family = (
+                    act_kw in node_act.lower() or
+                    _is_paired_act(act_hint, node_act)
+                )
+                if same_family:
+                    related.append(rel_id)
+            if related_all and not related:
+                # Fallback: keep all if filtering removed everything
+                # (graph may not have parent_act populated for all nodes)
+                related = related_all
+                print(f"[KG] act_hint filter removed all related for {resolved!r}; using unfiltered")
+            else:
+                if len(related) < len(related_all):
+                    print(f"[KG] act_hint={act_hint!r}: {resolved!r} "
+                          f"{len(related_all)}→{len(related)} related after act filter")
+        else:
+            related = related_all
+
         for rel_id in related:
             if rel_id not in all_related:
                 all_related[rel_id] = resolved
 
-        # Always include the BNS/IPC equivalent
+        # Always include the BNS/IPC equivalent (paired acts are allowed)
         equiv = get_bns_equivalent(resolved)
         if equiv and equiv not in all_related:
-            all_related[equiv] = resolved
+            # But only if it's from a paired act (not a random same-numbered section)
+            if act_hint is None or _is_paired_act(act_hint, graph.get(equiv, {}).get('parent_act', '')):
+                all_related[equiv] = resolved
 
     if not all_related:
         return chunk_pool

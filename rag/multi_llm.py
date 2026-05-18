@@ -91,11 +91,10 @@ _PROVIDERS: list[ProviderConfig] = [
         priority       = 2,
         preempt_buffer = 3,
     ),
-    # 3. FIXED: qwen3-235b-a22b does not exist. Replaced with QwQ-32B —
-    #    Qwen's dedicated reasoning model, strong on structured legal output.
+    # 3. DeepSeek V4 Flash — fast, free, strong on structured output
     ProviderConfig(
-        name           = "openrouter-qwq-32b",
-        model          = "qwen/qwq-32b:free",
+        name           = "openrouter-deepseek-v4",
+        model          = "deepseek/deepseek-v4-flash:free",
         api_key_env    = "OPENROUTER_API_KEY",
         base_url       = "https://openrouter.ai/api/v1",
         rpm_limit      = 20,
@@ -115,28 +114,30 @@ _PROVIDERS: list[ProviderConfig] = [
         priority       = 4,
         preempt_buffer = 2,
     ),
-    # 5–7. Unchanged — all three verified present on OpenRouter free tier.
+    # 5. Google Gemma 4 31B — free, good general-purpose
     ProviderConfig(
-        name           = "openrouter-nemotron-70b",
-        model          = "nvidia/llama-3.1-nemotron-70b-instruct:free",
+        name           = "openrouter-gemma4-31b",
+        model          = "google/gemma-4-31b-it:free",
         api_key_env    = "OPENROUTER_API_KEY",
         base_url       = "https://openrouter.ai/api/v1",
         rpm_limit      = 20,
         priority       = 5,
         preempt_buffer = 3,
     ),
+    # 6. MiniMax M2.5 — free, reliable fallback
     ProviderConfig(
-        name           = "openrouter-deepseek-r1",
-        model          = "deepseek/deepseek-r1:free",
+        name           = "openrouter-minimax-m25",
+        model          = "minimax/minimax-m2.5:free",
         api_key_env    = "OPENROUTER_API_KEY",
         base_url       = "https://openrouter.ai/api/v1",
         rpm_limit      = 20,
         priority       = 6,
         preempt_buffer = 3,
     ),
+    # 7. OpenRouter auto-free router — ultimate fallback, picks any free model
     ProviderConfig(
-        name           = "openrouter-mistral-7b",
-        model          = "mistralai/mistral-7b-instruct:free",
+        name           = "openrouter-auto-free",
+        model          = "openrouter/free",
         api_key_env    = "OPENROUTER_API_KEY",
         base_url       = "https://openrouter.ai/api/v1",
         rpm_limit      = 20,

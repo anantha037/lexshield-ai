@@ -214,8 +214,7 @@ def legal_rag_node(state: AgentState) -> dict:
 
     query         = state.get("query", "")
     context_block = state.get("rag_result", {}).get("context_block", "")
-    enriched      = f"{context_block}\n\n{query}" if context_block else query
-
+    
     print("[Graph] legal_rag_node → NER + KG + RAG")
 
     # NER
@@ -238,10 +237,13 @@ def legal_rag_node(state: AgentState) -> dict:
     kg_chunks: list[dict] = []
     if ner_sections:
         try:
+            from rag.hybrid_search import extract_act_hint
+            act_hint = extract_act_hint(query)
             kg_chunks = enrich_retrieval(
                 ner_sections        = ner_sections,
                 chunk_pool          = [],
                 bypass_score_filter = True,
+                act_hint            = act_hint,
             )
             if kg_chunks:
                 print(f"[Graph] KG: {len(kg_chunks)} extra chunk(s)")
@@ -250,7 +252,7 @@ def legal_rag_node(state: AgentState) -> dict:
 
     # RAG pipeline
     try:
-        answer          = rag_pipeline.query(enriched)
+        answer          = rag_pipeline.query(user_query=query, context_block=context_block)
         kg_count        = len(kg_chunks)
         rag_answer_text = answer.answer_text
 

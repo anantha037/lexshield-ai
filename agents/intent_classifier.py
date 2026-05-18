@@ -6,6 +6,15 @@ Changes from previous session:
     Triggered by: "my rights", "rights as a tenant/employee/consumer",
     "know my rights", "what are my rights", bail rights, women rights.
 
+  - BUG FIX 4: rights prefill routing
+    When a user clicks "Ask about this" in RightsView, the question is
+    pre-filled into ChatView and auto-submitted as a fresh session.
+    These queries contain legal question text (not "my rights" phrasing),
+    so they route correctly to legal_query via normal keyword/pattern scoring.
+    No classifier change needed — the legal_query keywords already cover them.
+    The fix is confirmed in frontend (RightsView.jsx setActiveSession(null)
+    + setPrefillInput) and backend new-session endpoint (GET /master/session/new).
+
 8 intents:
   legal_query         → RAG pipeline (explain/define Indian law)
   document_analysis   → CV pipeline + RAG (uploaded documents)
@@ -499,8 +508,12 @@ class IntentClassifier:
         pattern_hit       = False
 
         # ── Hard overrides (priority order matters) ────────────────────────────
+        _LEGAL_OVERRIDE = re.compile(r'^\bexplain\s+the\s+law:\s', re.IGNORECASE)
+        if _LEGAL_OVERRIDE.search(text):
+            scores["legal_query"] += 10.0
+            
         if self._RIGHTS_OVERRIDE.search(text):
-            scores["rights_check"] += 5.0
+            scores["rights_check"] += 6.0
 
         if self._DRAFT_OVERRIDE.search(text):
             scores["draft_request"] += 5.0

@@ -37,7 +37,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 from rag.llm               import llm
-from rag.hybrid_search     import hybrid_searcher, extract_sections_and_sources
+from rag.hybrid_search     import hybrid_searcher, extract_sections_and_sources, extract_act_hint
 from rag.query_rewriter    import query_rewriter, decompose_query
 from rag.reranker          import reranker
 from rag.vectorstore       import vectorstore
@@ -227,9 +227,10 @@ def _hybrid_search_multi(
     queries: list[str],
     n_results: int,
     category_filter: Optional[str],
+    act_hint: Optional[str] = None,
 ) -> list[dict]:
     return deduplicate_chunks([
-        hybrid_searcher.search(q, n_results=n_results, category_filter=category_filter)
+        hybrid_searcher.search(q, n_results=n_results, category_filter=category_filter, act_hint=act_hint)
         for q in queries
     ])
 
@@ -243,13 +244,14 @@ def _retrieve_for_subquery(
     n_results: int,
     category_filter: Optional[str],
     label: str,
+    act_hint: Optional[str] = None,
 ) -> list[dict]:
     """
     Run hybrid search for a single sub-query and tag each chunk with its
     sub-query label so the synthesizer can present labeled context blocks.
     """
     chunks = hybrid_searcher.search(
-        sub_query, n_results=n_results, category_filter=category_filter
+        sub_query, n_results=n_results, category_filter=category_filter, act_hint=act_hint
     )
     for c in chunks:
         c["subquery_label"] = label
@@ -319,9 +321,10 @@ class RAGPipeline:
         user_query:      str,
         n_results:       Optional[int] = None,
         category_filter: Optional[str] = None,
+        context_block:   str = "",
     ) -> LegalAnswer:
         try:
-            return self._run(user_query, n_results or self.n_final, category_filter)
+            return self._run(user_query, n_results or self.n_final, category_filter, context_block)
         except Exception as e:
             import traceback; traceback.print_exc()
             return LegalAnswer(
@@ -336,13 +339,21 @@ class RAGPipeline:
         user_query:      str,
         n_final:         int,
         category_filter: Optional[str] = None,
+        context_block:   str = "",
     ) -> LegalAnswer:
 
-        expanded      = preprocess_query(user_query)
-        paired_source = detect_paired_act(expanded.lower())
+        # Extract acts/sections ONLY from the latest user_query to avoid hard-pinning 
+        # chunks based on the assistant's previous answers in the context block.
+        latest_expanded = preprocess_query(user_query)
+        paired_source = detect_paired_act(latest_expanded.lower())
+        original_act_hint = extract_act_hint(latest_expanded)
+
+        # For synthesis and deep rewriting, we can optionally use the full context
+        full_query = f"{context_block}\n\n{user_query}" if context_block else user_query
+        expanded = preprocess_query(full_query)
 
         # ── STEP 0: Adaptive complexity routing ────────────────────────────────
-        complexity = classify_query_complexity(expanded)
+        complexity = classify_query_complexity(latest_expanded)
         # pipeline_depth is used by graph.py node (stored in AgentState)
         # Here we just use it to control which steps fire.
         print(f"[Pipeline] complexity={complexity!r}")
@@ -366,7 +377,7 @@ class RAGPipeline:
         pinned_chunks:      list[dict] = []
         section_candidates: list[dict] = []
 
-        for sec, hint in extract_sections_and_sources(expanded):
+        for sec, hint in extract_sections_and_sources(latest_expanded):
             hits = vectorstore.get_by_section(sec, hint)
             if hits and effective_filter:
                 hits = [h for h in hits if h.get("category", "") == effective_filter]
@@ -456,7 +467,7 @@ class RAGPipeline:
                 for i, sq in enumerate(sub_queries, 1):
                     label  = f"Sub-query {i}"
                     chunks = _retrieve_for_subquery(
-                        sq, self.n_retrieve, effective_filter, label
+                        sq, self.n_retrieve, effective_filter, label, act_hint=original_act_hint
                     )
                     subquery_pools.append((label, chunks))
                     decomposed_chunks.extend(chunks)
@@ -478,14 +489,14 @@ class RAGPipeline:
         # STEP 3: Hybrid retrieval
         # ═══════════════════════════════════════════════════════════════════════
         if effective_filter:
-            merged_free = _hybrid_search_multi(all_queries, self.n_retrieve, effective_filter)
+            merged_free = _hybrid_search_multi(all_queries, self.n_retrieve, effective_filter, act_hint=original_act_hint)
         elif auto_category and auto_confidence >= CONFIDENCE_MED:
-            filtered = _hybrid_search_multi(all_queries, self.n_retrieve, auto_category)
-            global_r = _hybrid_search_multi(all_queries, self.n_retrieve, None)
+            filtered = _hybrid_search_multi(all_queries, self.n_retrieve, auto_category, act_hint=original_act_hint)
+            global_r = _hybrid_search_multi(all_queries, self.n_retrieve, None, act_hint=original_act_hint)
             fids     = {r["chunk_id"] for r in filtered}
             merged_free = filtered + [r for r in global_r if r["chunk_id"] not in fids]
         else:
-            merged_free = _hybrid_search_multi(all_queries, self.n_retrieve, None)
+            merged_free = _hybrid_search_multi(all_queries, self.n_retrieve, None, act_hint=original_act_hint)
 
         # Merge decomposed chunks into free pool
         if decomposed_chunks:
@@ -543,7 +554,7 @@ class RAGPipeline:
                 c for c in merged[:N_RERANKER_INPUT]
                 if c.get("chunk_id", "").startswith("_") is False
             ]
-            crag_result = evaluate_retrieval(expanded, eval_chunks)
+            crag_result = evaluate_retrieval(latest_expanded, eval_chunks)
             rag_grade   = "good" if crag_result["score"] >= 4 else "poor"
 
             if crag_result["action"] == "insufficient":

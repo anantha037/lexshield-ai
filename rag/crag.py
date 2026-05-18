@@ -43,26 +43,46 @@ _SYSTEM = (
     "You return ONLY valid JSON — no markdown, no explanation outside the JSON."
 )
 
-_USER_TEMPLATE = """\
+_USER_TEMPLATE = """You are evaluating retrieved Indian legal text chunks for relevance to a user query.
+
+CRITICAL RULES FOR SCORING:
+1. Indian law has multiple acts with the SAME section numbers.
+   IPC Section 302 = Murder (Indian Penal Code)
+   BNS Section 302 = Uttering words to wound religious feelings
+   CrPC Section 302 = Permission to conduct prosecution
+   BNSS Section 302 = Different provision
+   These are COMPLETELY DIFFERENT laws. Section number alone means nothing without the act name.
+
+2. If the query specifies an act (IPC/BNS/CrPC/BNSS/NI Act etc.) and the chunks are from a
+   DIFFERENT act with the same section number, score 1 (insufficient). Do not confuse them.
+
+3. IPC and BNS are paired equivalents (IPC replaced by BNS 2024).
+   If query asks about IPC 302 (murder) and chunks contain BNS 101 (murder equivalent), this IS
+   relevant — score 4-5.
+   If query asks about BNS 302 (religious insult) and chunks contain IPC 302 (murder), this is
+   NOT relevant — score 1.
+   The pairing is semantic (same crime) not numeric (same number).
+
+4. CrPC and BNSS are paired. Evidence Act and BSA are paired.
+   Other acts are NOT interchangeable even if section numbers match.
+
+5. Score 4-5: chunks directly answer the query from the correct act
+   Score 3: chunks are partially relevant, same legal topic
+   Score 2: chunks are tangentially related, same broad area
+   Score 1: chunks are from the wrong act or unrelated topic
+
 Query: {query}
 
-Retrieved chunks (top {n}):
-{chunk_previews}
+Retrieved chunks (summarized):
+{chunk_summaries}
 
-Rate the overall relevance of these chunks to the query on a scale of 1-5:
-  5 = Highly relevant — directly answers the query with the correct section/act
-  4 = Relevant — contains the right legal area, answers most of the query
-  3 = Partially relevant — related topic but missing key sections or acts
-  2 = Marginally relevant — tangentially related, unlikely to produce a good answer
-  1 = Not relevant — wrong act, wrong topic, or no legal content matching the query
+Return ONLY valid JSON (no markdown, no explanation):
+{{"score": <1-5>, "reason": "<one sentence>", "action": "<proceed|rewrite|insufficient>"}}
 
-Return ONLY valid JSON with exactly these three keys:
-{{"score": <integer 1-5>, "reason": "<one sentence>", "action": "<proceed|rewrite|insufficient>"}}
-
-Rules for action field:
-  score >= 4  → action must be "proceed"
-  score 2-3   → action must be "rewrite"
-  score == 1  → action must be "insufficient"
+Rules:
+score >= 3 → action must be "proceed"
+score == 2 → action must be "rewrite"  
+score == 1 → action must be "insufficient"
 """
 
 _MAX_CHUNKS_TO_EVAL  = 5     # evaluate top 5 only — limits Groq token use
@@ -85,8 +105,9 @@ def _parse_crag_response(raw: str) -> dict:
         if all(k in parsed for k in ("score", "reason", "action")):
             score  = int(parsed["score"])
             action = parsed["action"].strip().lower()
-            # Enforce action consistency regardless of what LLM returned
-            if score >= 4:
+            # Enforce action consistency regardless of what LLM returned.
+            # BUG FIX 3: threshold lowered — score >= 3 proceeds (was >= 4)
+            if score >= 3:
                 action = "proceed"
             elif score <= 1:
                 action = "insufficient"
@@ -103,7 +124,8 @@ def _parse_crag_response(raw: str) -> dict:
     reason_match = re.search(r'"reason"\s*:\s*"([^"]+)"', cleaned)
     reason = reason_match.group(1) if reason_match else "Could not parse evaluator response."
 
-    if score >= 4:
+    # BUG FIX 3: consistent threshold in regex fallback path too
+    if score >= 3:
         action = "proceed"
     elif score <= 1:
         action = "insufficient"
@@ -154,7 +176,7 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
 
     chunk_block = "\n\n".join(previews)
     prompt      = _USER_TEMPLATE.format(
-        query=query, n=len(top_chunks), chunk_previews=chunk_block
+        query=query, chunk_summaries=chunk_block
     )
 
     try:
