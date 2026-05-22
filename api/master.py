@@ -90,6 +90,8 @@ class StructuredResponse(BaseModel):
     confidence:        float
     mode:              str
     citation_status:   str = "unverified"
+    scope_status:      str = "in_scope"
+    scope_message:     Optional[str] = None
     sources_consulted: int
     synthesis_note:    str
     grounding_warning: str
@@ -205,6 +207,8 @@ def _build_structured_response(resp) -> StructuredResponse:
         confidence        = resp.confidence,
         mode              = resp.mode,
         citation_status   = getattr(resp, "citation_status", "unverified"),
+        scope_status      = getattr(resp, "scope_status", "in_scope"),
+        scope_message     = getattr(resp, "scope_message", None),
         sources_consulted = resp.sources_consulted,
         synthesis_note    = resp.synthesis_note,
         grounding_warning = resp.grounding_warning,
