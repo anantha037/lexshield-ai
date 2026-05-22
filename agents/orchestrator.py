@@ -34,7 +34,7 @@ class MasterOrchestrator:
         session_id = session_memory.ensure_session(session_id)
 
         # Inject conversation history into initial state via rag_result
-        context_block = session_memory.get_context_block(session_id)
+        context_block = session_memory.get_relevant_context(session_id, query)
         summary = session_memory.get_summary(session_id)
         profile_block = profile_memory.get_profile_block(session_id)
         
@@ -181,7 +181,12 @@ class MasterOrchestrator:
     ) -> LexShieldResponse:
         session_id = session_memory.ensure_session(session_id)
 
-        context_block = session_memory.get_context_block(session_id)
+        # Use BM25-scored context if extracted text is meaningful (≥20 chars)
+        doc_snippet = extracted_text[:500].strip()
+        if len(doc_snippet) >= 20:
+            context_block = session_memory.get_relevant_context(session_id, doc_snippet)
+        else:
+            context_block = session_memory.get_context_block(session_id)
         summary = session_memory.get_summary(session_id)
         profile_block = profile_memory.get_profile_block(session_id)
         
