@@ -36,6 +36,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import json
 from typing import Optional
 
 
@@ -366,3 +367,105 @@ class SessionMemory:
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
 session_memory = SessionMemory()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# USER PROFILE MEMORY (Task 2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ProfileMemory:
+    def __init__(self):
+        with _lock:
+            _conn.executescript("""
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    session_id           TEXT PRIMARY KEY,
+                    preferred_domain     TEXT,
+                    jurisdiction         TEXT,
+                    frequent_acts        TEXT,
+                    frequent_doc_types   TEXT,
+                    act_frequencies      TEXT,
+                    doc_type_frequencies TEXT,
+                    last_updated         REAL
+                );
+            """)
+            _conn.commit()
+
+    def update_profile(self, session_id: str, intent: str, entities: dict):
+        row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
+        
+        if row:
+            profile = dict(row)
+            act_freq = json.loads(profile['act_frequencies'] or '{}')
+            doc_freq = json.loads(profile['doc_type_frequencies'] or '{}')
+            jurisdictions = set(json.loads(profile['jurisdiction'] or '[]'))
+            domains = set(json.loads(profile['preferred_domain'] or '[]'))
+        else:
+            act_freq = {}
+            doc_freq = {}
+            jurisdictions = set()
+            domains = set()
+
+        for loc in entities.get("locations", []):
+            jurisdictions.add(loc)
+            
+        for act in entities.get("acts", []):
+            act_freq[act] = act_freq.get(act, 0) + 1
+            
+        for doc in entities.get("doc_types", []):
+            doc_freq[doc] = doc_freq.get(doc, 0) + 1
+            
+        for dom in entities.get("domains", []):
+            domains.add(dom)
+
+        frequent_acts = [act for act, count in act_freq.items() if count >= 3]
+        frequent_doc_types = [dt for dt, count in doc_freq.items() if count >= 3]
+
+        with _lock:
+            _conn.execute("""
+                INSERT INTO user_profiles (
+                    session_id, preferred_domain, jurisdiction, frequent_acts, 
+                    frequent_doc_types, act_frequencies, doc_type_frequencies, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    preferred_domain=excluded.preferred_domain,
+                    jurisdiction=excluded.jurisdiction,
+                    frequent_acts=excluded.frequent_acts,
+                    frequent_doc_types=excluded.frequent_doc_types,
+                    act_frequencies=excluded.act_frequencies,
+                    doc_type_frequencies=excluded.doc_type_frequencies,
+                    last_updated=excluded.last_updated
+            """, (
+                session_id,
+                json.dumps(list(domains)),
+                json.dumps(list(jurisdictions)),
+                json.dumps(frequent_acts),
+                json.dumps(frequent_doc_types),
+                json.dumps(act_freq),
+                json.dumps(doc_freq),
+                time.time()
+            ))
+            _conn.commit()
+
+    def get_profile_block(self, session_id: str) -> str:
+        row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
+        if not row:
+            return ""
+            
+        domains = json.loads(row['preferred_domain'] or '[]')
+        jurisdictions = json.loads(row['jurisdiction'] or '[]')
+        acts = json.loads(row['frequent_acts'] or '[]')
+        docs = json.loads(row['frequent_doc_types'] or '[]')
+        
+        if not any([domains, jurisdictions, acts, docs]):
+            return ""
+            
+        lines = ["[USER PROFILE]"]
+        if domains: lines.append(f"Preferred Domains: {', '.join(domains)}")
+        if jurisdictions: lines.append(f"Jurisdiction: {', '.join(jurisdictions)}")
+        if acts: lines.append(f"Frequently Mentioned Acts: {', '.join(acts)}")
+        if docs: lines.append(f"Frequently Used Document Types: {', '.join(docs)}")
+        lines.append("[END PROFILE]")
+        
+        return "\n".join(lines)
+
+profile_memory = ProfileMemory()
