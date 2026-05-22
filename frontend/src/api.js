@@ -85,6 +85,18 @@ export const checkHealth = () => request('/health');
 
 export function adaptQueryResponse(raw) {
   if (!raw) return null;
+
+  // Extract structured case law results from backend
+  const caseLawResults = (raw.case_law_results || []).map(c => ({
+    title:    c.title    || '',
+    court:    c.court    || '',
+    date:     c.date     || '',
+    citation: c.citation || '',
+    headline: c.headline || '',
+    url:      c.url      || '',
+    summary:  c.summary  || '',
+  }));
+
   return {
     answer: raw.answer_text || raw.answer || '',
     summary: raw.summary || '',
@@ -113,6 +125,7 @@ export function adaptQueryResponse(raw) {
     supportingDocuments: raw.supporting_documents || [],
     filingAuthority: raw.filing_authority || '',
     nextSteps: raw.next_steps || '',
+    caseLawResults,
   };
 }
 

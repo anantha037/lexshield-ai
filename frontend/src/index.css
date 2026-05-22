@@ -896,3 +896,180 @@ input, textarea { cursor: text; }
 .view-enter, .chip-enter {
   will-change: transform, opacity;
 }
+
+/* ── Case Law Cards ── */
+.case-law-container {
+  width: 100%;
+}
+.case-law-header {
+  margin-bottom: 16px;
+}
+.case-law-header-title {
+  font-family: var(--f-head);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--c-text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.case-law-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.case-law-header-meta span {
+  font-size: 12px;
+  color: var(--c-text3);
+}
+.case-law-header-meta .case-law-source-badge {
+  font-size: 11px;
+  font-family: var(--f-mono);
+  background: rgba(6,182,212,0.10);
+  color: #06B6D4;
+  padding: 2px 10px;
+  border-radius: 99px;
+  font-weight: 600;
+}
+.case-law-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-left: 3px solid var(--c-gold);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  padding: 20px 24px;
+  margin-bottom: 12px;
+  transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
+  position: relative;
+  animation: fadeIn 250ms ease forwards;
+  opacity: 0;
+}
+.case-law-card:hover {
+  border-color: rgba(196,149,42,0.4);
+  border-left-color: var(--c-gold2);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+  transform: translateY(-1px);
+}
+.case-law-card-number {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--c-text3);
+  background: var(--c-elevated);
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+}
+.case-law-card-title {
+  font-family: var(--f-head);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--c-text);
+  line-height: 1.35;
+  margin-bottom: 8px;
+  padding-right: 40px;
+}
+.case-law-card-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.case-law-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--c-elevated);
+  color: var(--c-text2);
+  border: 1px solid var(--c-border);
+}
+.case-law-pill.court {
+  background: rgba(59,130,246,0.08);
+  color: #60A5FA;
+  border-color: rgba(59,130,246,0.15);
+}
+.case-law-pill.date {
+  background: rgba(139,92,246,0.08);
+  color: #A78BFA;
+  border-color: rgba(139,92,246,0.15);
+}
+.case-law-citation {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--c-gold);
+  background: var(--c-gold-dim);
+  padding: 3px 10px;
+  border-radius: var(--r-sm);
+  display: inline-block;
+  margin-bottom: 12px;
+  border: 1px solid rgba(196,149,42,0.15);
+}
+.case-law-summary {
+  font-size: 13px;
+  color: var(--c-text2);
+  line-height: 1.75;
+  margin-bottom: 12px;
+}
+.case-law-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #06B6D4;
+  text-decoration: none;
+  padding: 5px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(6,182,212,0.2);
+  background: rgba(6,182,212,0.06);
+  transition: all 150ms ease;
+}
+.case-law-link:hover {
+  background: rgba(6,182,212,0.12);
+  border-color: rgba(6,182,212,0.35);
+  color: #22D3EE;
+  transform: translateX(2px);
+}
+.case-law-link svg {
+  width: 12px;
+  height: 12px;
+}
+.case-law-disclaimer {
+  font-size: 11px;
+  color: var(--c-text3);
+  line-height: 1.6;
+  padding: 10px 14px;
+  background: var(--c-elevated);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--c-border);
+  margin-top: 8px;
+}
+.case-law-empty {
+  text-align: center;
+  padding: 32px 24px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+}
+.case-law-empty-title {
+  font-family: var(--f-head);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--c-text2);
+  margin-bottom: 8px;
+}
+.case-law-empty-hint {
+  font-size: 13px;
+  color: var(--c-text3);
+  line-height: 1.6;
+  max-width: 400px;
+  margin: 0 auto;
+}
+

@@ -209,3 +209,23 @@ export const IconInfo = ({ size = 24, color = 'currentColor' }) => (
     <line x1="12" y1="8" x2="12.01" y2="8"/>
   </svg>
 )
+
+export const IconGavel = ({ size = 24, color = 'currentColor' }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color}
+    strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14.5 2.5l5 5M2 22l4-4"/>
+    <path d="M10.5 6.5L4 13l3 3 6.5-6.5"/>
+    <path d="M13.5 3.5l5 5-2 2-5-5z"/>
+    <path d="M6 20l2 2"/>
+    <path d="M18 15l3 3-3 3-3-3z"/>
+  </svg>
+)
+
+export const IconExternalLink = ({ size = 24, color = 'currentColor' }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color}
+    strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+    <polyline points="15 3 21 3 21 9"/>
+    <line x1="10" y1="14" x2="21" y2="3"/>
+  </svg>
+)

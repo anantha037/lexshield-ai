@@ -21,6 +21,8 @@ export function StoreProvider({ children }) {
   const [language, setLanguage] = useState('en');
   // FEATURE2: draft category selection
   const [draftCategory, setDraftCategory] = useState(null);
+  // Case law mode — shows case-law-specific quick prompts in ChatView
+  const [caseLawMode, setCaseLawMode] = useState(false);
 
   useEffect(() => {
     const token = getToken();
@@ -32,7 +34,7 @@ export function StoreProvider({ children }) {
   const login = useCallback((token, userData) => { setToken(token); setUser(userData); }, []);
   const logout = useCallback(() => {
     clearToken(); setUser(null); setActiveSession(null); setSessions([]);
-    setChatMessages([]); setDraftCategory(null);
+    setChatMessages([]); setDraftCategory(null); setCaseLawMode(false);
   }, []);
 
   const refreshSessions = useCallback(async (type = 'all') => {
@@ -59,6 +61,7 @@ export function StoreProvider({ children }) {
       prefillInput, setPrefillInput,
       language, setLanguage,
       draftCategory, setDraftCategory,
+      caseLawMode, setCaseLawMode,
     }}>{children}</Ctx.Provider>
   );
 }
