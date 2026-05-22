@@ -61,6 +61,12 @@ DOCUMENTATION.md
 lexshield_context_final.md
 
 
+evals/results/
 
-output.txt
 test_summarization.py
+test_profile.py
+test_db.py
+output.txt
+test_relevance.py
+test_debug_api.py
+test_scratchpad.py
