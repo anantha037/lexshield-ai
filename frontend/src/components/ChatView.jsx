@@ -360,6 +360,27 @@ export default function ChatView() {
           const isLegalIntent = ['legal_query', 'case_law_search', 'document_analysis', 'rights', 'draft'].includes(m.intent);
           const cStatus = m.citationStatus || 'unverified';
 
+          if (m.role === 'assistant' && m.scopeStatus === 'out_of_scope') {
+            return (
+              <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '88%' }}>
+                <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <IconScale size={16} />
+                </div>
+                <div className="scope-warning-block">
+                  <div className="scope-warning-heading">
+                    <IconWarning size={16} /> Out of Scope Request
+                  </div>
+                  <div className="scope-warning-body">
+                    {m.scopeMessage || 'This request falls outside the supported scope of LexShield AI.'}
+                  </div>
+                  <div className="scope-warning-footer">
+                    LexShield is optimized for Indian jurisdiction, case law search, and supported legal templates.
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '88%' }}>
               <div style={{ background: isCaseLaw ? 'rgba(6,182,212,0.10)' : 'var(--c-gold-dim)', border: `1px solid ${isCaseLaw ? 'rgba(6,182,212,0.25)' : 'var(--c-gold)'}`, color: isCaseLaw ? '#06B6D4' : 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

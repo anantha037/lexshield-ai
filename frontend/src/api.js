@@ -52,7 +52,7 @@ export async function sendQuery(query, session_id, language, signal) {
     signal,
   });
   if (!raw) return null; /* aborted */
-  if (!raw.answer_text && !raw.answer && !raw.draft && !raw.summary)
+  if (raw.scope_status !== 'out_of_scope' && !raw.answer_text && !raw.answer && !raw.draft && !raw.summary)
     throw new Error('Empty response from legal engine. Please try again.');
   return raw;
 }
@@ -116,6 +116,8 @@ export function adaptQueryResponse(raw) {
     synthesisNote: raw.synthesis_note || '',
     groundingWarning: raw.grounding_warning || '',
     citationStatus: raw.citation_status || 'unverified',
+    scopeStatus: raw.scope_status || 'in_scope',
+    scopeMessage: raw.scope_message || '',
     rewrittenQueries: raw.rewritten_queries || [],
     rerankerUsed: raw.reranker_used || false,
     keyClauses: raw.key_clauses || [],
