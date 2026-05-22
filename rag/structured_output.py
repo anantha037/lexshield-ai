@@ -69,6 +69,9 @@ class LexShieldResponse:
     rewritten_queries: list[str]
     reranker_used:     bool
 
+    # Case law (populated only when intent == case_law_search)
+    case_law_results:  list[dict] = field(default_factory=list)
+
     @staticmethod
     def _safe_str(value) -> str:
         """Ensure value is a clean UTF-8 string — handles bytes from ChromaDB chunks."""
@@ -115,6 +118,7 @@ class LexShieldResponse:
             "grounding_warning": s(self.grounding_warning),
             "rewritten_queries": [s(q) for q in self.rewritten_queries],
             "reranker_used":     self.reranker_used,
+            "case_law_results":  self.case_law_results,
         }
 
 
@@ -250,6 +254,7 @@ def build_structured_response(
     reranker_used:     bool            = False,
     doc_type:          str             = "",
     entities:          dict            = None,
+    case_law_results:  list[dict]      = None,
 ) -> LexShieldResponse:
     """
     Build a fully structured LexShieldResponse from raw agent output.
@@ -277,6 +282,7 @@ def build_structured_response(
     citations         = citations         or []
     rewritten_queries = rewritten_queries or []
     entities          = entities          or {}
+    case_law_results  = case_law_results  or []
 
     # ── Summary ────────────────────────────────────────────────────────────────
     summary = _extract_summary(answer_text)
@@ -331,4 +337,5 @@ def build_structured_response(
         grounding_warning = grounding_warning or "",
         rewritten_queries = rewritten_queries,
         reranker_used     = reranker_used,
+        case_law_results  = case_law_results,
     )
