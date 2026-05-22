@@ -77,6 +77,22 @@ class MasterOrchestrator:
         # Pull draft text out of rag_result (set by draft_node)
         draft = rag_result.get("draft", "")
 
+        # Pull structured case law results (set by case_law_node)
+        case_law_raw = final_state.get("case_law_result", {})
+        case_law_results = []
+        if case_law_raw and case_law_raw.get("results"):
+            for item in case_law_raw["results"]:
+                c = item.get("case", {})
+                case_law_results.append({
+                    "title":    c.get("title", ""),
+                    "court":    c.get("court", ""),
+                    "date":     c.get("date", ""),
+                    "citation": c.get("citation", ""),
+                    "headline": c.get("headline", ""),
+                    "url":      c.get("url", ""),
+                    "summary":  item.get("summary", ""),
+                })
+
         # Record assistant turn
         session_memory.add_turn(
             session_id, role="assistant", content=answer, intent=intent
@@ -95,6 +111,7 @@ class MasterOrchestrator:
             grounding_warning = rag_result.get("grounding_warning", ""),
             rewritten_queries = rag_result.get("rewritten_queries", []),
             reranker_used     = rag_result.get("reranker_used",     False),
+            case_law_results  = case_law_results,
         )
 
     # ── Document flow ──────────────────────────────────────────────────────────
