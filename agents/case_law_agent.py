@@ -29,6 +29,7 @@ Architecture note:
 import os
 import re
 import time
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
@@ -271,7 +272,7 @@ _SUMMARISE_SYSTEM = (
 )
 
 
-def summarize_case(case: dict, groq_client) -> str:
+async def summarize_case(case: dict, groq_client) -> str:
     """
     Generate a precise 2-sentence precedent summary of an Indian court case.
 
@@ -313,12 +314,14 @@ def summarize_case(case: dict, groq_client) -> str:
     )
 
     try:
-        result = groq_client.generate(
+        result = await asyncio.to_thread(
+            groq_client.generate,
             prompt        = prompt,
             system_prompt = _SUMMARISE_SYSTEM,
             max_tokens    = 220,
             temperature   = 0.1,
-        ).strip()
+        )
+        result = result.strip()
 
         if not result:
             raise ValueError("Empty response from LLM")
@@ -338,7 +341,7 @@ def summarize_case(case: dict, groq_client) -> str:
 # COMBINED: SEARCH + SUMMARISE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def search_and_summarize(
+async def search_and_summarize(
     query:       str,
     groq_client,
     max_results: int = 3,
@@ -346,8 +349,7 @@ def search_and_summarize(
     """
     End-to-end case law search + summarisation pipeline.
 
-    Calls search_cases() → summarize_case() for each result.
-    A 300ms sleep between Groq calls respects free-tier rate limits.
+    Calls search_cases() → summarize_case() for each result concurrently.
 
     Args:
         query:       Legal search query (English)
@@ -362,7 +364,7 @@ def search_and_summarize(
         }
 
     Example:
-        result = search_and_summarize(
+        result = await search_and_summarize(
             "Section 138 NI Act cheque bounce conviction precedent",
             groq_client = llm,
         )
@@ -372,11 +374,23 @@ def search_and_summarize(
     cases = search_cases(query, max_results=max_results)
 
     enriched: list[dict] = []
-    for case in cases:
-        summary = summarize_case(case, groq_client)
-        enriched.append({"case": case, "summary": summary})
-        if len(enriched) < len(cases):
-            time.sleep(_GROQ_DELAY_SECONDS)  # rate-limit buffer
+    if cases:
+        summaries = await asyncio.gather(
+            *[summarize_case(case, groq_client) for case in cases],
+            return_exceptions=True
+        )
+
+        for i, (case, summary) in enumerate(zip(cases, summaries)):
+            if isinstance(summary, Exception):
+                logger.error(f"[CaseLawAgent] Summarization failed for case {i}: {summary}")
+                summary_text = (
+                    f"The {case.get('court', 'Indian Court')} decided {case.get('title', 'Unknown case')} on {case.get('date', '')}. "
+                    f"This judgment is available on Indian Kanoon for reference."
+                )
+            else:
+                summary_text = summary
+                
+            enriched.append({"case": case, "summary": summary_text})
 
     return {
         "query":       query,
@@ -519,8 +533,6 @@ def enrich_rag_response_with_case_law(
         try:
             cases = search_cases(search_query, max_results=max_cases_per_section)
             all_cases.extend(cases)
-            if cases:
-                time.sleep(_GROQ_DELAY_SECONDS)
         except Exception as e:
             logger.warning(f"[CaseLawAgent] Enrichment search failed for {sec_id}: {e}")
             continue
@@ -544,19 +556,27 @@ def enrich_rag_response_with_case_law(
         "",
     ]
 
-    for case in unique_cases:
-        try:
-            summary = summarize_case(case, groq_client)
-            time.sleep(_GROQ_DELAY_SECONDS)
-        except Exception:
-            summary = f"Judgment by {case['court']} ({case['date']})."
+    async def _batch_summarize():
+        return await asyncio.gather(
+            *[summarize_case(case, groq_client) for case in unique_cases],
+            return_exceptions=True
+        )
+
+    summaries = asyncio.run(_batch_summarize())
+
+    for i, (case, summary) in enumerate(zip(unique_cases, summaries)):
+        if isinstance(summary, Exception):
+            logger.error(f"[CaseLawAgent] Summarization failed for case {i}: {summary}")
+            summary_text = f"Judgment by {case.get('court', 'Indian Court')} ({case.get('date', '')})."
+        else:
+            summary_text = summary
 
         judgment_lines.append(
-            f"• **{case['title']}** — {case['court']}, {case['date']}"
+            f"• **{case.get('title', 'Untitled')}** — {case.get('court', 'Indian Court')}, {case.get('date', '')}"
         )
         if case.get("citation"):
             judgment_lines.append(f"  *{case['citation']}*")
-        judgment_lines.append(f"  {summary}")
+        judgment_lines.append(f"  {summary_text}")
         if case.get("url"):
             judgment_lines.append(f"  🔗 [{case['url']}]({case['url']})")
         judgment_lines.append("")
