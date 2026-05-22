@@ -59,3 +59,8 @@ models/scratch.py
 *.db-*
 DOCUMENTATION.md
 lexshield_context_final.md
+
+
+
+output.txt
+test_summarization.py
