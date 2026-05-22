@@ -73,6 +73,9 @@ class LexShieldResponse:
     # Case law (populated only when intent == case_law_search)
     case_law_results:  list[dict] = field(default_factory=list)
 
+    # Debug scratchpad (populated from final graph state when ?debug=true)
+    debug_scratchpad:  Optional[dict] = None
+
     @staticmethod
     def _safe_str(value) -> str:
         """Ensure value is a clean UTF-8 string — handles bytes from ChromaDB chunks."""
@@ -124,6 +127,7 @@ class LexShieldResponse:
             "rewritten_queries": [s(q) for q in self.rewritten_queries],
             "reranker_used":     self.reranker_used,
             "case_law_results":  self.case_law_results,
+            "debug_scratchpad":  self.debug_scratchpad,
         }
 
 
@@ -264,6 +268,7 @@ def build_structured_response(
     doc_type:          str                 = "",
     entities:          dict                = None,
     case_law_results:  list[dict]          = None,
+    debug_scratchpad:  Optional[dict]      = None,
 ) -> LexShieldResponse:
     """
     Build a fully structured LexShieldResponse from raw agent output.
@@ -353,4 +358,5 @@ def build_structured_response(
         rewritten_queries = rewritten_queries,
         reranker_used     = reranker_used,
         case_law_results  = case_law_results,
+        debug_scratchpad  = debug_scratchpad,
     )
