@@ -35,6 +35,13 @@ class MasterOrchestrator:
 
         # Inject conversation history into initial state via rag_result
         context_block = session_memory.get_context_block(session_id)
+        summary = session_memory.get_summary(session_id)
+        
+        if summary:
+            if context_block:
+                context_block = f"[CONVERSATION SUMMARY]\n{summary}\n\n{context_block}"
+            else:
+                context_block = f"[CONVERSATION SUMMARY]\n{summary}\n"
 
         # Record user turn BEFORE invoking (so context includes prior turns)
         session_memory.add_turn(session_id, role="user", content=query, intent=None)
@@ -144,6 +151,14 @@ class MasterOrchestrator:
         session_id = session_memory.ensure_session(session_id)
 
         context_block = session_memory.get_context_block(session_id)
+        summary = session_memory.get_summary(session_id)
+        
+        if summary:
+            if context_block:
+                context_block = f"[CONVERSATION SUMMARY]\n{summary}\n\n{context_block}"
+            else:
+                context_block = f"[CONVERSATION SUMMARY]\n{summary}\n"
+
         label = f" (file: {filename})" if filename else ""
         query = f"Analyze and summarize this legal document{label}:\n\n{extracted_text[:3000]}"
 
