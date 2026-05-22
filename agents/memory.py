@@ -102,6 +102,7 @@ _init_db()
 
 MAX_TURNS_STORED = 20   # hard cap per session (FIFO trim)
 MAX_TURNS_INJECT = 5    # last N turns injected into prompts
+GENERAL_INTENT_TURNS = 3  # reduced turn count for trivial/general queries
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -356,6 +357,81 @@ class SessionMemory:
             lines.append(f"{label}: {row['content']}")
         lines.append("[END HISTORY]")
         return "\n".join(lines)
+
+    def get_relevant_context(
+        self,
+        session_id:    str,
+        current_query: str,
+        top_k:         int = 5,
+    ) -> str:
+        """
+        BM25-scored context retrieval.  Selects the top_k most relevant
+        past turns for `current_query`, re-sorted chronologically.
+
+        Fallback to get_context_block() when:
+          - fewer than top_k turns exist
+          - query tokenizes to ≤2 tokens (trivial / greeting)
+          - any exception during BM25 scoring
+        """
+        try:
+            from rag.bm25_retriever import tokenize
+            from rank_bm25 import BM25Okapi
+
+            # Trivial query detection — skip BM25 overhead
+            query_tokens = tokenize(current_query)
+            if len(query_tokens) <= 2:
+                rows = _conn.execute(
+                    "SELECT role, content FROM turns "
+                    "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                    (session_id, GENERAL_INTENT_TURNS),
+                ).fetchall()
+                if not rows:
+                    return ""
+                lines = ["[CONVERSATION HISTORY]"]
+                for row in reversed(rows):
+                    label = "User" if row["role"] == "user" else "Assistant"
+                    lines.append(f"{label}: {row['content']}")
+                lines.append("[END HISTORY]")
+                return "\n".join(lines)
+
+            # Fetch all stored turns for the session
+            rows = _conn.execute(
+                "SELECT id, role, content FROM turns "
+                "WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
+
+            if len(rows) < top_k:
+                return self.get_context_block(session_id)
+
+            # Build ephemeral BM25 index from turn contents
+            turn_data = [{"id": r["id"], "role": r["role"], "content": r["content"]} for r in rows]
+            corpus_tokenized = [tokenize(t["content"]) for t in turn_data]
+            bm25 = BM25Okapi(corpus_tokenized)
+
+            # Score all turns against the current query
+            scores = bm25.get_scores(query_tokens)
+
+            # Select top_k by descending BM25 score
+            indexed_scores = list(enumerate(scores))
+            indexed_scores.sort(key=lambda x: x[1], reverse=True)
+            top_indices = [idx for idx, _ in indexed_scores[:top_k]]
+
+            # Re-sort by original position (chronological order)
+            top_indices.sort()
+
+            # Format identically to get_context_block()
+            lines = ["[CONVERSATION HISTORY]"]
+            for idx in top_indices:
+                t = turn_data[idx]
+                label = "User" if t["role"] == "user" else "Assistant"
+                lines.append(f"{label}: {t['content']}")
+            lines.append("[END HISTORY]")
+            return "\n".join(lines)
+
+        except Exception:
+            # Silent fallback — never propagate to orchestrator
+            return self.get_context_block(session_id)
 
     def turn_count(self, session_id: str) -> int:
         row = _conn.execute(
