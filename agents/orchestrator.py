@@ -17,7 +17,7 @@ state["draft_data"]  — accumulated draft fields
 
 from typing import Optional
 
-from agents.memory         import session_memory
+from agents.memory         import session_memory, profile_memory
 from agents.graph          import agent_graph, AgentState
 from rag.structured_output import build_structured_response, LexShieldResponse
 
@@ -36,12 +36,19 @@ class MasterOrchestrator:
         # Inject conversation history into initial state via rag_result
         context_block = session_memory.get_context_block(session_id)
         summary = session_memory.get_summary(session_id)
+        profile_block = profile_memory.get_profile_block(session_id)
         
         if summary:
             if context_block:
                 context_block = f"[CONVERSATION SUMMARY]\n{summary}\n\n{context_block}"
             else:
                 context_block = f"[CONVERSATION SUMMARY]\n{summary}\n"
+                
+        if profile_block:
+            if context_block:
+                context_block = f"{profile_block}\n\n{context_block}"
+            else:
+                context_block = f"{profile_block}\n"
 
         # Record user turn BEFORE invoking (so context includes prior turns)
         session_memory.add_turn(session_id, role="user", content=query, intent=None)
@@ -116,6 +123,30 @@ class MasterOrchestrator:
         scope_status  = final_state.get("scope_status", "in_scope")
         scope_message = final_state.get("scope_message", None)
 
+        # Extract entities for profile update
+        doc_types = []
+        domains = []
+        query_lower = query.lower()
+        if intent in ["draft_request", "document_analysis"]:
+            for dt in ["FIR", "Legal Notice", "Rental Agreement", "Contract", "Bail Application", "Petition", "Affidavit", "Complaint"]:
+                if dt.lower() in query_lower:
+                    doc_types.append(dt)
+                    
+        if any(w in query_lower for w in ["divorce", "maintenance", "family", "dowry", "domestic violence"]):
+            domains.append("Family Law")
+        elif any(w in query_lower for w in ["property", "tenant", "eviction", "landlord", "rent"]):
+            domains.append("Civil/Property Law")
+        elif any(w in query_lower for w in ["bail", "fir", "arrest", "police", "crime", "ipc", "criminal", "murder", "theft"]):
+            domains.append("Criminal Law")
+        elif any(w in query_lower for w in ["consumer", "product", "refund", "defective"]):
+            domains.append("Consumer Law")
+            
+        entities_for_profile = dict(final_state.get("ner_result", {}))
+        entities_for_profile["doc_types"] = doc_types
+        entities_for_profile["domains"] = domains
+        
+        profile_memory.update_profile(session_id, intent, entities_for_profile)
+
         # Record assistant turn
         session_memory.add_turn(
             session_id, role="assistant", content=answer, intent=intent
@@ -152,12 +183,19 @@ class MasterOrchestrator:
 
         context_block = session_memory.get_context_block(session_id)
         summary = session_memory.get_summary(session_id)
+        profile_block = profile_memory.get_profile_block(session_id)
         
         if summary:
             if context_block:
                 context_block = f"[CONVERSATION SUMMARY]\n{summary}\n\n{context_block}"
             else:
                 context_block = f"[CONVERSATION SUMMARY]\n{summary}\n"
+                
+        if profile_block:
+            if context_block:
+                context_block = f"{profile_block}\n\n{context_block}"
+            else:
+                context_block = f"{profile_block}\n"
 
         label = f" (file: {filename})" if filename else ""
         query = f"Analyze and summarize this legal document{label}:\n\n{extracted_text[:3000]}"
@@ -197,6 +235,30 @@ class MasterOrchestrator:
 
         answer = response or rag_result.get("answer", "") or \
                  "I was unable to process the document."
+
+        # Extract entities for profile update
+        doc_types = []
+        domains = []
+        query_lower = query.lower()
+        if "document_analysis" in ["draft_request", "document_analysis"]:
+            for dt in ["FIR", "Legal Notice", "Rental Agreement", "Contract", "Bail Application", "Petition", "Affidavit", "Complaint"]:
+                if dt.lower() in query_lower:
+                    doc_types.append(dt)
+                    
+        if any(w in query_lower for w in ["divorce", "maintenance", "family", "dowry", "domestic violence"]):
+            domains.append("Family Law")
+        elif any(w in query_lower for w in ["property", "tenant", "eviction", "landlord", "rent"]):
+            domains.append("Civil/Property Law")
+        elif any(w in query_lower for w in ["bail", "fir", "arrest", "police", "crime", "ipc", "criminal", "murder", "theft"]):
+            domains.append("Criminal Law")
+        elif any(w in query_lower for w in ["consumer", "product", "refund", "defective"]):
+            domains.append("Consumer Law")
+            
+        entities_for_profile = dict(final_state.get("ner_result", {}))
+        entities_for_profile["doc_types"] = doc_types
+        entities_for_profile["domains"] = domains
+        
+        profile_memory.update_profile(session_id, "document_analysis", entities_for_profile)
 
         session_memory.add_turn(
             session_id, role="assistant", content=answer, intent="document_analysis"
