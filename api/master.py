@@ -68,6 +68,15 @@ class CitationInfo(BaseModel):
     relevance_score: Optional[float] = None
     era:             str             = ""
 
+class CaseLawItem(BaseModel):
+    title:    str = ""
+    court:    str = ""
+    date:     str = ""
+    citation: str = ""
+    headline: str = ""
+    url:      str = ""
+    summary:  str = ""
+
 class StructuredResponse(BaseModel):
     answer_text:       str
     summary:           str
@@ -85,6 +94,7 @@ class StructuredResponse(BaseModel):
     grounding_warning: str
     rewritten_queries: List[str]
     reranker_used:     bool
+    case_law_results:  List[CaseLawItem] = []
 
 
 class SessionSummary(BaseModel):
@@ -198,6 +208,9 @@ def _build_structured_response(resp) -> StructuredResponse:
         grounding_warning = resp.grounding_warning,
         rewritten_queries = resp.rewritten_queries,
         reranker_used     = resp.reranker_used,
+        case_law_results  = [
+            CaseLawItem(**c) for c in (resp.case_law_results or [])
+        ],
     )
 
 
