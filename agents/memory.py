@@ -73,6 +73,17 @@ def _init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_turns_session_id
                 ON turns (session_id, id);
+
+            CREATE TABLE IF NOT EXISTS session_summaries (
+                session_id       TEXT    NOT NULL,
+                summary_text     TEXT    NOT NULL,
+                created_at       REAL    NOT NULL,
+                turn_range_start INTEGER NOT NULL,
+                turn_range_end   INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_summaries_session_id
+                ON session_summaries (session_id, created_at);
         """)
         _conn.commit()
 
@@ -221,7 +232,7 @@ class SessionMemory:
         """Delete oldest turns that exceed MAX_TURNS_STORED."""
         rows = _conn.execute(
             """
-            SELECT id FROM turns
+            SELECT id, role, content FROM turns
             WHERE session_id = ?
             ORDER BY id DESC
             LIMIT -1 OFFSET ?
@@ -231,12 +242,76 @@ class SessionMemory:
 
         if rows:
             ids = [r["id"] for r in rows]
+            
+            # Summarize before deleting
+            # Reverse to get chronological order for the summary
+            turns_to_summarize = [
+                {"id": r["id"], "role": r["role"], "content": r["content"]} 
+                for r in reversed(rows)
+            ]
+            
+            threading.Thread(
+                target=self._summarize_turns, 
+                args=(session_id, turns_to_summarize),
+                daemon=True
+            ).start()
+
             placeholders = ",".join("?" * len(ids))
             with _lock:
                 _conn.execute(
                     f"DELETE FROM turns WHERE id IN ({placeholders})", ids
                 )
                 _conn.commit()
+
+    def _summarize_turns(self, session_id: str, turns: list[dict]) -> None:
+        """Background thread to summarize older turns via Groq LLM."""
+        from rag.llm import llm
+        
+        transcript = "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in turns)
+        
+        system_prompt = (
+            "You are an expert legal AI memory summarizer. "
+            "Summarize the following conversation into a single dense paragraph. "
+            "CRITICAL INSTRUCTIONS:\n"
+            "- Preserve all named legal acts (IPC, CrPC, BNS, etc.), section numbers, and document types.\n"
+            "- Preserve the user's stated jurisdiction, context, and intent.\n"
+            "- DO NOT omit specific factual details, case names, or entities."
+        )
+        
+        try:
+            summary = llm.generate(prompt=transcript, system_prompt=system_prompt, max_tokens=300)
+            
+            start_id = turns[0]['id']
+            end_id = turns[-1]['id']
+            
+            with _lock:
+                _conn.execute(
+                    """
+                    INSERT INTO session_summaries (session_id, summary_text, created_at, turn_range_start, turn_range_end)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (session_id, summary, time.time(), start_id, end_id)
+                )
+                _conn.commit()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"[SessionMemory] Failed to summarize turns: {e}")
+
+    def get_summary(self, session_id: str) -> str:
+        """Fetch all summaries for a session, concatenated chronologically."""
+        rows = _conn.execute(
+            """
+            SELECT summary_text FROM session_summaries
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            """,
+            (session_id,)
+        ).fetchall()
+        
+        if not rows:
+            return ""
+            
+        return "\n\n".join(r["summary_text"] for r in rows)
 
     def get_history(self, session_id: str) -> list[dict]:
         """
