@@ -69,6 +69,7 @@ class MasterOrchestrator:
             "source_language": "",
             "response":        "",
             "error":           "",
+            "scratchpad":      {},
         }
 
         # LangGraph config — thread_id links this invocation to its checkpoint
@@ -169,6 +170,7 @@ class MasterOrchestrator:
             rewritten_queries = rag_result.get("rewritten_queries", []),
             reranker_used     = rag_result.get("reranker_used",     False),
             case_law_results  = case_law_results,
+            debug_scratchpad  = final_state.get("scratchpad", {}),
         )
 
     # ── Document flow ──────────────────────────────────────────────────────────
@@ -226,6 +228,7 @@ class MasterOrchestrator:
             "source_language": "",
             "response":        "",
             "error":           "",
+            "scratchpad":      {},
         }
 
         config = {"configurable": {"thread_id": session_id}}
@@ -285,6 +288,7 @@ class MasterOrchestrator:
             grounding_warning = rag_result.get("grounding_warning", ""),
             rewritten_queries = rag_result.get("rewritten_queries", []),
             reranker_used     = rag_result.get("reranker_used",     False),
+            debug_scratchpad  = final_state.get("scratchpad", {}),
         )
 
 
