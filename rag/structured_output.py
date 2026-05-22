@@ -115,6 +115,9 @@ class LexShieldResponse:
             "confidence":        self.confidence,
             "mode":              s(self.mode),
             "citation_status":   s(self.citation_status),
+            "scope_status":      s(self.scope_status),
+            "scope_message":     s(self.scope_message),
+            "kg_sections_used":  [s(k) for k in self.kg_sections_used],
             "sources_consulted": self.sources_consulted,
             "synthesis_note":    s(self.synthesis_note),
             "grounding_warning": s(self.grounding_warning),
@@ -247,17 +250,20 @@ def build_structured_response(
     session_id:        str,
     confidence:        float,
     mode:              str,
-    citation_status:   str             = "unverified",
-    citations:         list[Citation]  = None,
-    draft:             str             = "",
-    sources_consulted: int             = 0,
-    synthesis_note:    str             = "",
-    grounding_warning: str             = "",
-    rewritten_queries: list[str]       = None,
-    reranker_used:     bool            = False,
-    doc_type:          str             = "",
-    entities:          dict            = None,
-    case_law_results:  list[dict]      = None,
+    citations:         list[Citation]      = None,
+    draft:             str                 = "",
+    sources_consulted: int                 = 0,
+    synthesis_note:    str                 = "",
+    grounding_warning: str                 = "",
+    rewritten_queries: Optional[list[str]] = None,
+    reranker_used:     bool                = False,
+    citation_status:   str                 = "unverified",
+    scope_status:      str                 = "in_scope",
+    scope_message:     Optional[str]       = None,
+    kg_sections_used:  Optional[list[str]] = None,
+    doc_type:          str                 = "",
+    entities:          dict                = None,
+    case_law_results:  list[dict]          = None,
 ) -> LexShieldResponse:
     """
     Build a fully structured LexShieldResponse from raw agent output.
@@ -270,6 +276,9 @@ def build_structured_response(
         confidence:        intent confidence
         mode:              agent node that handled request
         citation_status:   'cited', 'partial', or 'unverified'
+        scope_status:      'in_scope', 'out_of_scope', etc.
+        scope_message:     reason if out of scope
+        kg_sections_used:  list of KG sections referenced
         citations:         Citation list from LegalAnswer
         draft:             completed draft (DraftingAgent only)
         sources_consulted: chunk count used
@@ -287,6 +296,7 @@ def build_structured_response(
     rewritten_queries = rewritten_queries or []
     entities          = entities          or {}
     case_law_results  = case_law_results  or []
+    kg_sections_used  = kg_sections_used  or []
 
     # ── Summary ────────────────────────────────────────────────────────────────
     summary = _extract_summary(answer_text)
