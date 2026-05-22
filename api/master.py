@@ -89,6 +89,7 @@ class StructuredResponse(BaseModel):
     session_id:        str
     confidence:        float
     mode:              str
+    citation_status:   str = "unverified"
     sources_consulted: int
     synthesis_note:    str
     grounding_warning: str
@@ -203,6 +204,7 @@ def _build_structured_response(resp) -> StructuredResponse:
         session_id        = resp.session_id,
         confidence        = resp.confidence,
         mode              = resp.mode,
+        citation_status   = getattr(resp, "citation_status", "unverified"),
         sources_consulted = resp.sources_consulted,
         synthesis_note    = resp.synthesis_note,
         grounding_warning = resp.grounding_warning,
