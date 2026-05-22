@@ -115,6 +115,7 @@ export function adaptQueryResponse(raw) {
     sourcesConsulted: raw.sources_consulted || 0,
     synthesisNote: raw.synthesis_note || '',
     groundingWarning: raw.grounding_warning || '',
+    citationStatus: raw.citation_status || 'unverified',
     rewrittenQueries: raw.rewritten_queries || [],
     rerankerUsed: raw.reranker_used || false,
     keyClauses: raw.key_clauses || [],

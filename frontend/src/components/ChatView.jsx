@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useStore } from '../store';
 import { sendQuery, adaptQueryResponse } from '../api';
-import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown, IconGavel, IconExternalLink } from '../icons';
+import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown, IconGavel, IconExternalLink, IconCheckCircle, IconWarning, IconXCircle } from '../icons';
 
 const LANGS = [
   { code: 'en', label: 'EN' }, { code: 'ml', label: 'ML' },
@@ -86,6 +86,36 @@ function CopyBtn({ text }) {
     >
       {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
     </button>
+  );
+}
+
+function TrustBadge({ status }) {
+  if (status === 'cited') {
+    return (
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(16, 185, 129, 0.1)', color: '#10B981', padding: '2px 8px', borderRadius: 99, fontSize: 11, fontWeight: 600, border: '1px solid rgba(16, 185, 129, 0.2)', marginBottom: 8 }}>
+        <IconCheckCircle size={12} /> Sourced
+      </div>
+    );
+  }
+  if (status === 'partial') {
+    return (
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(245, 158, 11, 0.1)', color: '#F59E0B', padding: '2px 8px', borderRadius: 99, fontSize: 11, fontWeight: 600, border: '1px solid rgba(245, 158, 11, 0.2)', marginBottom: 8 }} title="Some content in this response may not be fully cited. Verify with primary sources.">
+        <IconWarning size={12} /> Partially sourced
+      </div>
+    );
+  }
+  return null;
+}
+
+function UnverifiedBanner() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, background: 'rgba(239, 68, 68, 0.1)', color: '#EF4444', padding: '10px 14px', borderRadius: 8, fontSize: 13, border: '1px solid rgba(239, 68, 68, 0.2)', marginBottom: 12 }}>
+      <IconXCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+      <div>
+        <strong style={{ display: 'block', marginBottom: 2 }}>Unverified</strong>
+        This response could not be grounded in a retrieved source. Do not rely on this as legal advice.
+      </div>
+    </div>
   );
 }
 
@@ -327,6 +357,8 @@ export default function ChatView() {
 
           // ── Case Law intent → render rich cards ──
           const isCaseLaw = m.intent === 'case_law_search' && m.caseLawResults && m.caseLawResults.length > 0;
+          const isLegalIntent = ['legal_query', 'case_law_search', 'document_analysis', 'rights', 'draft'].includes(m.intent);
+          const cStatus = m.citationStatus || 'unverified';
 
           return (
             <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '88%' }}>
@@ -335,6 +367,9 @@ export default function ChatView() {
               </div>
               <div style={{ position: 'relative', background: 'var(--c-surface)', border: `1px solid ${isCaseLaw ? 'rgba(6,182,212,0.15)' : 'var(--c-border)'}`, borderRadius: '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }} className="msg-bubble-wrap">
                 <style>{`.msg-bubble-wrap:hover .copy-btn { opacity: 1 !important; }`}</style>
+
+                {isLegalIntent && cStatus === 'unverified' && <UnverifiedBanner />}
+                {isLegalIntent && cStatus !== 'unverified' && <TrustBadge status={cStatus} />}
 
                 {isCaseLaw ? (
                   <CaseLawCards cases={m.caseLawResults} />
