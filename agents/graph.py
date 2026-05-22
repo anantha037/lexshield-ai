@@ -679,7 +679,8 @@ def case_law_node(state: AgentState) -> dict:
         print(f"[Graph] case_law_node → enriched query: {enriched_query[:80]!r}")
 
     try:
-        search_result      = search_and_summarize(query=enriched_query, groq_client=groq_client, max_results=3)
+        import asyncio
+        search_result = asyncio.run(search_and_summarize(query=enriched_query, groq_client=groq_client, max_results=3))
         
         scope_status = "in_scope"
         scope_message = ""
