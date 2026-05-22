@@ -93,6 +93,18 @@ class MasterOrchestrator:
                     "summary":  item.get("summary", ""),
                 })
 
+        # Derive citation_status
+        citations = rag_result.get("citations", [])
+        grounding_warning = rag_result.get("grounding_warning", "")
+        
+        if citations or case_law_results:
+            if grounding_warning:
+                citation_status = "partial"
+            else:
+                citation_status = "cited"
+        else:
+            citation_status = "unverified"
+
         # Record assistant turn
         session_memory.add_turn(
             session_id, role="assistant", content=answer, intent=intent
@@ -104,11 +116,12 @@ class MasterOrchestrator:
             session_id        = session_id,
             confidence        = confidence,
             mode              = rag_result.get("mode", ""),
-            citations         = [],
+            citation_status   = citation_status,
+            citations         = citations,
             draft             = draft,
             sources_consulted = rag_result.get("sources_consulted", 0),
             synthesis_note    = rag_result.get("synthesis_note",    ""),
-            grounding_warning = rag_result.get("grounding_warning", ""),
+            grounding_warning = grounding_warning,
             rewritten_queries = rag_result.get("rewritten_queries", []),
             reranker_used     = rag_result.get("reranker_used",     False),
             case_law_results  = case_law_results,
