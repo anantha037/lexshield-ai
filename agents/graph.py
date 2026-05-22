@@ -42,11 +42,63 @@ Priority order in route_by_intent:
 """
 
 import os
+import re
 import sqlite3
 from typing import TypedDict, Optional
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCRATCHPAD KEY CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SCRATCH_DETECTED_SECTIONS = "detected_sections"   # list[str]
+SCRATCH_DETECTED_ACTS     = "detected_acts"        # list[str]
+SCRATCH_JURISDICTION      = "jurisdiction"          # str
+SCRATCH_DOC_TYPE          = "doc_type"              # str
+SCRATCH_QUERY_COMPLEXITY  = "query_complexity"      # "simple" | "complex"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE-LEVEL REGEX CONSTANTS  (compiled once at import, not per-query)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SEC_RE = re.compile(
+    r'\b[Ss]ections?\s*\.?\s*(\d{1,4}[A-Za-z]?)\b',
+    re.IGNORECASE,
+)
+
+_ACT_RE = re.compile(
+    r'\b(?:Indian Penal Code|Bharatiya Nyaya Sanhita'
+    r'|Code of Criminal Procedure|Bharatiya Nagarik Suraksha Sanhita'
+    r'|Indian Evidence Act|Bharatiya Sakshya Adhiniyam'
+    r'|Negotiable Instruments Act|Protection of Children from Sexual Offences Act'
+    r'|Consumer Protection Act|Information Technology Act'
+    r'|Motor Vehicles Act|Transfer of Property Act'
+    r'|Indian Contract Act|Prevention of Corruption Act'
+    r'|Narcotic Drugs and Psychotropic Substances Act'
+    r'|Unlawful Activities \(Prevention\) Act'
+    r'|IPC|BNS|CrPC|BNSS|NI Act|BSA|POCSO|NDPS|UAPA)\b',
+    re.IGNORECASE,
+)
+
+_JURISDICTION_RE = re.compile(
+    r'\b(?:'
+    # 28 States
+    r'Andhra Pradesh|Arunachal Pradesh|Assam|Bihar|Chhattisgarh'
+    r'|Goa|Gujarat|Haryana|Himachal Pradesh|Jharkhand'
+    r'|Karnataka|Kerala|Madhya Pradesh|Maharashtra|Manipur'
+    r'|Meghalaya|Mizoram|Nagaland|Odisha|Punjab'
+    r'|Rajasthan|Sikkim|Tamil Nadu|Telangana|Tripura'
+    r'|Uttar Pradesh|Uttarakhand|West Bengal'
+    # 8 Union Territories
+    r'|Andaman and Nicobar Islands|Chandigarh|Dadra and Nagar Haveli and Daman and Diu'
+    r'|Delhi|Jammu and Kashmir|Ladakh|Lakshadweep|Puducherry'
+    r')\b',
+    re.IGNORECASE,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -102,6 +154,9 @@ class AgentState(TypedDict):
     response:         str
     error:            str
 
+    # ── Shared scratchpad ──────────────────────────────────────────────────────
+    scratchpad:       dict    # cross-agent shared memory, fresh per invoke
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # NODE: INTENT CLASSIFIER  (+ language detection)
@@ -138,11 +193,32 @@ def classify_intent_node(state: AgentState) -> dict:
         f"conf={result.confidence:.2f} lang={source_language!r}"
     )
 
+    # ── Scratchpad population ──────────────────────────────────────────────
+    scratchpad = dict(state.get("scratchpad", {}))
+
+    detected_sections = list(set(_SEC_RE.findall(query)))
+    detected_acts     = list(set(m.group(0) for m in _ACT_RE.finditer(query)))
+    jurisdiction_match = _JURISDICTION_RE.search(query)
+    complexity = "complex" if (len(detected_sections) > 1 or len(detected_acts) > 1) else "simple"
+
+    scratchpad[SCRATCH_DETECTED_SECTIONS] = detected_sections
+    scratchpad[SCRATCH_DETECTED_ACTS]     = detected_acts
+    scratchpad[SCRATCH_JURISDICTION]      = jurisdiction_match.group(0) if jurisdiction_match else ""
+    scratchpad[SCRATCH_QUERY_COMPLEXITY]  = complexity
+
+    if detected_sections or detected_acts or jurisdiction_match:
+        print(
+            f"[Graph] scratchpad → sections={detected_sections} "
+            f"acts={detected_acts} jurisdiction={scratchpad[SCRATCH_JURISDICTION]!r} "
+            f"complexity={complexity!r}"
+        )
+
     return {
         "intent":          result.intent,
         "confidence":      result.confidence,
         "source_language": source_language,
         "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+        "scratchpad":      scratchpad,
     }
 
 
@@ -217,6 +293,14 @@ def legal_rag_node(state: AgentState) -> dict:
     query         = state.get("query", "")
     context_block = state.get("rag_result", {}).get("context_block", "")
     
+    # ── Scratchpad reader: jurisdiction hint ────────────────────────────────
+    scratchpad = dict(state.get("scratchpad", {}))
+    jurisdiction = scratchpad.get(SCRATCH_JURISDICTION, "")
+    if jurisdiction and context_block:
+        context_block = f"[JURISDICTION CONTEXT: {jurisdiction}]\n{context_block}"
+    elif jurisdiction:
+        context_block = f"[JURISDICTION CONTEXT: {jurisdiction}]"
+
     print("[Graph] legal_rag_node → NER + KG + RAG")
 
     # NER
@@ -234,6 +318,11 @@ def legal_rag_node(state: AgentState) -> dict:
                     ner_sections.append(txt)
     except Exception as e:
         print(f"[Graph] legal_rag_node NER warning: {e}")
+
+    # ── Scratchpad writer: merge NER sections ──────────────────────────────
+    existing_sections = scratchpad.get(SCRATCH_DETECTED_SECTIONS, [])
+    merged = list(set(existing_sections + ner_sections))
+    scratchpad[SCRATCH_DETECTED_SECTIONS] = merged
 
     # KG enrichment
     kg_chunks: list[dict] = []
@@ -296,6 +385,7 @@ def legal_rag_node(state: AgentState) -> dict:
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "scope_status":   scope_status,
             "scope_message":  scope_message,
+            "scratchpad":     scratchpad,
             "error":          "",
         }
     except Exception as exc:
@@ -307,6 +397,7 @@ def legal_rag_node(state: AgentState) -> dict:
             "rag_grade":  "poor",
             "scope_status": "in_scope",
             "scope_message": "",
+            "scratchpad":   scratchpad,
             "error":      str(exc),
         }
 
@@ -446,6 +537,11 @@ def draft_node(state: AgentState) -> dict:
             scope_status = "out_of_scope"
             scope_message = "The requested document type is not in our supported template list."
 
+        # ── Scratchpad writer: doc_type ──────────────────────────────────────
+        scratchpad = dict(state.get("scratchpad", {}))
+        if doc_type:
+            scratchpad[SCRATCH_DOC_TYPE] = doc_type
+
         return {
             "draft_stage": stage_str,
             "draft_data":  result.get("draft_data", {}),
@@ -465,6 +561,7 @@ def draft_node(state: AgentState) -> dict:
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "scope_status":   scope_status,
             "scope_message":  scope_message,
+            "scratchpad":     scratchpad,
             "error":          "",
         }
     except Exception as exc:
@@ -569,8 +666,20 @@ def case_law_node(state: AgentState) -> dict:
     query = state.get("query", "")
     print(f"[Graph] case_law_node → Indian Kanoon: {query[:60]!r}")
 
+    # ── Scratchpad reader: enrich search query ───────────────────────────
+    scratchpad = state.get("scratchpad", {})
+    extra_terms = []
+    for sec in scratchpad.get(SCRATCH_DETECTED_SECTIONS, []):
+        extra_terms.append(f"Section {sec}")
+    for act in scratchpad.get(SCRATCH_DETECTED_ACTS, []):
+        extra_terms.append(act)
+    enriched_query = query
+    if extra_terms:
+        enriched_query = f"{query} {' '.join(extra_terms)}"
+        print(f"[Graph] case_law_node → enriched query: {enriched_query[:80]!r}")
+
     try:
-        search_result      = search_and_summarize(query=query, groq_client=groq_client, max_results=3)
+        search_result      = search_and_summarize(query=enriched_query, groq_client=groq_client, max_results=3)
         
         scope_status = "in_scope"
         scope_message = ""
