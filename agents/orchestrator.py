@@ -105,6 +105,10 @@ class MasterOrchestrator:
         else:
             citation_status = "unverified"
 
+        # Extract scope status
+        scope_status  = final_state.get("scope_status", "in_scope")
+        scope_message = final_state.get("scope_message", None)
+
         # Record assistant turn
         session_memory.add_turn(
             session_id, role="assistant", content=answer, intent=intent
@@ -117,6 +121,8 @@ class MasterOrchestrator:
             confidence        = confidence,
             mode              = rag_result.get("mode", ""),
             citation_status   = citation_status,
+            scope_status      = scope_status,
+            scope_message     = scope_message,
             citations         = citations,
             draft             = draft,
             sources_consulted = rag_result.get("sources_consulted", 0),
@@ -171,6 +177,8 @@ class MasterOrchestrator:
 
         response   = final_state.get("response",   "")
         rag_result = final_state.get("rag_result", {})
+        scope_status  = final_state.get("scope_status", "in_scope")
+        scope_message = final_state.get("scope_message", None)
 
         answer = response or rag_result.get("answer", "") or \
                  "I was unable to process the document."
@@ -185,6 +193,9 @@ class MasterOrchestrator:
             session_id        = session_id,
             confidence        = 1.0,
             mode              = rag_result.get("mode", ""),
+            citation_status   = "unverified",
+            scope_status      = scope_status,
+            scope_message     = scope_message,
             citations         = [],
             draft             = "",
             sources_consulted = rag_result.get("sources_consulted", 0),
