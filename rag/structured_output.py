@@ -61,6 +61,7 @@ class LexShieldResponse:
     session_id:        str
     confidence:        float
     mode:              str
+    citation_status:   str
 
     # RAG metadata
     sources_consulted: int
@@ -113,6 +114,7 @@ class LexShieldResponse:
             "session_id":        s(self.session_id),
             "confidence":        self.confidence,
             "mode":              s(self.mode),
+            "citation_status":   s(self.citation_status),
             "sources_consulted": self.sources_consulted,
             "synthesis_note":    s(self.synthesis_note),
             "grounding_warning": s(self.grounding_warning),
@@ -245,6 +247,7 @@ def build_structured_response(
     session_id:        str,
     confidence:        float,
     mode:              str,
+    citation_status:   str             = "unverified",
     citations:         list[Citation]  = None,
     draft:             str             = "",
     sources_consulted: int             = 0,
@@ -266,6 +269,7 @@ def build_structured_response(
         session_id:        session identifier
         confidence:        intent confidence
         mode:              agent node that handled request
+        citation_status:   'cited', 'partial', or 'unverified'
         citations:         Citation list from LegalAnswer
         draft:             completed draft (DraftingAgent only)
         sources_consulted: chunk count used
@@ -332,6 +336,7 @@ def build_structured_response(
         session_id        = session_id,
         confidence        = confidence,
         mode              = mode,
+        citation_status   = citation_status,
         sources_consulted = sources_consulted,
         synthesis_note    = synthesis_note,
         grounding_warning = grounding_warning or "",
