@@ -97,6 +97,8 @@ class AgentState(TypedDict):
     source_language:  str     # ISO 639-1: "en", "ml", "hi", "ta", "te", ...
 
     # ── Output ─────────────────────────────────────────────────────────────────
+    scope_status:     str     # "in_scope" | "out_of_scope"
+    scope_message:    str
     response:         str
     error:            str
 
@@ -257,7 +259,7 @@ def legal_rag_node(state: AgentState) -> dict:
         rag_answer_text = answer.answer_text
 
         # Optional case law enrichment
-        if ENABLE_CASE_LAW_ENRICHMENT and ner_sections:
+        if ENABLE_CASE_LAW_ENRICHMENT and ner_sections and answer.sources_consulted > 0:
             from rag.llm import llm as _groq
             try:
                 rag_answer_text = enrich_rag_response_with_case_law(
@@ -268,31 +270,43 @@ def legal_rag_node(state: AgentState) -> dict:
             except Exception as e:
                 print(f"[Graph] Case law enrichment warning: {e}")
 
+        scope_status  = "in_scope"
+        scope_message = ""
+        if answer.sources_consulted == 0:
+            scope_status  = "out_of_scope"
+            scope_message = "No relevant Indian legal provisions could be found for this query."
+            rag_answer_text = ""
+            ner_sections = []
+
         return {
             "rag_result": {
                 "answer":            rag_answer_text,
-                "sources_consulted": answer.sources_consulted + kg_count,
+                "sources_consulted": answer.sources_consulted + kg_count if answer.sources_consulted > 0 else 0,
                 "synthesis_note":    (answer.synthesis_note or "")
-                                     + (f" [KG+{kg_count}]" if kg_count else ""),
+                                     + (f" [KG+{kg_count}]" if kg_count and answer.sources_consulted > 0 else ""),
                 "grounding_warning": answer.grounding_warning or "",
                 "rewritten_queries": answer.rewritten_queries or [],
                 "reranker_used":     answer.reranker_used,
                 "mode":              "legal_rag_node",
                 "kg_sections_used":  ner_sections,
             },
-            "ner_result":     ner_out,
+            "ner_result":     ner_out if answer.sources_consulted > 0 else {"entities": []},
             "response":       rag_answer_text,
-            "rag_grade":      "good",
+            "rag_grade":      "good" if answer.sources_consulted > 0 else "poor",
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
+            "scope_status":   scope_status,
+            "scope_message":  scope_message,
             "error":          "",
         }
     except Exception as exc:
         print(f"[Graph] legal_rag_node ERROR: {exc}")
         return {
             "rag_result": {},
-            "ner_result": ner_out,
+            "ner_result": {"entities": []},
             "response":   "I encountered an error processing your legal query. Please try again.",
             "rag_grade":  "poor",
+            "scope_status": "in_scope",
+            "scope_message": "",
             "error":      str(exc),
         }
 
@@ -425,6 +439,12 @@ def draft_node(state: AgentState) -> dict:
         complete  = result.get("complete", False)
         doc_type  = result.get("doc_type", "")
         draft_txt = result.get("draft", "")
+        
+        scope_status = "in_scope"
+        scope_message = ""
+        if stage_str == "0" or (stage_str == "INIT" and not doc_type) or (stage_str == 0):
+            scope_status = "out_of_scope"
+            scope_message = "The requested document type is not in our supported template list."
 
         return {
             "draft_stage": stage_str,
@@ -443,6 +463,8 @@ def draft_node(state: AgentState) -> dict:
                 "doc_type":          doc_type,
             },
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
+            "scope_status":   scope_status,
+            "scope_message":  scope_message,
             "error":          "",
         }
     except Exception as exc:
@@ -453,6 +475,8 @@ def draft_node(state: AgentState) -> dict:
             "draft_data":  {},
             "rag_result":  {},
             "response":    "I encountered an error with the drafting workflow. Please try again.",
+            "scope_status": "in_scope",
+            "scope_message": "",
             "error":       str(exc),
         }
 
@@ -547,7 +571,15 @@ def case_law_node(state: AgentState) -> dict:
 
     try:
         search_result      = search_and_summarize(query=query, groq_client=groq_client, max_results=3)
-        formatted_response = format_case_law_response(search_result)
+        
+        scope_status = "in_scope"
+        scope_message = ""
+        if search_result["total_found"] == 0:
+            scope_status = "out_of_scope"
+            scope_message = "No matching judgments found on Indian Kanoon for this query."
+            formatted_response = ""
+        else:
+            formatted_response = format_case_law_response(search_result)
 
         return {
             "case_law_result": search_result,
@@ -564,6 +596,8 @@ def case_law_node(state: AgentState) -> dict:
             "response":       formatted_response,
             "rag_grade":      "good" if search_result["total_found"] > 0 else "poor",
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
+            "scope_status":   scope_status,
+            "scope_message":  scope_message,
             "error":          "",
         }
     except Exception as exc:
@@ -574,6 +608,8 @@ def case_law_node(state: AgentState) -> dict:
             "rag_result":      {},
             "response":        "Error searching case law. Check INDIANKANOON_API_KEY in .env.",
             "rag_grade":       "poor",
+            "scope_status":    "in_scope",
+            "scope_message":   "",
             "error":           str(exc),
         }
 
@@ -633,6 +669,8 @@ def rights_node(state: AgentState) -> dict:
                 "response":       formatted,
                 "rag_grade":      "good",
                 "pipeline_depth": state.get("pipeline_depth", 1) + 1,
+                "scope_status":   "in_scope",
+                "scope_message":  "",
                 "error":          "",
             }
         except Exception as exc:
@@ -646,49 +684,44 @@ def rights_node(state: AgentState) -> dict:
                     "Please try again or ask a specific legal question."
                 ),
                 "rag_grade": "poor",
+                "scope_status": "in_scope",
+                "scope_message": "",
                 "error":     str(exc),
             }
 
-    # ── No category detected — show menu ──────────────────────────────────────
-    print("[Graph] rights_node → no category detected, showing menu")
+    # ── No category detected — out of scope ──────────────────────────────────
+    print("[Graph] rights_node → no category detected, out of scope")
     try:
         categories    = get_all_categories()
         menu_lines    = [
-            "⚖️ **Know Your Rights — LexShield AI**",
-            "",
-            "Please specify which rights you'd like to explore:",
-            "",
+            "We currently support legal rights guides for the following categories:"
         ]
         for cat in categories:
-            menu_lines.append(
-                f"{cat['icon']} **{cat['display']}** — "
-                f"{cat['num_rights']} rights covered"
-            )
-        menu_lines.extend([
-            "",
-            "**Examples:**",
-            '  • "What are my rights as a tenant?"',
-            '  • "Know my rights as an employee"',
-            '  • "Bail rights of arrested person"',
-            '  • "Consumer rights India"',
-            '  • "Women\'s rights domestic violence"',
-        ])
-        menu_response = "\n".join(menu_lines)
-    except Exception:
-        menu_response = (
-            "Please specify which rights you need: tenant, employee, consumer, women, or bail."
-        )
-
-    return {
-        "rights_category": "",
-        "rights_result":   {},
-        "rag_result":      {"answer": menu_response, "sources_consulted": 0,
-                            "mode": "rights_node_menu"},
-        "response":       menu_response,
-        "rag_grade":      "good",
-        "pipeline_depth": state.get("pipeline_depth", 1) + 1,
-        "error":          "",
-    }
+            menu_lines.append(f"  • {cat['display']}")
+        
+        scope_msg = "Requested rights category is not supported. " + " ".join(menu_lines)
+        
+        return {
+            "rights_category": "",
+            "rights_result":   {},
+            "rag_result":      {},
+            "response":        "",
+            "rag_grade":       "poor",
+            "pipeline_depth":  state.get("pipeline_depth", 1) + 1,
+            "scope_status":    "out_of_scope",
+            "scope_message":   scope_msg,
+            "error":           "",
+        }
+    except Exception as exc:
+        return {
+            "rights_category": "",
+            "rights_result":   {},
+            "response":        "Error generating rights guide.",
+            "rag_grade":       "poor",
+            "scope_status":    "in_scope",
+            "scope_message":   "",
+            "error":           str(exc),
+        }
 
 
 def _detect_rights_category(query_lower: str) -> str:
