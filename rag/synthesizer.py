@@ -25,6 +25,7 @@ Everything else (grounding checker, synthesis note, LegalAnswer) unchanged.
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+from langsmith import traceable
 
 
 # ── Structured citation ───────────────────────────────────────────────────────
@@ -295,6 +296,7 @@ def build_synthesis_note(chunks: list[dict]) -> str:
 
 # ── Main synthesize function ──────────────────────────────────────────────────
 
+@traceable(name="synthesizer.synthesize", run_type="chain")
 def synthesize(
     query:             str,
     chunks:            list[dict],
