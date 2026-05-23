@@ -41,7 +41,13 @@ Design rationale for rights_check vs legal_query disambiguation:
 """
 
 import re
-from dataclasses import dataclass
+import json
+import logging
+from dataclasses import dataclass, field
+from typing import Literal, Optional
+from pydantic import BaseModel
+
+_llm_clf_logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -418,6 +424,31 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# LLM STRUCTURED OUTPUT SCHEMA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class LLMIntentResult(BaseModel):
+    """
+    Structured output schema for the Groq-backed intent classifier.
+
+    Returned by classify_with_llm() on a successful LLM call.
+    Has the same attribute surface as the updated IntentResult so that
+    classify_intent_node can read entity fields identically from both types.
+    """
+    intent: Literal[
+        "legal_query", "document_analysis", "draft_request",
+        "rights_check", "risk_check", "translation_request",
+        "case_law_search", "general"
+    ]
+    confidence:        float       # 0.0–1.0
+    detected_sections: list[str]  # e.g. ["302", "304A"]
+    detected_acts:     list[str]  # e.g. ["IPC", "CrPC"]
+    jurisdiction:      str        # e.g. "Kerala" or ""
+    query_complexity:  Literal["simple", "complex"]
+    reasoning:         str        # one-sentence classification explanation
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # RESULT DATACLASS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -428,6 +459,14 @@ class IntentResult:
     scores:           dict[str, float]
     pattern_matched:  bool
     matched_patterns: list[str]
+    # Optional entity fields — default to empty for backward compatibility.
+    # Allows classify_intent_node to read .detected_sections / .detected_acts /
+    # .jurisdiction / .query_complexity / .reasoning from both return types.
+    detected_sections: list[str] = field(default_factory=list)
+    detected_acts:     list[str] = field(default_factory=list)
+    jurisdiction:      str       = ""
+    query_complexity:  str       = "simple"
+    reasoning:         str       = ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -556,6 +595,237 @@ class IntentClassifier:
             pattern_matched  = pattern_hit,
             matched_patterns = matched_patterns,
         )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # LLM-BASED CLASSIFICATION  (primary entry point from classify_intent_node)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    _SYSTEM_PROMPT = """You are a legal query intent classifier for LexShield AI, an Indian legal assistance platform.
+
+Classify the user query into exactly one of these intents:
+- legal_query: Questions about Indian law, sections, acts, definitions, procedures, or legal concepts. Example: "What is Section 302 IPC?"
+- case_law_search: Searching for or asking about case law, judgments, verdicts, or precedents. Example: "Show me Supreme Court judgments on anticipatory bail."
+- draft_request: Explicit request to draft, write, create, or prepare a legal document, notice, complaint, or application. Example: "Help me write a legal notice to my landlord."
+- rights_check: Questions about one's own legal rights, entitlements, or protections, or nuanced situations where someone is seeking guidance on their options. Example: "I got fired unfairly, what can I do?" or "What are my rights as a tenant?"
+- risk_check: Questions about legal risk, liability, consequences, or whether an action is legal/safe. Example: "Am I liable if my employee gets injured at the site?"
+- translation_request: Explicit request to translate or explain content in a regional Indian language. Example: "Explain this in Malayalam."
+- document_analysis: Request to analyse, review, summarise, or extract information from an uploaded or pasted document.
+- general: Greetings, off-topic questions, capability questions, or chatter. Example: "Hello, what can you do?"
+
+IMPORTANT disambiguation rules:
+- "I got fired" / "I was terminated unfairly" / "My landlord is harassing me" → rights_check (person seeking guidance on their situation and options)
+- "Help me write a complaint" / "Draft a legal notice" → draft_request (explicit drafting request)
+- "What is Section 302" / "Explain IPC" → legal_query (definition/explanation)
+- "Am I liable" / "Is this legal" → risk_check
+
+Also extract from the query:
+- detected_sections: list of bare section numbers mentioned (e.g. ["302", "304A"]). Empty list if none.
+- detected_acts: list of act abbreviations or names explicitly mentioned (e.g. ["IPC", "CrPC"]). Empty list if none.
+- jurisdiction: Indian state or union territory explicitly mentioned, else empty string.
+- query_complexity: "complex" if multiple distinct sections or multiple distinct acts are present, else "simple".
+- reasoning: one sentence explaining why you chose this intent.
+
+Respond ONLY with valid JSON matching this exact schema. No markdown, no explanation, no text outside the JSON object:
+{
+  "intent": "<one of the 8 intents>",
+  "confidence": <float 0.0-1.0>,
+  "detected_sections": ["..."],
+  "detected_acts": ["..."],
+  "jurisdiction": "...",
+  "query_complexity": "simple" or "complex",
+  "reasoning": "..."
+}"""
+
+    def classify_with_llm(
+        self,
+        query: str,
+        groq_client,
+    ) -> "LLMIntentResult | IntentResult":
+        """
+        Primary classification entry point.  Uses a single Groq JSON-mode call
+        to simultaneously classify intent AND extract legal entities (sections,
+        acts, jurisdiction, complexity).
+
+        Fallback chain:
+          1. Regex override fires → synthesised LLMIntentResult, confidence=1.0
+          2. Groq call succeeds  → parsed LLMIntentResult
+          3. Any exception       → self.classify(query) → IntentResult
+
+        Args:
+            query:       Raw user query string.
+            groq_client: Any object with a .generate() or the Groq SDK client.
+                         If None, falls back to classify() immediately.
+
+        Returns:
+            LLMIntentResult on success, IntentResult on fallback.
+        """
+        # ── Pre-filter: hard regex overrides (deterministic routing) ────────────
+        # Priority order is critical — RIGHTS must fire before DRAFT.
+        if self._RIGHTS_OVERRIDE.search(query):
+            _llm_clf_logger.debug("[Classifier] RIGHTS_OVERRIDE fired — skipping LLM")
+            return LLMIntentResult(
+                intent            = "rights_check",
+                confidence        = 1.0,
+                detected_sections = [],
+                detected_acts     = [],
+                jurisdiction      = "",
+                query_complexity  = "simple",
+                reasoning         = "Hard regex override: rights pattern detected.",
+            )
+
+        if self._DRAFT_OVERRIDE.search(query):
+            _llm_clf_logger.debug("[Classifier] DRAFT_OVERRIDE fired — skipping LLM")
+            return LLMIntentResult(
+                intent            = "draft_request",
+                confidence        = 1.0,
+                detected_sections = [],
+                detected_acts     = [],
+                jurisdiction      = "",
+                query_complexity  = "simple",
+                reasoning         = "Hard regex override: draft/complaint pattern detected.",
+            )
+
+        if self._TRANSLATION_OVERRIDE.search(query):
+            _llm_clf_logger.debug("[Classifier] TRANSLATION_OVERRIDE fired — skipping LLM")
+            return LLMIntentResult(
+                intent            = "translation_request",
+                confidence        = 1.0,
+                detected_sections = [],
+                detected_acts     = [],
+                jurisdiction      = "",
+                query_complexity  = "simple",
+                reasoning         = "Hard regex override: explicit translation pattern detected.",
+            )
+
+        if self._CASE_LAW_OVERRIDE.search(query):
+            _llm_clf_logger.debug("[Classifier] CASE_LAW_OVERRIDE fired — skipping LLM")
+            return LLMIntentResult(
+                intent            = "case_law_search",
+                confidence        = 1.0,
+                detected_sections = [],
+                detected_acts     = [],
+                jurisdiction      = "",
+                query_complexity  = "simple",
+                reasoning         = "Hard regex override: case law citation or search pattern detected.",
+            )
+
+        # ── Groq structured-output call ─────────────────────────────────────────
+        if groq_client is None:
+            _llm_clf_logger.warning("[Classifier] groq_client is None — falling back to classify()")
+            return self.classify(query)
+
+        try:
+            raw_response = self._call_groq_json(
+                query       = query,
+                groq_client = groq_client,
+                timeout     = 8,
+            )
+            result = self._parse_llm_response(raw_response)
+            print(
+                f"[Classifier] LLM → intent={result.intent!r} "
+                f"conf={result.confidence:.2f} reasoning={result.reasoning!r}"
+            )
+            return result
+
+        except Exception as exc:
+            _llm_clf_logger.warning(
+                f"[Classifier] classify_with_llm failed ({type(exc).__name__}: {exc}) "
+                "— falling back to classify()"
+            )
+            return self.classify(query)
+
+    def _call_groq_json(self, query: str, groq_client, timeout: int) -> str:
+        """
+        Make a single Groq JSON-mode completion call.
+
+        Strategy:
+          - Attempt 1: use groq_client.chat.completions.create(timeout=...) if
+            the client exposes the raw Groq/OpenAI SDK interface.
+          - Attempt 2: build a dedicated Groq client from GROQ_API_KEY directly.
+          This keeps us independent from MultiLLMRouter's routing logic so that
+          json_object response_format is always available (only Groq supports it
+          reliably here; OpenRouter providers may not).
+        """
+        import os
+
+        messages = [
+            {"role": "system", "content": self._SYSTEM_PROMPT},
+            {"role": "user",   "content": query},
+        ]
+
+        # Try direct .chat.completions.create() — works if groq_client is a
+        # Groq SDK instance or an OpenAI-compatible client that supports json_object.
+        if hasattr(groq_client, "chat"):
+            try:
+                resp = groq_client.chat.completions.create(
+                    model           = "llama-3.3-70b-versatile",
+                    messages        = messages,
+                    temperature     = 0,
+                    max_tokens      = 512,
+                    response_format = {"type": "json_object"},
+                    timeout         = timeout,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception:
+                pass  # fall through to dedicated client below
+
+        # Dedicated Groq SDK client — guaranteed JSON mode support.
+        try:
+            from groq import Groq
+            api_key = os.getenv("GROQ_API_KEY", "")
+            if not api_key:
+                raise RuntimeError("GROQ_API_KEY not set")
+            _client = Groq(api_key=api_key)
+            resp = _client.chat.completions.create(
+                model           = "llama-3.3-70b-versatile",
+                messages        = messages,
+                temperature     = 0,
+                max_tokens      = 512,
+                response_format = {"type": "json_object"},
+                timeout         = timeout,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as exc:
+            raise RuntimeError(f"Groq JSON-mode call failed: {exc}") from exc
+
+    @staticmethod
+    def _parse_llm_response(raw: str) -> LLMIntentResult:
+        """
+        Parse the raw LLM text → LLMIntentResult.
+
+        Strips markdown fences (```json ... ```) before parsing.
+        Raises on any parse / validation failure (caller falls back to classify()).
+        """
+        # Strip markdown code fences if present
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            # Remove first (```json) and last (```) fence lines
+            inner = lines[1:] if lines[0].startswith("```") else lines
+            if inner and inner[-1].strip() == "```":
+                inner = inner[:-1]
+            text = "\n".join(inner).strip()
+
+        parsed = json.loads(text)
+
+        # Coerce confidence to float and clamp to [0, 1]
+        parsed["confidence"] = max(0.0, min(1.0, float(parsed.get("confidence", 0.5))))
+
+        # Ensure list fields are actually lists
+        for list_field in ("detected_sections", "detected_acts"):
+            if not isinstance(parsed.get(list_field), list):
+                parsed[list_field] = []
+
+        # Ensure string fields
+        for str_field in ("jurisdiction", "reasoning"):
+            if not isinstance(parsed.get(str_field), str):
+                parsed[str_field] = ""
+
+        # Normalise query_complexity
+        if parsed.get("query_complexity") not in ("simple", "complex"):
+            parsed["query_complexity"] = "simple"
+
+        return LLMIntentResult(**parsed)
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
