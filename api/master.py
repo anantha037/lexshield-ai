@@ -89,9 +89,6 @@ class StructuredResponse(BaseModel):
     session_id:        str
     confidence:        float
     mode:              str
-    citation_status:   str = "unverified"
-    scope_status:      str = "in_scope"
-    scope_message:     Optional[str] = None
     sources_consulted: int
     synthesis_note:    str
     grounding_warning: str
@@ -99,6 +96,10 @@ class StructuredResponse(BaseModel):
     reranker_used:     bool
     case_law_results:  List[CaseLawItem] = []
     debug_scratchpad:  Optional[dict] = None
+    citation_status:   str = "unverified"
+    validation_status: str = "not_applicable"
+    scope_status:      str = "in_scope"
+    scope_message:     Optional[str] = None
 
 
 class SessionSummary(BaseModel):
@@ -208,6 +209,7 @@ def _build_structured_response(resp, debug_scratchpad=None) -> StructuredRespons
         confidence        = resp.confidence,
         mode              = resp.mode,
         citation_status   = getattr(resp, "citation_status", "unverified"),
+        validation_status = getattr(resp, "validation_status", "not_applicable"),
         scope_status      = getattr(resp, "scope_status", "in_scope"),
         scope_message     = getattr(resp, "scope_message", None),
         sources_consulted = resp.sources_consulted,
