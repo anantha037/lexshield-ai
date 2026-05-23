@@ -16,21 +16,32 @@ state["draft_data"]  — accumulated draft fields
 """
 
 from typing import Optional
+import json
+import time
+from datetime import datetime
+import os
+import logging
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 
 from agents.memory         import session_memory, profile_memory
 from agents.graph          import agent_graph, AgentState
 from rag.structured_output import build_structured_response, LexShieldResponse
+
+logger = logging.getLogger(__name__)
 
 
 class MasterOrchestrator:
 
     # ── Query flow ─────────────────────────────────────────────────────────────
 
+    @traceable(name="master_orchestrator.handle_query", run_type="chain")
     def handle_query(
         self,
         query:      str,
         session_id: Optional[str] = None,
     ) -> LexShieldResponse:
+        start_time = time.time()
         session_id = session_memory.ensure_session(session_id)
 
         # Inject conversation history into initial state via rag_result
@@ -153,6 +164,47 @@ class MasterOrchestrator:
             session_id, role="assistant", content=answer, intent=intent
         )
 
+        # Attach metadata to LangSmith trace
+        rt = get_current_run_tree()
+        if rt:
+            rt.add_metadata({
+                "session_id": session_id,
+                "intent": intent,
+                "citation_status": citation_status,
+                "scope_status": scope_status
+            })
+
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        # Local metrics logging fallback
+        try:
+            os.makedirs("logs", exist_ok=True)
+            
+            # Simple fallback for crag_score - look for "CRAG: insufficient (score=X)" or assume 0
+            crag_score = 0
+            note = rag_result.get("synthesis_note", "")
+            if "score=" in note:
+                import re
+                m = re.search(r"score=(\d+)", note)
+                if m:
+                    crag_score = int(m.group(1))
+
+            metric = {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "session_id": session_id,
+                "intent": intent,
+                "latency_ms": latency_ms,
+                "citation_status": citation_status,
+                "scope_status": scope_status,
+                "crag_score": crag_score,
+                "chunks_retrieved": rag_result.get("sources_consulted", 0),
+                "model_used": "groq-default"
+            }
+            with open(os.path.join("logs", "query_metrics.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(metric) + "\n")
+        except Exception as e:
+            logger.warning(f"[Orchestrator] Failed to write local metric log: {e}")
+
         return build_structured_response(
             answer_text       = answer,
             intent            = intent,
@@ -175,6 +227,7 @@ class MasterOrchestrator:
 
     # ── Document flow ──────────────────────────────────────────────────────────
 
+    @traceable(name="master_orchestrator.handle_document", run_type="chain")
     def handle_document(
         self,
         extracted_text: str,
