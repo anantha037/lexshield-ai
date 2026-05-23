@@ -34,6 +34,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 import requests
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -341,6 +343,7 @@ async def summarize_case(case: dict, groq_client) -> str:
 # COMBINED: SEARCH + SUMMARISE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@traceable(name="case_law.search_and_summarize", run_type="chain")
 async def search_and_summarize(
     query:       str,
     groq_client,
@@ -391,6 +394,13 @@ async def search_and_summarize(
                 summary_text = summary
                 
             enriched.append({"case": case, "summary": summary_text})
+
+    rt = get_current_run_tree()
+    if rt:
+        rt.add_metadata({
+            "cases_found": len(enriched),
+            "enriched_query": query
+        })
 
     return {
         "query":       query,
