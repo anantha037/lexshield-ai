@@ -216,8 +216,8 @@ def search_cases(query: str, max_results: int = 3) -> list[dict]:
             f"for: {query[:60]!r}"
         )
         return []
-    except requests.exceptions.ConnectionError:
-        logger.warning("[CaseLawAgent] Connection error — Indian Kanoon unreachable")
+    except requests.exceptions.ConnectionError as e:
+        logger.warning(f"[CaseLawAgent] Connection error — Indian Kanoon unreachable. Exception: {e}")
         return []
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "?"
@@ -343,6 +343,40 @@ async def summarize_case(case: dict, groq_client) -> str:
 # COMBINED: SEARCH + SUMMARISE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _validate_case_results(results: list[dict]) -> list[dict]:
+    valid_results = []
+    for i, item in enumerate(results):
+        case = item.get("case", {})
+        summary = item.get("summary", "")
+        
+        reasons = []
+        if not case.get("title"): reasons.append("missing title")
+        if not case.get("citation"): reasons.append("missing citation")
+        if not case.get("court"): reasons.append("missing court")
+        if not case.get("date"): reasons.append("missing date")
+        if not case.get("url"): 
+            reasons.append("missing url")
+        elif not str(case.get("url")).startswith("https://"):
+            reasons.append("invalid url format")
+            
+        if not summary or len(summary) < 30:
+            reasons.append(f"summary too short ({len(summary) if summary else 0} chars)")
+            
+        if reasons:
+            print(f"[DEBUG CaseLaw] Case {i} failed. reasons={reasons}")
+            print(f"  title: {case.get('title')}")
+            print(f"  citation: {case.get('citation')}")
+            print(f"  court: {case.get('court')}")
+            print(f"  date: {case.get('date')}")
+            print(f"  url: {case.get('url')}")
+            print(f"  summary len: {len(summary) if summary else 0}")
+            logger.warning(f"[CaseLawAgent] Case {i} failed validation: {', '.join(reasons)}")
+        else:
+            valid_results.append(item)
+            
+    return valid_results
+
+
 @traceable(name="case_law.search_and_summarize", run_type="chain")
 async def search_and_summarize(
     query:       str,
@@ -394,6 +428,9 @@ async def search_and_summarize(
                 summary_text = summary
                 
             enriched.append({"case": case, "summary": summary_text})
+            
+        # Validate structural constraints
+        enriched = _validate_case_results(enriched)
 
     rt = get_current_run_tree()
     if rt:
