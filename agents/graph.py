@@ -153,6 +153,7 @@ class AgentState(TypedDict):
     scope_message:    str
     response:         str
     error:            str
+    validation_status: str    # "passed" | "failed_regenerated" | "failed_returned" | "not_applicable"
 
     # ── Shared scratchpad ──────────────────────────────────────────────────────
     scratchpad:       dict    # cross-agent shared memory, fresh per invoke
@@ -542,9 +543,13 @@ def draft_node(state: AgentState) -> dict:
         if doc_type:
             scratchpad[SCRATCH_DOC_TYPE] = doc_type
 
+        draft_data = result.get("draft_data", {})
+        if "missing_elements" in draft_data:
+            scratchpad["missing_elements"] = draft_data["missing_elements"]
+
         return {
             "draft_stage": stage_str,
-            "draft_data":  result.get("draft_data", {}),
+            "draft_data":  draft_data,
             "response":    result.get("answer", ""),
             "rag_result": {
                 "answer":            result.get("answer", ""),
@@ -563,6 +568,7 @@ def draft_node(state: AgentState) -> dict:
             "scope_message":  scope_message,
             "scratchpad":     scratchpad,
             "error":          "",
+            "validation_status": result.get("validation_status", "not_applicable"),
         }
     except Exception as exc:
         import traceback; traceback.print_exc()
