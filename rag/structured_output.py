@@ -72,6 +72,10 @@ class LexShieldResponse:
 
     # Case law (populated only when intent == case_law_search)
     case_law_results:  list[dict] = field(default_factory=list)
+    
+    validation_status: str = "not_applicable"
+    scope_status:      str = "in_scope"
+    scope_message:     Optional[str] = None
 
     # Debug scratchpad (populated from final graph state when ?debug=true)
     debug_scratchpad:  Optional[dict] = None
@@ -118,6 +122,7 @@ class LexShieldResponse:
             "confidence":        self.confidence,
             "mode":              s(self.mode),
             "citation_status":   s(self.citation_status),
+            "validation_status": s(self.validation_status),
             "scope_status":      s(self.scope_status),
             "scope_message":     s(self.scope_message),
             "kg_sections_used":  [s(k) for k in self.kg_sections_used],
@@ -262,6 +267,7 @@ def build_structured_response(
     rewritten_queries: Optional[list[str]] = None,
     reranker_used:     bool                = False,
     citation_status:   str                 = "unverified",
+    validation_status: str                 = "not_applicable",
     scope_status:      str                 = "in_scope",
     scope_message:     Optional[str]       = None,
     kg_sections_used:  Optional[list[str]] = None,
@@ -281,6 +287,7 @@ def build_structured_response(
         confidence:        intent confidence
         mode:              agent node that handled request
         citation_status:   'cited', 'partial', or 'unverified'
+        validation_status: 'passed', 'failed_regenerated', 'failed_returned', 'not_applicable'
         scope_status:      'in_scope', 'out_of_scope', etc.
         scope_message:     reason if out of scope
         kg_sections_used:  list of KG sections referenced
@@ -352,6 +359,7 @@ def build_structured_response(
         confidence        = confidence,
         mode              = mode,
         citation_status   = citation_status,
+        validation_status = validation_status,
         sources_consulted = sources_consulted,
         synthesis_note    = synthesis_note,
         grounding_warning = grounding_warning or "",
