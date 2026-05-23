@@ -206,7 +206,8 @@ class MasterOrchestrator:
                 "validation_status": validation_status,
                 "crag_score": crag_score,
                 "chunks_retrieved": rag_result.get("sources_consulted", 0),
-                "model_used": "groq-default"
+                "model_used": "groq-default",
+                "intent_reasoning": final_state.get("scratchpad", {}).get("intent_reasoning", ""),
             }
             with open(os.path.join("logs", "query_metrics.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(metric) + "\n")
