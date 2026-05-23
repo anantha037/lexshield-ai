@@ -555,6 +555,10 @@ def _build_generation_prompt(
         for i, q in enumerate(questions)
     )
 
+    missing = draft_data.get("missing_elements_to_inject", [])
+    if missing:
+        facts_block += "\n\nCRITICAL FEEDBACK ON PREVIOUS DRAFT:\nYour previous draft was rejected for missing the following required elements:\n- " + "\n- ".join(missing) + "\nYou MUST include them in this new draft."
+
     relief = _STANDARD_RELIEF.get(category, "Such other relief as the authority deems fit.")
 
     prompts: dict[str, str] = {
@@ -1386,11 +1390,35 @@ class DraftingAgent:
 
         print(f"[DraftingAgent] Generating {category} draft for session {session_id[:8]}…")
 
+        validation_status = "passed"
         try:
             draft_text = self._call_llm(category, draft_data)
+            
+            # Validation Step
+            val_result = self._validate_draft(draft_text, category)
+            if not val_result.get("passed", True):
+                missing_items = val_result.get("missing", [])
+                print(f"[DraftingAgent] Validation failed. Missing: {missing_items}. Regenerating...")
+                
+                draft_data["missing_elements_to_inject"] = missing_items
+                draft_text_2 = self._call_llm(category, draft_data)
+                
+                # Validate second attempt
+                val_result_2 = self._validate_draft(draft_text_2, category)
+                if not val_result_2.get("passed", True):
+                    print(f"[DraftingAgent] Second attempt failed validation. Returning as-is.")
+                    validation_status = "failed_returned"
+                else:
+                    print(f"[DraftingAgent] Second attempt passed validation.")
+                    validation_status = "failed_regenerated"
+                
+                draft_text = draft_text_2
+                draft_data["missing_elements"] = missing_items
+
         except Exception as e:
             print(f"[DraftingAgent] LLM generation failed: {e}")
             draft_text = f"[Draft generation failed: {e}. Please try again.]"
+            validation_status = "failed_returned"
 
         # Mark DONE
         self._save(session_id, DraftStage.DONE, category, draft_data)
@@ -1419,7 +1447,36 @@ class DraftingAgent:
             "complete":  True,
             "draft":     draft_text,
             "draft_data": draft_data,
+            "validation_status": validation_status,
         }
+
+    # ── Validation ─────────────────────────────────────────────────────────────
+    
+    def _validate_draft(self, draft_text: str, doc_type: str) -> dict:
+        prompt = f"""You are a legal document validator. Check if this {doc_type} draft contains ALL of:
+1. Party names (complainant and respondent)
+2. Specific legal basis or act cited
+3. Clear statement of facts
+4. Specific relief sought
+5. Verification/declaration clause
+Respond ONLY as JSON: {{"passed": true}} or {{"passed": false, "missing": ["item1", "item2"]}}
+
+Draft to validate:
+{draft_text}"""
+        try:
+            from rag.llm import llm
+            response = llm.generate(
+                prompt=prompt, 
+                system_prompt="You are a strict legal validator outputting ONLY JSON.", 
+                temperature=0.0, 
+                max_tokens=200
+            )
+            
+            clean_json = response.strip().strip('`').replace('json', '').strip()
+            return json.loads(clean_json)
+        except Exception as e:
+            print(f"[DraftingAgent] Validation parse error: {e}")
+            return {"passed": True}
 
     # ── LLM call ───────────────────────────────────────────────────────────────
 
