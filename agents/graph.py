@@ -169,11 +169,17 @@ def classify_intent_node(state: AgentState) -> dict:
 
     1. detect_language(query) — Unicode fast-path + langdetect.
        Stores ISO 639-1 code in state["source_language"].
-    2. intent_classifier.classify(query) — 8-intent keyword+regex scorer.
-       Stores intent and confidence in state.
+    2. intent_classifier.classify_with_llm(query, groq_client) — LLM-first
+       classification with regex override pre-filter and fallback chain.
+       Returns LLMIntentResult (primary) or IntentResult (fallback).
+    3. Entity fields (sections, acts, jurisdiction, complexity) are read from
+       the result directly.  If they are empty (override fast-path or fallback),
+       the module-level regex constants run as a backup extraction pass.
+    4. intent_reasoning is written to scratchpad for JSONL logging.
     """
     from agents.intent_classifier  import intent_classifier
     from agents.multilingual_agent import detect_language
+    from rag.llm                   import llm as groq_client
 
     query = state.get("query", "").strip()
     if not query:
@@ -188,29 +194,43 @@ def classify_intent_node(state: AgentState) -> dict:
     if source_language != "en":
         print(f"[Graph] classify_intent_node → detected language: {source_language!r}")
 
-    result = intent_classifier.classify(query)
+    # Primary: LLM-based classification (with regex override pre-filter + fallback)
+    result = intent_classifier.classify_with_llm(query, groq_client)
     print(
         f"[Graph] classify_intent_node → intent={result.intent!r} "
         f"conf={result.confidence:.2f} lang={source_language!r}"
     )
 
-    # ── Scratchpad population ──────────────────────────────────────────────
-    scratchpad = dict(state.get("scratchpad", {}))
+    # ── Read entity fields (same attribute names on LLMIntentResult & IntentResult)
+    detected_sections = list(result.detected_sections)
+    detected_acts     = list(result.detected_acts)
+    jurisdiction      = result.jurisdiction
+    complexity        = result.query_complexity
+    reasoning         = getattr(result, "reasoning", "")
 
-    detected_sections = list(set(_SEC_RE.findall(query)))
-    detected_acts     = list(set(m.group(0) for m in _ACT_RE.finditer(query)))
-    jurisdiction_match = _JURISDICTION_RE.search(query)
-    complexity = "complex" if (len(detected_sections) > 1 or len(detected_acts) > 1) else "simple"
+    # ── Regex fallback entity extraction ──────────────────────────────────────
+    # Runs when entity fields are empty: override fast-path returned no entities,
+    # or the LLM call fell back to classify() which leaves fields at defaults.
+    if not detected_sections and not detected_acts and not jurisdiction:
+        detected_sections = list(set(_SEC_RE.findall(query)))
+        detected_acts     = list(set(m.group(0) for m in _ACT_RE.finditer(query)))
+        juri_match        = _JURISDICTION_RE.search(query)
+        jurisdiction      = juri_match.group(0) if juri_match else ""
+        complexity        = "complex" if (len(detected_sections) > 1 or len(detected_acts) > 1) else "simple"
+
+    # ── Scratchpad population ──────────────────────────────────────────────────
+    scratchpad = dict(state.get("scratchpad", {}))
 
     scratchpad[SCRATCH_DETECTED_SECTIONS] = detected_sections
     scratchpad[SCRATCH_DETECTED_ACTS]     = detected_acts
-    scratchpad[SCRATCH_JURISDICTION]      = jurisdiction_match.group(0) if jurisdiction_match else ""
+    scratchpad[SCRATCH_JURISDICTION]      = jurisdiction
     scratchpad[SCRATCH_QUERY_COMPLEXITY]  = complexity
+    scratchpad["intent_reasoning"]        = reasoning   # for JSONL logger
 
-    if detected_sections or detected_acts or jurisdiction_match:
+    if detected_sections or detected_acts or jurisdiction:
         print(
             f"[Graph] scratchpad → sections={detected_sections} "
-            f"acts={detected_acts} jurisdiction={scratchpad[SCRATCH_JURISDICTION]!r} "
+            f"acts={detected_acts} jurisdiction={jurisdiction!r} "
             f"complexity={complexity!r}"
         )
 
