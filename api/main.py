@@ -60,16 +60,24 @@ for _key, _val in _LANGSMITH_KEYS.items():
 _tracing_enabled = _LANGSMITH_KEYS["LANGCHAIN_TRACING_V2"].lower() == "true"
 _api_key_present = bool(_LANGSMITH_KEYS["LANGCHAIN_API_KEY"])
 
+import logging
+logger = logging.getLogger(__name__)
+
 if _tracing_enabled and _api_key_present:
-    print(
-        f"[LexShield] LangSmith tracing ENABLED — "
-        f"project='{_LANGSMITH_KEYS['LANGCHAIN_PROJECT']}' | "
-        f"dashboard: https://smith.langchain.com/projects/lexshield-ai"
-    )
+    try:
+        from langsmith import Client
+        _ = Client()
+        print(
+            f"[LexShield] LangSmith tracing ENABLED — "
+            f"project='{_LANGSMITH_KEYS['LANGCHAIN_PROJECT']}' | "
+            f"dashboard: https://smith.langchain.com/projects/lexshield-ai"
+        )
+    except Exception as e:
+        logger.warning(f"[LexShield] Failed to initialize LangSmith tracing: {e}")
 elif _tracing_enabled and not _api_key_present:
-    print(
+    logger.warning(
         "[LexShield] WARNING: LANGCHAIN_TRACING_V2=true but LANGCHAIN_API_KEY "
-        "is not set. Add it to .env — get key from smith.langchain.com"
+        "is not set. Tracing will fail. Continuing without observability."
     )
 else:
     print("[LexShield] LangSmith tracing DISABLED (set LANGCHAIN_TRACING_V2=true to enable)")
