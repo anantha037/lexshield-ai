@@ -45,6 +45,8 @@ from rag.act_resolver      import act_resolver
 from rag.category_detector import category_detector, CONFIDENCE_HIGH, CONFIDENCE_MED
 from rag.adaptive_router   import classify_query_complexity
 from rag.crag              import evaluate_retrieval
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 from rag.synthesizer       import (
     build_synthesis_prompt,
     get_system_prompt,
@@ -316,6 +318,7 @@ class RAGPipeline:
         self.enable_rewriting = enable_rewriting
         self.enable_reranking = enable_reranking
 
+    @traceable(name="rag_pipeline.query", run_type="chain")
     def query(
         self,
         user_query:      str,
@@ -668,6 +671,16 @@ class RAGPipeline:
             + "] "
             + (answer.synthesis_note or "")
         )
+
+        rt = get_current_run_tree()
+        if rt:
+            rt.add_metadata({
+                "retrieval_mode": complexity,
+                "crag_score": crag_result["score"] if crag_triggered or (complexity in ("moderate", "complex") and 'crag_result' in locals()) else (4 if complexity == "simple" else 0),
+                "chunks_retrieved": len(merged) if 'merged' in locals() else len(final_chunks),
+                "query_complexity": complexity
+            })
+
         return answer
 
     # ── KG injection helper ────────────────────────────────────────────────────
