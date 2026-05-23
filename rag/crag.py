@@ -34,6 +34,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 from rag.llm import llm
+from langsmith import traceable
 
 # ── Prompt templates ───────────────────────────────────────────────────────────
 
@@ -137,6 +138,7 @@ def _parse_crag_response(raw: str) -> dict:
 
 # ── Main evaluator ─────────────────────────────────────────────────────────────
 
+@traceable(name="crag.evaluate_retrieval", run_type="chain")
 def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
     """
     Evaluates whether retrieved chunks are relevant to the query.
