@@ -62,6 +62,7 @@ lexshield_context_final.md
 
 
 evals/results/
+logs/
 
 test_summarization.py
 test_profile.py
@@ -70,3 +71,6 @@ output.txt
 test_relevance.py
 test_debug_api.py
 test_scratchpad.py
+scratch1_out.txt
+scratch1_out2.txt
+scratch1_out3.txt
