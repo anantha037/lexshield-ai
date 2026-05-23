@@ -131,9 +131,10 @@ class MasterOrchestrator:
         else:
             citation_status = "unverified"
 
-        # Extract scope status
+        # Extract scope and validation status
         scope_status  = final_state.get("scope_status", "in_scope")
         scope_message = final_state.get("scope_message", None)
+        validation_status = final_state.get("validation_status", "not_applicable")
 
         # Extract entities for profile update
         doc_types = []
@@ -180,14 +181,20 @@ class MasterOrchestrator:
         try:
             os.makedirs("logs", exist_ok=True)
             
-            # Simple fallback for crag_score - look for "CRAG: insufficient (score=X)" or assume 0
-            crag_score = 0
-            note = rag_result.get("synthesis_note", "")
-            if "score=" in note:
-                import re
-                m = re.search(r"score=(\d+)", note)
-                if m:
-                    crag_score = int(m.group(1))
+            # Extract crag_score directly from rag_result
+            crag_score = rag_result.get("crag_score", 0)
+            if not crag_score:
+                note = rag_result.get("synthesis_note", "")
+                if "score=" in note:
+                    import re
+                    m = re.search(r"score=(\d+)", note)
+                    if m:
+                        crag_score = int(m.group(1))
+                elif "complexity=simple" in note:
+                    # Simple complexity queries bypass CRAG scoring and proceed directly
+                    # to synthesis. We default to 4 (good retrieval) as simple queries
+                    # use the section fast-path which has high precision by design.
+                    crag_score = 4
 
             metric = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -196,6 +203,7 @@ class MasterOrchestrator:
                 "latency_ms": latency_ms,
                 "citation_status": citation_status,
                 "scope_status": scope_status,
+                "validation_status": validation_status,
                 "crag_score": crag_score,
                 "chunks_retrieved": rag_result.get("sources_consulted", 0),
                 "model_used": "groq-default"
@@ -212,6 +220,7 @@ class MasterOrchestrator:
             confidence        = confidence,
             mode              = rag_result.get("mode", ""),
             citation_status   = citation_status,
+            validation_status = validation_status,
             scope_status      = scope_status,
             scope_message     = scope_message,
             citations         = citations,
@@ -332,6 +341,7 @@ class MasterOrchestrator:
             confidence        = 1.0,
             mode              = rag_result.get("mode", ""),
             citation_status   = "unverified",
+            validation_status = "not_applicable",
             scope_status      = scope_status,
             scope_message     = scope_message,
             citations         = [],
