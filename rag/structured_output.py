@@ -344,6 +344,13 @@ def build_structured_response(
         "Consult a qualified Indian advocate for advice specific to your situation.",
     ]
 
+    if citations and not grounding_warning:
+        citation_status = "cited"
+    elif citations and grounding_warning:
+        citation_status = "partial"
+    else:
+        citation_status = "unverified"
+
     return LexShieldResponse(
         answer_text       = answer_text,
         summary           = summary,
