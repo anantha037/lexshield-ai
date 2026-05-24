@@ -165,7 +165,7 @@ def classify_query_complexity(
     print(
         f"[AdaptiveRouter] acts={act_count} sections={section_count} "
         f"comparison={has_comparison} multihop={has_multihop} "
-        f"→ complexity={complexity!r}"
+        f"-> complexity={complexity!r}"
     )
     return complexity
 
@@ -185,4 +185,4 @@ def explain_complexity(query: str) -> None:
     print(f"  Sections found: {section_refs or 'none'}")
     print(f"  Comparisons   : {comparisons or 'none'}")
     print(f"  Multi-hop     : {multihops or 'none'}")
-    print(f"  → Complexity  : {result!r}\n")
+    print(f"  -> Complexity  : {result!r}\n")

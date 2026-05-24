@@ -33,9 +33,9 @@ Changes in this version:
          Chunk IDs are hash-based so this does NOT invalidate existing IDs.
 
   NEW    era field added to chunks and ChromaDB metadata
-         "legacy"  → acts replaced by new codes (IPC, CrPC, Evidence Act)
-         "current" → replacement acts (BNS, BNSS, BSA)
-         ""        → all other acts (not part of a replacement pair)
+         "legacy"  -> acts replaced by new codes (IPC, CrPC, Evidence Act)
+         "current" -> replacement acts (BNS, BNSS, BSA)
+         ""        -> all other acts (not part of a replacement pair)
          Used by pipeline to serve paired old+new answers with temporal
          guidance (pre / post July 1 2024).
 
@@ -66,8 +66,8 @@ Changes in this version:
   FIX-9  Footnote annotation chunks ingested as real sections.
          PDF footnotes (amendment notes, substitution records) start with
          digits and a dot, matching SECTION_PATTERNS[1].
-         IPC: 309 footnote chunks → 0 after filter.
-         Income Tax: 4738 → 0. Banking Regulation: 451 → 0. Total corpus: ~8000+.
+         IPC: 309 footnote chunks -> 0 after filter.
+         Income Tax: 4738 -> 0. Banking Regulation: 451 -> 0. Total corpus: ~8000+.
          Filter: _is_footnote_title() uses regex signals (subs. by, ins. by,
          w.e.f., omitted by, original words, gazette of india, etc.).
          Verified: zero real sections lost across all acts.
@@ -292,17 +292,17 @@ def parse_section_header(header: str) -> tuple[str, str]:
     Returns (section_number, section_title).
 
     Handles all Indian statutory section number formats:
-      Plain          : "21."        → ("21", "title")
-      Single suffix  : "10A."       → ("10A", "title")
-      Multi-letter   : "36AA."      → ("36AA", "title")   FIX-6
-                       "15HAA."     → ("15HAA", "title")
-                       "378ZA."     → ("378ZA", "title")
-      Hyphenated     : "80-I."      → ("80-I", "title")   FIX-7
-                       "80-IA."     → ("80-IA", "title")
-                       "80-IAB."    → ("80-IAB", "title")
-      Section prefix : "Section 10AA." → ("10AA", "title")
-      Article prefix : "Article 21."   → ("21", "title")
-      Rule prefix    : "Rule 10A."     → ("10A", "title")
+      Plain          : "21."        -> ("21", "title")
+      Single suffix  : "10A."       -> ("10A", "title")
+      Multi-letter   : "36AA."      -> ("36AA", "title")   FIX-6
+                       "15HAA."     -> ("15HAA", "title")
+                       "378ZA."     -> ("378ZA", "title")
+      Hyphenated     : "80-I."      -> ("80-I", "title")   FIX-7
+                       "80-IA."     -> ("80-IA", "title")
+                       "80-IAB."    -> ("80-IAB", "title")
+      Section prefix : "Section 10AA." -> ("10AA", "title")
+      Article prefix : "Article 21."   -> ("21", "title")
+      Rule prefix    : "Rule 10A."     -> ("10A", "title")
     """
     # Hyphenated first (must come before plain-digit pattern)
     m = re.match(r'(\d+[A-Z]*)-([A-Z]{1,3})\.\s*(.*)', header, re.IGNORECASE)
@@ -976,7 +976,7 @@ def chunk_judgment_records(
         all_chunks.extend(sub)
         idx += len(sub)
         if i > 0 and i % 100 == 0:
-            print(f"    {i} records → {len(all_chunks)} chunks")
+            print(f"    {i} records -> {len(all_chunks)} chunks")
             gc.collect()
     return all_chunks
 
@@ -1076,7 +1076,7 @@ def run_full_pipeline(
 
     print(f"\n{'='*64}")
     print(f"DONE  —  Total chunks : {len(all_chunks)}")
-    print(f"Saved → {output_path}")
+    print(f"Saved -> {output_path}")
 
     type_counts: dict[str, int] = {}
     for c in all_chunks:

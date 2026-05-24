@@ -5,9 +5,9 @@ Week 3 additions (wired in this version):
 
   1. Adaptive RAG Router (rag/adaptive_router.py)
      First step in _run().  Classifies query as simple/moderate/complex.
-     simple   → section fast-path only, skip BM25 + rewriter + CRAG
-     moderate → BM25 + vector + reranker, skip rewriter
-     complex  → full pipeline + query rewriter + CRAG + decomposition
+     simple   -> section fast-path only, skip BM25 + rewriter + CRAG
+     moderate -> BM25 + vector + reranker, skip rewriter
+     complex  -> full pipeline + query rewriter + CRAG + decomposition
 
   2. Multi-hop Query Decomposition (rag/query_rewriter.decompose_query)
      Only fires when complexity == "complex".
@@ -16,9 +16,9 @@ Week 3 additions (wired in this version):
 
   3. CRAG Self-Correction (rag/crag.py)
      Fires after initial retrieval on moderate/complex queries.
-     score >= 4 → proceed to synthesizer
-     score 2-3  → rewrite + re-retrieve once
-     score == 1 → return low-confidence grounded response immediately
+     score >= 4 -> proceed to synthesizer
+     score 2-3  -> rewrite + re-retrieve once
+     score == 1 -> return low-confidence grounded response immediately
 
   AgentState field written by pipeline:
      rag_grade: "good" | "poor"  (set in legal_rag_node / risk_check_node
@@ -370,11 +370,11 @@ class RAGPipeline:
             auto_category, auto_confidence = category_detector.detect(expanded)
             if auto_category and auto_confidence >= CONFIDENCE_HIGH:
                 effective_filter = auto_category
-                print(f"[Pipeline] Auto-category HIGH: {auto_category!r} conf={auto_confidence:.2f} → filter")
+                print(f"[Pipeline] Auto-category HIGH: {auto_category!r} conf={auto_confidence:.2f} -> filter")
             elif auto_category and auto_confidence >= CONFIDENCE_MED:
-                print(f"[Pipeline] Auto-category MED: {auto_category!r} conf={auto_confidence:.2f} → dual search")
+                print(f"[Pipeline] Auto-category MED: {auto_category!r} conf={auto_confidence:.2f} -> dual search")
             else:
-                print(f"[Pipeline] Auto-category LOW: conf={auto_confidence:.2f} → global")
+                print(f"[Pipeline] Auto-category LOW: conf={auto_confidence:.2f} -> global")
 
         # ── Section fast-path (always runs — priority 1 in all complexity tiers)
         pinned_chunks:      list[dict] = []
@@ -388,13 +388,13 @@ class RAGPipeline:
                 continue
 
             if hint is not None:
-                print(f"[Pipeline] Hard-pin: section={sec} source={hint!r} → {len(hits)} chunk(s)")
+                print(f"[Pipeline] Hard-pin: section={sec} source={hint!r} -> {len(hits)} chunk(s)")
                 pinned_chunks.extend(hits)
             elif len(hits) == 1:
-                print(f"[Pipeline] Hard-pin (unique): section={sec} → {hits[0].get('source','?')[:45]}")
+                print(f"[Pipeline] Hard-pin (unique): section={sec} -> {hits[0].get('source','?')[:45]}")
                 pinned_chunks.extend(hits)
             else:
-                print(f"[Pipeline] Ambiguous section={sec}: {len(hits)} acts → reranker decides")
+                print(f"[Pipeline] Ambiguous section={sec}: {len(hits)} acts -> reranker decides")
                 for h in hits:
                     h["hybrid_score"]     = AMBIGUOUS_SECTION_SCORE
                     h["retrieval_source"] = "section_candidate"

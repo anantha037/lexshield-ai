@@ -44,8 +44,8 @@ def kg():
 ])
 def test_normalize_source(source, expected):
     result = normalize_source(source)
-    assert result == expected, f"normalize_source({source!r}) → {result!r}, expected {expected!r}"
-    print(f"\n✓ {source!r} → {expected!r}")
+    assert result == expected, f"normalize_source({source!r}) -> {result!r}, expected {expected!r}"
+    print(f"\nOK {source!r} -> {expected!r}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -62,7 +62,7 @@ def test_graph_builds(kg):
     assert "paired_act" in stats["edge_types"]
     assert "relates_to" in stats["edge_types"]
 
-    print(f"\n✓ Graph: {stats['nodes']} nodes | {stats['edges']} edges")
+    print(f"\nOK Graph: {stats['nodes']} nodes | {stats['edges']} edges")
     print(f"   node_types : {stats['node_types']}")
     print(f"   edge_types : {stats['edge_types']}")
 
@@ -85,13 +85,13 @@ def test_section_420_ipc(kg):
     assert "cheating"     in concepts, f"concept:cheating missing — got {concepts}"
     assert "fraud"        in concepts, f"concept:fraud missing (via concept hop) — got {concepts}"
 
-    print(f"\n✓ Section 420 IPC → {len(related)} related nodes:")
+    print(f"\nOK Section 420 IPC -> {len(related)} related nodes:")
     for r in related:
         print(f"   {r['node_id']:38} [{r['edge_type']}]  {r['edge_label']}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TEST 4 — Section 302 IPC → murder, BNS 101
+# TEST 4 — Section 302 IPC -> murder, BNS 101
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_section_302_ipc(kg):
@@ -102,7 +102,7 @@ def test_section_302_ipc(kg):
     assert ("BNS", "101") in sections, f"BNS 101 missing — got {sections}"
     assert "murder"        in concepts, f"concept:murder missing — got {concepts}"
 
-    print(f"\n✓ Section 302 IPC → BNS 101 (paired_act) + concept:murder")
+    print(f"\nOK Section 302 IPC -> BNS 101 (paired_act) + concept:murder")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -118,7 +118,7 @@ def test_section_138_ni(kg):
         f"NI 139/141 missing — got {sections}"
     assert "cheque_bounce" in concepts, f"concept:cheque_bounce missing — got {concepts}"
 
-    print(f"\n✓ Section 138 NI Act → cheque bounce cluster confirmed")
+    print(f"\nOK Section 138 NI Act -> cheque bounce cluster confirmed")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -133,7 +133,7 @@ def test_crpc_154_paired_bnss(kg):
     assert ("BNSS", "173") in sections, f"BNSS 173 missing — got {sections}"
     assert "fir"            in concepts, f"concept:fir missing — got {concepts}"
 
-    print(f"\n✓ CrPC 154 → BNSS 173 (paired_act) + concept:fir")
+    print(f"\nOK CrPC 154 -> BNSS 173 (paired_act) + concept:fir")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -150,7 +150,7 @@ def test_format_context(kg):
     assert "Section"           in context
     assert len(context)        > 80
 
-    print(f"\n✓ format_context output:\n{context}")
+    print(f"\nOK format_context output:\n{context}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -160,7 +160,7 @@ def test_format_context(kg):
 def test_unknown_section_graceful(kg):
     result = kg.query_related_sections("99999", source_hint="Indian Penal Code")
     assert result == []
-    print(f"\n✓ Unknown section → [] gracefully")
+    print(f"\nOK Unknown section -> [] gracefully")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -181,5 +181,5 @@ def test_singleton_with_chunks():
     assert stats["node_types"].get("section", 0)       >  0
     assert stats["node_types"].get("concept", 0)       >  0
 
-    print(f"\n✓ Singleton KG (real corpus): {stats['nodes']} nodes | {stats['edges']} edges")
+    print(f"\nOK Singleton KG (real corpus): {stats['nodes']} nodes | {stats['edges']} edges")
     print(f"   {stats['node_types']}")

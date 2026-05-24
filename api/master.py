@@ -180,7 +180,7 @@ def _extract_image(file_bytes: bytes) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _build_structured_response(resp, debug_scratchpad=None) -> StructuredResponse:
-    """Map orchestrator LexShieldResponse → API StructuredResponse."""
+    """Map orchestrator LexShieldResponse -> API StructuredResponse."""
     return StructuredResponse(
         answer_text       = resp.answer_text,
         summary           = resp.summary,

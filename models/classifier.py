@@ -110,7 +110,7 @@ class DocumentClassifier:
             self._model.eval()
             self._mode  = "finetuned"
             self._ready = True
-            print("[Classifier] Fine-tuned InLegalBERT loaded. ✓")
+            print("[Classifier] Fine-tuned InLegalBERT loaded. OK")
         except Exception as e:
             print(f"[Classifier] Fine-tuned load failed ({e}), falling back to centroid.")
             self._load_centroid()
@@ -138,7 +138,7 @@ class DocumentClassifier:
             self._centroids = np.stack(centroids)
             self._mode      = "centroid"
             self._ready     = True
-            print("[Classifier] Centroid mode ready. ✓")
+            print("[Classifier] Centroid mode ready. OK")
         except Exception as e:
             print(f"[Classifier] Centroid load also failed: {e}")
 

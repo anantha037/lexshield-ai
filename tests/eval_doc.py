@@ -79,7 +79,7 @@ def eval_intent_classifier() -> dict:
     print(f"  Accuracy: {correct}/{len(INTENT_TEST_CASES)} = {accuracy*100:.1f}%")
     if wrong:
         for w in wrong:
-            print(f"    ✗ '{w['query'][:50]}' expected={w['expected']} got={w['got']}")
+            print(f"    FAIL '{w['query'][:50]}' expected={w['expected']} got={w['got']}")
 
     return {
         "component":   "intent_classifier",
@@ -171,14 +171,14 @@ def eval_document_classifier() -> dict:
 
         if predicted == expected:
             correct += 1
-            print(f"  ✓ {expected}")
+            print(f"  OK {expected}")
         else:
             wrong.append({
                 "expected":   expected,
                 "got":        predicted,
                 "confidence": round(confidence, 3),
             })
-            print(f"  ✗ expected={expected}, got={predicted} ({confidence:.2f})"
+            print(f"  FAIL expected={expected}, got={predicted} ({confidence:.2f})"
                   f"{'  ⚠ uncertain' if result.get('uncertain') else ''}")
 
     accuracy = correct / len(CLASSIFIER_TEST_CASES)
@@ -274,7 +274,7 @@ def eval_ner_pipeline() -> dict:
                              "fields": field_results})
         print(f"  Case {i+1}: recall={recall*100:.0f}%")
         for field, fr in field_results.items():
-            status = "✓" if fr["hits"] == fr["total"] else f"✗ ({fr['hits']}/{fr['total']})"
+            status = "OK" if fr["hits"] == fr["total"] else f"FAIL ({fr['hits']}/{fr['total']})"
             print(f"    {field:15s} {status}  got={fr['got'][:3]}")
 
     overall = total_hits / total_exp if total_exp > 0 else 0
@@ -388,12 +388,12 @@ def eval_rag_pipeline() -> dict:
             })
 
             kw_str  = f"{len(kw_found)}/{len(case['expected_keywords'])} kw"
-            sec_str = f"sec={'✓' if sec_hit else '✗'}" if case["expected_section"] else "sec=N/A"
+            sec_str = f"sec={'OK' if sec_hit else 'FAIL'}" if case["expected_section"] else "sec=N/A"
             print(f"  '{case['query'][:45]}'")
             print(f"    {kw_str} | {sec_str} | {latency:.1f}s")
 
         except Exception as e:
-            print(f"  ERROR: {case['query'][:45]} → {e}")
+            print(f"  ERROR: {case['query'][:45]} -> {e}")
             case_results.append({"query": case["query"][:50], "error": str(e)})
 
     kw_recall   = keyword_hits / total_kw     if total_kw     > 0 else 0
@@ -495,7 +495,7 @@ def eval_risk_scorer() -> dict:
                 "score":          result.score,
             })
 
-        status = "✓" if passed else "✗"
+        status = "OK" if passed else "FAIL"
         notes  = []
         if not level_ok: notes.append(f"level: expected {case['expected_level']} got {result.level}")
         if not score_ok: notes.append(f"score {result.score:.3f} out of range")
@@ -545,12 +545,12 @@ def eval_api_health() -> dict:
             ok      = r.status_code < 400
             if ok:
                 passed += 1
-            print(f"  {'✓' if ok else '✗'} {method:4s} {path:40s} "
+            print(f"  {'OK' if ok else 'FAIL'} {method:4s} {path:40s} "
                   f"{r.status_code} ({latency:.1f}s)")
             results.append({"method": method, "path": path,
                             "status": r.status_code, "ok": ok, "latency_s": latency})
         except Exception as e:
-            print(f"  ✗ {method:4s} {path:40s} ERROR: {e}")
+            print(f"  FAIL {method:4s} {path:40s} ERROR: {e}")
             results.append({"method": method, "path": path, "ok": False, "error": str(e)})
 
     print(f"  Health: {passed}/{len(API_ENDPOINTS)} OK")
@@ -642,10 +642,10 @@ def run_all():
 
         metric_name = metric_key.replace("_", " ").title() if metric_key else "Endpoints OK"
         print(f"  {display:<23} {metric_name:<18} {display_score:<10} "
-              f"target={display_target:<8} {'✓ PASS' if passed else '✗ FAIL'}")
+              f"target={display_target:<8} {'OK PASS' if passed else 'FAIL FAIL'}")
 
     print("-" * 65)
-    verdict = "ALL PASS ✓" if all_pass else "SOME FAILED ✗"
+    verdict = "ALL PASS OK" if all_pass else "SOME FAILED FAIL"
     print(f"  Overall: {verdict}  (total time: {total_time}s)")
 
     REPORT_PATH.parent.mkdir(exist_ok=True)

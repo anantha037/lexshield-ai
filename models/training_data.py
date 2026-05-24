@@ -1060,7 +1060,7 @@ def generate_dataset(samples_per_class: int = 150) -> list[dict]:
     """
     Generate training dataset.
 
-    Default bumped 80 → 150: more samples reduce sensitivity to
+    Default bumped 80 -> 150: more samples reduce sensitivity to
     template-level memorisation.
 
     Cycles round-robin through all variants so every structural form

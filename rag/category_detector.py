@@ -4,12 +4,12 @@ LexShield AI — Hybrid Category Detector
 Two-signal category prediction:
  
   Signal 1 — Keyword scoring (existing, unchanged)
-    Fast rule-based matching of legal terms → raw score per category
+    Fast rule-based matching of legal terms -> raw score per category
  
   Signal 2 — Semantic scoring (NEW)
     Embeds the query using the existing all-MiniLM-L6-v2 embedder.
     Compares against pre-computed embeddings of category description strings.
-    Cosine similarity → semantic score per category.
+    Cosine similarity -> semantic score per category.
     Category embeddings are computed ONCE on first call and cached in memory.
     Uses the embedder singleton already loaded — zero additional model load.
  
@@ -21,9 +21,9 @@ Two-signal category prediction:
     confidence = top_category_final_score / sum(all_final_scores)
  
 Thresholds:
-  >= CONFIDENCE_HIGH (0.55) → use as ChromaDB filter
-  >= CONFIDENCE_MED  (0.35) → dual search
-  <  CONFIDENCE_MED         → global search
+  >= CONFIDENCE_HIGH (0.55) -> use as ChromaDB filter
+  >= CONFIDENCE_MED  (0.35) -> dual search
+  <  CONFIDENCE_MED         -> global search
  
 Fallback:
   If embedder unavailable (import error, cold start), falls back to

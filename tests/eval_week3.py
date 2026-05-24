@@ -281,11 +281,11 @@ def eval_rag_retrieval(all_results: list) -> dict:
             recall_scores.append(recall)
             mrr_scores.append(rr)
 
-            mark = "✓" if precision > 0 else "✗"
+            mark = "OK" if precision > 0 else "FAIL"
             print(f"  {mark}  P@5={precision:.2f} R@5={recall:.2f} MRR={rr:.2f}  {query[:52]!r}")
 
         except Exception as e:
-            print(f"  ✗  ERROR: {e}  {query[:50]!r}")
+            print(f"  FAIL  ERROR: {e}  {query[:50]!r}")
             precision_scores.append(0.0)
             recall_scores.append(0.0)
             mrr_scores.append(0.0)
@@ -356,7 +356,7 @@ def eval_rag_answer_quality(all_results: list) -> dict:
             print(f"    Faithfulness: {scores['faithfulness_reason']}")
 
         except Exception as e:
-            print(f"  ✗  ERROR for query: {e}")
+            print(f"  FAIL  ERROR for query: {e}")
             for dim in dim_scores:
                 dim_scores[dim].append(3)
 
@@ -415,16 +415,16 @@ def eval_rag_grounding(all_results: list) -> dict:
             act_hits     += int(act_ok)
             grounded     += int(case_grounded)
 
-            mark = "✓" if case_grounded else ("~" if (sec_ok or act_ok) else "✗")
+            mark = "OK" if case_grounded else ("~" if (sec_ok or act_ok) else "FAIL")
             print(
-                f"  {mark}  sec={'✓' if sec_ok else '✗'} "
-                f"act={'✓' if act_ok else '✗'} "
+                f"  {mark}  sec={'OK' if sec_ok else 'FAIL'} "
+                f"act={'OK' if act_ok else 'FAIL'} "
                 f"kw={kw_ok}/{len(keywords)}  "
                 f"{query[:48]!r}"
             )
 
         except Exception as e:
-            print(f"  ✗  ERROR: {e}")
+            print(f"  FAIL  ERROR: {e}")
 
     sec_pct = section_hits / total * 100
     act_pct = act_hits     / total * 100
@@ -548,7 +548,7 @@ def eval_knowledge_graph(all_results: list) -> dict:
         prec      = total_hit / total_exp if total_exp > 0 else 0.0
         lookup_scores.append(prec)
 
-        mark = "✓" if prec >= 0.5 else "✗"
+        mark = "OK" if prec >= 0.5 else "FAIL"
         print(f"  {sec:<10}  {source[:30]:<30}  {sec_hit}/{len(exp_secs):>5}   {con_hit}/{len(exp_cons):>5}  {mark} {prec*100:.0f}%")
 
     avg_lookup = sum(lookup_scores) / len(lookup_scores) * 100
@@ -616,10 +616,10 @@ def eval_drafting_agent_real(all_results: list) -> dict:
         print(f"\n  Generating real {case['doc_type']} draft via Gemini...")
 
         r1 = agent.handle(case["turns"][0], session_id=sid)
-        print(f"    Turn 1 stage={r1['stage']} ✓")
+        print(f"    Turn 1 stage={r1['stage']} OK")
 
         r2 = agent.handle(case["turns"][1], session_id=sid)
-        print(f"    Turn 2 stage={r2['stage']} ✓")
+        print(f"    Turn 2 stage={r2['stage']} OK")
 
         time.sleep(5)  # Rate limit
         r3 = agent.handle(case["turns"][2], session_id=sid)
@@ -637,20 +637,20 @@ def eval_drafting_agent_real(all_results: list) -> dict:
         if len(draft) >= min_length:
             length_ok += 1
 
-        mark = "✓" if len(missing) == 0 else "~"
+        mark = "OK" if len(missing) == 0 else "~"
         print(f"    {mark} Keywords: {len(found)}/{len(req_words)} found", end="")
         if missing:
             print(f"  [missing: {', '.join(missing)}]")
         else:
             print()
-        print(f"    Draft length: {len(draft)} chars {'✓' if len(draft) >= min_length else '✗ (too short)'}")
+        print(f"    Draft length: {len(draft)} chars {'OK' if len(draft) >= min_length else 'FAIL (too short)'}")
 
         # Save draft to file for manual review
         os.makedirs("tests/eval_results", exist_ok=True)
         path = f"tests/eval_results/real_draft_{case['doc_type']}.txt"
         with open(path, "w", encoding="utf-8") as f:
             f.write(draft)
-        print(f"    Draft saved → {path}")
+        print(f"    Draft saved -> {path}")
 
     kw_score     = found_words / total_words * 100 if total_words > 0 else 0
     length_score = length_ok   / len(REAL_DRAFT_CASES) * 100
@@ -711,11 +711,11 @@ def eval_structured_output_and_translation(all_results: list) -> dict:
         risk_ok     = 0.0 <= resp.risk_score <= 1.0
         suggest_ok  = len(resp.suggestions) > 0
 
-        mark = "✓" if (summary_ok and risk_ok and suggest_ok) else "~"
+        mark = "OK" if (summary_ok and risk_ok and suggest_ok) else "~"
         print(f"  {mark}  [{intent:20}] fields={populated}/{len(required)} "
-              f"summary={'✓' if summary_ok else '✗'} "
-              f"risk={'✓' if risk_ok else '✗'} "
-              f"suggest={'✓' if suggest_ok else '✗'}")
+              f"summary={'OK' if summary_ok else 'FAIL'} "
+              f"risk={'OK' if risk_ok else 'FAIL'} "
+              f"suggest={'OK' if suggest_ok else 'FAIL'}")
 
         # Clause extraction check
         if exp_clauses:
@@ -750,7 +750,7 @@ def eval_structured_output_and_translation(all_results: list) -> dict:
               r.detected_script == exp_script and
               r.target_language == exp_target)
         lang_hits += int(ok)
-        mark = "✓" if ok else "✗"
+        mark = "OK" if ok else "FAIL"
         print(f"  {mark}  is_eng={r.is_english} script={r.detected_script} "
               f"target={r.target_language}  {query[:40]!r}")
 
@@ -800,7 +800,7 @@ def write_final_report(all_results: list, elapsed: float):
 
     print(f"\n  Elapsed   : {elapsed:.1f}s")
     print(f"  Timestamp : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"\n  ℹ  Drafts for manual review → tests/eval_results/")
+    print(f"\n  ℹ  Drafts for manual review -> tests/eval_results/")
 
     # Save report
     os.makedirs("tests/eval_results", exist_ok=True)
@@ -816,7 +816,7 @@ def write_final_report(all_results: list, elapsed: float):
             f.write(f"\nOVERALL AVERAGE: {overall:.1f}%\n")
             f.write(f"Grade: {grade}\n")
         f.write(f"\nElapsed: {elapsed:.1f}s\n")
-    print(f"  Report saved → {path}")
+    print(f"  Report saved -> {path}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

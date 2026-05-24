@@ -36,7 +36,7 @@ GROQ_MODEL   = "llama-3.3-70b-versatile"
 GEMINI_MODEL = "gemini-2.0-flash"
 
 # Per-provider sleep to respect RPM limits
-# Gemini free: 15 RPM → 4s min. Groq: no RPM limit listed → 2s safe.
+# Gemini free: 15 RPM -> 4s min. Groq: no RPM limit listed -> 2s safe.
 PROVIDER_SLEEP = {
     "gemini":     5.0,
     "groq":       2.0,
@@ -250,10 +250,10 @@ def _build_providers(preferred: str) -> list:
             continue
         try:
             providers.append(cls())
-            print(f"[Generator] ✓ {name} ready")
+            print(f"[Generator] OK {name} ready")
         except Exception as e:
             errors.append(f"{name}: {e}")
-            print(f"[Generator] ✗ {name} failed: {e}")
+            print(f"[Generator] FAIL {name} failed: {e}")
 
     if not providers:
         raise RuntimeError(
@@ -282,7 +282,7 @@ class SyntheticDataGenerator:
     def _next_provider(self) -> bool:
         if self._idx + 1 < len(self.providers):
             self._idx += 1
-            print(f"\n  [Provider] Switched → {self.provider.name}")
+            print(f"\n  [Provider] Switched -> {self.provider.name}")
             return True
         return False
 
@@ -402,10 +402,10 @@ class SyntheticDataGenerator:
                     text, encoding="utf-8"
                 )
                 generated += 1
-                print(f"    {i+1}/{n_samples} ✓ "
+                print(f"    {i+1}/{n_samples} OK "
                       f"({len(text)} chars) [{self.provider.name}]")
             else:
-                print(f"    {i+1}/{n_samples} ✗ skipped")
+                print(f"    {i+1}/{n_samples} FAIL skipped")
 
         return generated
 
@@ -428,7 +428,7 @@ class SyntheticDataGenerator:
         print(f"DONE. Total: {total}")
         for cat, c in results.items():
             print(f"  {cat:30s} "
-                  f"{'✓' if c >= n_samples else f'✗ ({c}/{n_samples})'}")
+                  f"{'OK' if c >= n_samples else f'FAIL ({c}/{n_samples})'}")
 
         with open(OUTPUT_DIR / "manifest.json", "w") as f:
             json.dump({"total": total, "per_category": results}, f, indent=2)

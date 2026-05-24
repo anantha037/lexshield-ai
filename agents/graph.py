@@ -5,7 +5,7 @@ Changes from previous session:
 
 1. rights_node added as 8th node.
    Routes on intent == "rights_check".
-   Calls RightsAgent.get_rights_with_rag_enrichment() → structured rights guide
+   Calls RightsAgent.get_rights_with_rag_enrichment() -> structured rights guide
    from data/rights_guide.json merged with live RAG context.
 
 2. AgentState gains "case_law_result" field (dict) for case_law_node output.
@@ -22,7 +22,7 @@ Graph topology (8 terminal nodes):
 [START]
    │
    ▼
-classify_intent_node  ← detect_language() + intent_classifier.classify()
+classify_intent_node  <- detect_language() + intent_classifier.classify()
    │
    ▼  route_by_intent() conditional edge
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -36,9 +36,9 @@ classify_intent_node  ← detect_language() + intent_classifier.classify()
 ---------------------------------------------------------------------------
 
 Priority order in route_by_intent:
-  1. Active draft session in SQLite        → draft_node
-  2. Non-English source_language + legal/risk/general intent → multilingual_node
-  3. Intent map                            → correct agent node
+  1. Active draft session in SQLite        -> draft_node
+  2. Non-English source_language + legal/risk/general intent -> multilingual_node
+  3. Intent map                            -> correct agent node
 """
 
 import os
@@ -192,12 +192,12 @@ def classify_intent_node(state: AgentState) -> dict:
 
     source_language = detect_language(query)
     if source_language != "en":
-        print(f"[Graph] classify_intent_node → detected language: {source_language!r}")
+        print(f"[Graph] classify_intent_node -> detected language: {source_language!r}")
 
     # Primary: LLM-based classification (with regex override pre-filter + fallback)
     result = intent_classifier.classify_with_llm(query, groq_client)
     print(
-        f"[Graph] classify_intent_node → intent={result.intent!r} "
+        f"[Graph] classify_intent_node -> intent={result.intent!r} "
         f"conf={result.confidence:.2f} lang={source_language!r}"
     )
 
@@ -229,7 +229,7 @@ def classify_intent_node(state: AgentState) -> dict:
 
     if detected_sections or detected_acts or jurisdiction:
         print(
-            f"[Graph] scratchpad → sections={detected_sections} "
+            f"[Graph] scratchpad -> sections={detected_sections} "
             f"acts={detected_acts} jurisdiction={jurisdiction!r} "
             f"complexity={complexity!r}"
         )
@@ -252,9 +252,9 @@ def route_by_intent(state: AgentState) -> str:
     Conditional edge after classify_intent_node.
 
     Priority:
-      1. Active SQLite draft → draft_node
-      2. Non-English + legal/risk/general intent → multilingual_node
-      3. Intent map → correct node
+      1. Active SQLite draft -> draft_node
+      2. Non-English + legal/risk/general intent -> multilingual_node
+      3. Intent map -> correct node
     """
     from agents.drafting_agent import drafting_agent
 
@@ -264,7 +264,7 @@ def route_by_intent(state: AgentState) -> str:
 
     # Priority 1: active draft
     if session_id and drafting_agent.has_active_draft(session_id):
-        print(f"[Graph] route → active draft → draft_node")
+        print(f"[Graph] route -> active draft -> draft_node")
         return "draft_node"
 
     # Priority 2: non-English auto-detection
@@ -272,8 +272,8 @@ def route_by_intent(state: AgentState) -> str:
     _multilingual_eligible = {"legal_query", "risk_check", "general"}
     if source_language != "en" and intent in _multilingual_eligible:
         print(
-            f"[Graph] route → non-English {source_language!r} "
-            f"intent={intent!r} → multilingual_node"
+            f"[Graph] route -> non-English {source_language!r} "
+            f"intent={intent!r} -> multilingual_node"
         )
         return "multilingual_node"
 
@@ -289,7 +289,7 @@ def route_by_intent(state: AgentState) -> str:
         "general":              "general_node",
     }
     node = _map.get(intent, "general_node")
-    print(f"[Graph] route → intent={intent!r} → {node}")
+    print(f"[Graph] route -> intent={intent!r} -> {node}")
     return node
 
 
@@ -299,9 +299,9 @@ def route_by_intent(state: AgentState) -> str:
 
 def legal_rag_node(state: AgentState) -> dict:
     """
-    Intent: legal_query (English queries — non-English → multilingual_node)
+    Intent: legal_query (English queries — non-English -> multilingual_node)
 
-    Flow: NER → KG enrich → RAG pipeline → optional case law enrichment
+    Flow: NER -> KG enrich -> RAG pipeline -> optional case law enrichment
     """
     from rag.pipeline            import rag_pipeline
     from nlp.ner_pipeline        import run_ner
@@ -322,7 +322,7 @@ def legal_rag_node(state: AgentState) -> dict:
     elif jurisdiction:
         context_block = f"[JURISDICTION CONTEXT: {jurisdiction}]"
 
-    print("[Graph] legal_rag_node → NER + KG + RAG")
+    print("[Graph] legal_rag_node -> NER + KG + RAG")
 
     # NER
     ner_out: dict        = {"entities": []}
@@ -435,7 +435,7 @@ def document_analysis_node(state: AgentState) -> dict:
     context_block = state.get("rag_result", {}).get("context_block", "")
     enriched      = f"{context_block}\n\n{query}" if context_block else query
 
-    print("[Graph] document_analysis_node → RAG + NER")
+    print("[Graph] document_analysis_node -> RAG + NER")
 
     try:
         answer  = rag_pipeline.query(enriched)
@@ -492,7 +492,7 @@ def risk_check_node(state: AgentState) -> dict:
         f"{context_block}\n\n{risk_prefix}{query}"
         if context_block else f"{risk_prefix}{query}"
     )
-    print("[Graph] risk_check_node → RAG + scorer")
+    print("[Graph] risk_check_node -> RAG + scorer")
 
     try:
         answer  = rag_pipeline.query(enriched)
@@ -540,7 +540,7 @@ def draft_node(state: AgentState) -> dict:
 
     query      = state.get("query", "")
     session_id = state.get("session_id", "")
-    print(f"[Graph] draft_node → session={session_id[:8] if session_id else '?'}…")
+    print(f"[Graph] draft_node -> session={session_id[:8] if session_id else '?'}…")
 
     try:
         result    = drafting_agent.handle(query=query, session_id=session_id)
@@ -610,8 +610,8 @@ def draft_node(state: AgentState) -> dict:
 
 def multilingual_node(state: AgentState) -> dict:
     """
-    Sub-flow A: intent == translation_request → translation_agent.handle()
-    Sub-flow B: source_language != "en" (auto-detected) → process_multilingual_query()
+    Sub-flow A: intent == translation_request -> translation_agent.handle()
+    Sub-flow B: source_language != "en" (auto-detected) -> process_multilingual_query()
     """
     from agents.multilingual_agent import process_multilingual_query
     from agents.translation_agent  import translation_agent
@@ -624,7 +624,7 @@ def multilingual_node(state: AgentState) -> dict:
     source_language = state.get("source_language", "en")
 
     if intent == "translation_request":
-        print("[Graph] multilingual_node → sub-flow B: explicit translation")
+        print("[Graph] multilingual_node -> sub-flow B: explicit translation")
         try:
             result = translation_agent.handle(query=query, session_id=session_id)
             return {
@@ -647,7 +647,7 @@ def multilingual_node(state: AgentState) -> dict:
             return {"source_language": source_language, "rag_result": {},
                     "response": "Translation error. Please try again.", "error": str(exc)}
 
-    print(f"[Graph] multilingual_node → sub-flow A: auto {source_language!r}")
+    print(f"[Graph] multilingual_node -> sub-flow A: auto {source_language!r}")
     try:
         result = process_multilingual_query(
             query        = query,
@@ -685,12 +685,12 @@ def multilingual_node(state: AgentState) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def case_law_node(state: AgentState) -> dict:
-    """Intent: case_law_search → Indian Kanoon live judgment search."""
+    """Intent: case_law_search -> Indian Kanoon live judgment search."""
     from agents.case_law_agent import search_and_summarize, format_case_law_response
     from rag.llm               import llm as groq_client
 
     query = state.get("query", "")
-    print(f"[Graph] case_law_node → Indian Kanoon: {query[:60]!r}")
+    print(f"[Graph] case_law_node -> Indian Kanoon: {query[:60]!r}")
 
     # ── Scratchpad reader: enrich search query ───────────────────────────
     scratchpad = state.get("scratchpad", {})
@@ -702,7 +702,7 @@ def case_law_node(state: AgentState) -> dict:
     enriched_query = query
     if extra_terms:
         enriched_query = f"{query} {' '.join(extra_terms)}"
-        print(f"[Graph] case_law_node → enriched query: {enriched_query[:80]!r}")
+        print(f"[Graph] case_law_node -> enriched query: {enriched_query[:80]!r}")
 
     try:
         import asyncio
@@ -776,13 +776,13 @@ def rights_node(state: AgentState) -> dict:
     from rag.pipeline import rag_pipeline
 
     query = state.get("query", "").lower()
-    print(f"[Graph] rights_node → detecting category from: {query[:60]!r}")
+    print(f"[Graph] rights_node -> detecting category from: {query[:60]!r}")
 
     # ── Category detection ─────────────────────────────────────────────────────
     category = _detect_rights_category(query)
 
     if category:
-        print(f"[Graph] rights_node → category={category!r}")
+        print(f"[Graph] rights_node -> category={category!r}")
         try:
             rights_dict = get_rights_with_rag_enrichment(
                 category     = category,
@@ -826,7 +826,7 @@ def rights_node(state: AgentState) -> dict:
             }
 
     # ── No category detected — out of scope ──────────────────────────────────
-    print("[Graph] rights_node → no category detected, out of scope")
+    print("[Graph] rights_node -> no category detected, out of scope")
     try:
         categories    = get_all_categories()
         menu_lines    = [
@@ -930,7 +930,7 @@ def general_node(state: AgentState) -> dict:
         "You support queries in Malayalam, Hindi, Tamil, Telugu, and other Indian languages."
     )
     prompt = f"{context_block}\n\nUser: {query}" if context_block else f"User: {query}"
-    print("[Graph] general_node → direct LLM")
+    print("[Graph] general_node -> direct LLM")
 
     try:
         answer = llm.generate(prompt=prompt, system_prompt=system_prompt, max_tokens=512)

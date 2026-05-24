@@ -36,13 +36,13 @@ load_dotenv()
 # LangGraph reads these at import time to configure the LangSmith callback handler.
 #
 # How it works:
-#   - LANGCHAIN_TRACING_V2=true  → enables automatic trace instrumentation
-#   - LANGCHAIN_API_KEY          → authenticates to LangSmith
-#   - LANGCHAIN_PROJECT          → groups traces under "lexshield-ai" project
-#   - LANGCHAIN_ENDPOINT         → LangSmith API endpoint (default is correct)
+#   - LANGCHAIN_TRACING_V2=true  -> enables automatic trace instrumentation
+#   - LANGCHAIN_API_KEY          -> authenticates to LangSmith
+#   - LANGCHAIN_PROJECT          -> groups traces under "lexshield-ai" project
+#   - LANGCHAIN_ENDPOINT         -> LangSmith API endpoint (default is correct)
 #
 # Once active, EVERY graph.invoke() call creates a trace showing:
-#   • classify_intent_node → route_by_intent → [node] → END
+#   • classify_intent_node -> route_by_intent -> [node] -> END
 #   • Each Groq LLM call with prompt, completion, token counts, latency
 #   • ChromaDB retrieval with query vector and returned chunks
 #   • Total wall-clock time per node and end-to-end

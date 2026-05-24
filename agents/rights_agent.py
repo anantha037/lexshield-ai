@@ -12,10 +12,10 @@ optionally enriched with live RAG pipeline context for deeper coverage.
   bail      — Constitution Art.22, BNSS/CrPC — arrested person's rights
 
 Public API:
-  get_rights(category)                          → dict
-  format_rights_response(rights_dict)           → str
-  get_rights_with_rag_enrichment(category, rag) → dict
-  get_all_categories()                          → list[dict]  (for UI tab)
+  get_rights(category)                          -> dict
+  format_rights_response(rights_dict)           -> str
+  get_rights_with_rag_enrichment(category, rag) -> dict
+  get_all_categories()                          -> list[dict]  (for UI tab)
 """
 
 import json
@@ -85,7 +85,7 @@ def get_rights(category: str) -> dict:
     Args:
         category: One of "tenant", "employee", "consumer", "women", "bail".
                   Case-insensitive. Partial matches supported:
-                  "worker" → "employee", "arrest" → "bail", "woman" → "women".
+                  "worker" -> "employee", "arrest" -> "bail", "woman" -> "women".
 
     Returns:
         Full category dict from rights_guide.json, or an error dict with
@@ -129,10 +129,10 @@ def _normalise_category(raw: str) -> str | None:
     Resolve user input to a valid category key.
 
     Handles:
-      - Exact match: "tenant" → "tenant"
-      - Alias match: "worker" → "employee", "arrested" → "bail"
-      - Partial match: "employ" → "employee"
-      - Case-insensitive: "TENANT" → "tenant"
+      - Exact match: "tenant" -> "tenant"
+      - Alias match: "worker" -> "employee", "arrested" -> "bail"
+      - Partial match: "employ" -> "employee"
+      - Case-insensitive: "TENANT" -> "tenant"
     """
     if not raw:
         return None

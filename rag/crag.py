@@ -15,9 +15,9 @@ Returns:
     }
 
 Scoring thresholds:
-    score >= 4  → "proceed"       (good retrieval, continue to synthesizer)
-    score 2-3   → "rewrite"       (marginal — trigger query rewriter + re-retrieve once)
-    score == 1  → "insufficient"  (retrieval failed — return low-confidence response)
+    score >= 4  -> "proceed"       (good retrieval, continue to synthesizer)
+    score 2-3   -> "rewrite"       (marginal — trigger query rewriter + re-retrieve once)
+    score == 1  -> "insufficient"  (retrieval failed — return low-confidence response)
 
 Design constraints (Windows 11, 8GB RAM, no GPU):
     - Pure Groq API call — zero local model, zero extra memory
@@ -81,9 +81,9 @@ Return ONLY valid JSON (no markdown, no explanation):
 {{"score": <1-5>, "reason": "<one sentence>", "action": "<proceed|rewrite|insufficient>"}}
 
 Rules:
-score >= 3 → action must be "proceed"
-score == 2 → action must be "rewrite"  
-score == 1 → action must be "insufficient"
+score >= 3 -> action must be "proceed"
+score == 2 -> action must be "rewrite"  
+score == 1 -> action must be "insufficient"
 """
 
 _MAX_CHUNKS_TO_EVAL  = 5     # evaluate top 5 only — limits Groq token use

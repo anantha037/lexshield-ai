@@ -247,7 +247,7 @@ def train():
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             model.save_pretrained(OUTPUT_DIR)
             tokenizer.save_pretrained(OUTPUT_DIR)
-            print(f"  ✓ Best model saved (val_acc={val_acc*100:.1f}%)")
+            print(f"  OK Best model saved (val_acc={val_acc*100:.1f}%)")
 
         gc.collect()
 

@@ -26,7 +26,7 @@ def _mock_legal_answer(text="Mock RAG answer"):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TEST 1 — legal_query → legal_rag_node
+# TEST 1 — legal_query -> legal_rag_node
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_graph_legal_query():
@@ -53,11 +53,11 @@ def test_graph_legal_query():
         assert final["intent"]          == "legal_query",    f"Expected legal_query, got {final['intent']}"
         assert final["result"]["mode"]  == "legal_rag_node", f"Expected legal_rag_node, got {final['result']['mode']}"
         assert final["result"]["answer"] != ""
-        print(f"\n✓ legal_query → legal_rag_node | answer: {final['result']['answer'][:60]}")
+        print(f"\nOK legal_query -> legal_rag_node | answer: {final['result']['answer'][:60]}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TEST 2 — draft_request → draft_node
+# TEST 2 — draft_request -> draft_node
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_graph_draft_request():
@@ -82,11 +82,11 @@ def test_graph_draft_request():
     assert final["intent"]         == "draft_request",    f"Expected draft_request, got {final['intent']}"
     assert final["result"]["mode"] == "draft_node_stub",  f"Expected draft_node_stub, got {final['result']['mode']}"
     assert "drafting agent" in final["result"]["answer"].lower()
-    print(f"\n✓ draft_request → draft_node | answer: {final['result']['answer'][:60]}")
+    print(f"\nOK draft_request -> draft_node | answer: {final['result']['answer'][:60]}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TEST 3 — general → general_node
+# TEST 3 — general -> general_node
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_graph_general():
@@ -113,7 +113,7 @@ def test_graph_general():
         assert final["intent"]         == "general",      f"Expected general, got {final['intent']}"
         assert final["result"]["mode"] == "general_node", f"Expected general_node, got {final['result']['mode']}"
         assert final["result"]["answer"] != ""
-        print(f"\n✓ general → general_node | answer: {final['result']['answer'][:60]}")
+        print(f"\nOK general -> general_node | answer: {final['result']['answer'][:60]}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -141,4 +141,4 @@ def test_graph_state_keys_always_present():
                 "session_id", "result", "draft", "language"]:
         assert key in final, f"Missing key in final state: {key!r}"
 
-    print(f"\n✓ All AgentState keys present | intent={final['intent']}")
+    print(f"\nOK All AgentState keys present | intent={final['intent']}")

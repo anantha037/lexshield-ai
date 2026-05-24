@@ -2,7 +2,7 @@
 LexShield AI — Intent Classifier  (Week 3, Day 2 Session 2 — Updated)
 =======================================================================
 Changes from previous session:
-  - rights_check added as 8th intent → rights_node
+  - rights_check added as 8th intent -> rights_node
     Triggered by: "my rights", "rights as a tenant/employee/consumer",
     "know my rights", "what are my rights", bail rights, women rights.
 
@@ -16,14 +16,14 @@ Changes from previous session:
     + setPrefillInput) and backend new-session endpoint (GET /master/session/new).
 
 8 intents:
-  legal_query         → RAG pipeline (explain/define Indian law)
-  document_analysis   → CV pipeline + RAG (uploaded documents)
-  draft_request       → DraftingAgent, 8 complaint categories
-  risk_check          → RAG pipeline + risk_scorer modifier
-  translation_request → TranslationAgent (explicit: "explain in Malayalam")
-  case_law_search     → CaseLawAgent → Indian Kanoon live judgments
-  rights_check        → RightsAgent → structured rights guide + RAG enrichment
-  general             → Direct LLM (greetings, capability questions)
+  legal_query         -> RAG pipeline (explain/define Indian law)
+  document_analysis   -> CV pipeline + RAG (uploaded documents)
+  draft_request       -> DraftingAgent, 8 complaint categories
+  risk_check          -> RAG pipeline + risk_scorer modifier
+  translation_request -> TranslationAgent (explicit: "explain in Malayalam")
+  case_law_search     -> CaseLawAgent -> Indian Kanoon live judgments
+  rights_check        -> RightsAgent -> structured rights guide + RAG enrichment
+  general             -> Direct LLM (greetings, capability questions)
 
 Scoring:
   keyword match  = +1 pt
@@ -33,9 +33,9 @@ Scoring:
   Confidence:    min(score / 10, 1.0) + 0.2 bonus if any regex matched
 
 Design rationale for rights_check vs legal_query disambiguation:
-  "What is Section 17 PWDVA?" → legal_query (specific section explanation)
-  "What are women's rights under PWDVA?" → rights_check (structured guide)
-  "What are my rights as a tenant?" → rights_check (strong override trigger)
+  "What is Section 17 PWDVA?" -> legal_query (specific section explanation)
+  "What are women's rights under PWDVA?" -> rights_check (structured guide)
+  "What are my rights as a tenant?" -> rights_check (strong override trigger)
   The _RIGHTS_OVERRIDE hard override (+5 pts) fires before DRAFT_OVERRIDE so
   "tenant rights" routes to rights_check, not draft_request.
 """
@@ -613,10 +613,10 @@ Classify the user query into exactly one of these intents:
 - general: Greetings, off-topic questions, capability questions, or chatter. Example: "Hello, what can you do?"
 
 IMPORTANT disambiguation rules:
-- "I got fired" / "I was terminated unfairly" / "My landlord is harassing me" → rights_check (person seeking guidance on their situation and options)
-- "Help me write a complaint" / "Draft a legal notice" → draft_request (explicit drafting request)
-- "What is Section 302" / "Explain IPC" → legal_query (definition/explanation)
-- "Am I liable" / "Is this legal" → risk_check
+- "I got fired" / "I was terminated unfairly" / "My landlord is harassing me" -> rights_check (person seeking guidance on their situation and options)
+- "Help me write a complaint" / "Draft a legal notice" -> draft_request (explicit drafting request)
+- "What is Section 302" / "Explain IPC" -> legal_query (definition/explanation)
+- "Am I liable" / "Is this legal" -> risk_check
 
 Also extract from the query:
 - detected_sections: list of bare section numbers mentioned (e.g. ["302", "304A"]). Empty list if none.
@@ -647,9 +647,9 @@ Respond ONLY with valid JSON matching this exact schema. No markdown, no explana
         acts, jurisdiction, complexity).
 
         Fallback chain:
-          1. Regex override fires → synthesised LLMIntentResult, confidence=1.0
-          2. Groq call succeeds  → parsed LLMIntentResult
-          3. Any exception       → self.classify(query) → IntentResult
+          1. Regex override fires -> synthesised LLMIntentResult, confidence=1.0
+          2. Groq call succeeds  -> parsed LLMIntentResult
+          3. Any exception       -> self.classify(query) -> IntentResult
 
         Args:
             query:       Raw user query string.
@@ -722,7 +722,7 @@ Respond ONLY with valid JSON matching this exact schema. No markdown, no explana
             )
             result = self._parse_llm_response(raw_response)
             print(
-                f"[Classifier] LLM → intent={result.intent!r} "
+                f"[Classifier] LLM -> intent={result.intent!r} "
                 f"conf={result.confidence:.2f} reasoning={result.reasoning!r}"
             )
             return result
@@ -791,7 +791,7 @@ Respond ONLY with valid JSON matching this exact schema. No markdown, no explana
     @staticmethod
     def _parse_llm_response(raw: str) -> LLMIntentResult:
         """
-        Parse the raw LLM text → LLMIntentResult.
+        Parse the raw LLM text -> LLMIntentResult.
 
         Strips markdown fences (```json ... ```) before parsing.
         Raises on any parse / validation failure (caller falls back to classify()).

@@ -3,10 +3,10 @@ LexShield AI — Multilingual Agent
 ===================================
 Auto-detects non-English queries and orchestrates the full pipeline:
 
-  1. Language detection (Unicode script fast-path → langdetect fallback)
-  2. Query translation → English (Groq LLaMA 3.3 70B)
+  1. Language detection (Unicode script fast-path -> langdetect fallback)
+  2. Query translation -> English (Groq LLaMA 3.3 70B)
   3. Full RAG pipeline on English query
-  4. Response translation → source language (Groq)
+  4. Response translation -> source language (Groq)
 
 This module handles AUTOMATIC multilingual detection — it is separate from
 translation_agent.py which handles EXPLICIT translation requests
@@ -48,7 +48,7 @@ except ImportError:
 # LANGUAGE METADATA
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ISO 639-1 code → human-readable display name
+# ISO 639-1 code -> human-readable display name
 LANG_NAMES: dict[str, str] = {
     "ml": "Malayalam",
     "hi": "Hindi",
@@ -64,7 +64,7 @@ LANG_NAMES: dict[str, str] = {
     "en": "English",
 }
 
-# Unicode script ranges → ISO 639-1 code
+# Unicode script ranges -> ISO 639-1 code
 # Listed from most-specific to least-specific.
 # Devanagari (hi/mr) is last because it is shared — we default to "hi".
 # The count-based approach below handles ambiguity when multiple scripts appear.
@@ -78,7 +78,7 @@ _SCRIPT_RANGES: list[tuple[int, int, str]] = [
     (0x0A00, 0x0A7F, "pa"),   # Punjabi / Gurmukhi
     (0x0B00, 0x0B7F, "or"),   # Odia
     (0x0600, 0x06FF, "ur"),   # Urdu (Arabic script)
-    (0x0900, 0x097F, "hi"),   # Devanagari → Hindi (and Marathi)
+    (0x0900, 0x097F, "hi"),   # Devanagari -> Hindi (and Marathi)
 ]
 
 SUPPORTED_NON_ENGLISH = {code for code in LANG_NAMES if code != "en"}
@@ -94,11 +94,11 @@ def detect_language(text: str) -> str:
 
     Detection pipeline:
       1. Unicode script range count — reliable even for mixed queries
-         (e.g. "Section 302 IPC ൽ ശിക്ഷ?" has 6 Malayalam chars → "ml").
+         (e.g. "Section 302 IPC ൽ ശിക്ഷ?" has 6 Malayalam chars -> "ml").
          Runs in O(n) string scan, zero network/disk cost.
       2. langdetect — covers Latin-script Indian languages and pure-English
          ambiguity; wrapped in try/except for LangDetectException.
-      3. Fallback → "en"
+      3. Fallback -> "en"
 
     Args:
         text: Raw user query (any language, any script mix)
@@ -124,7 +124,7 @@ def detect_language(text: str) -> str:
         # Even 2–3 Malayalam chars in an otherwise English query is a strong signal.
         dominant = max(script_counts, key=lambda k: script_counts[k])
         logger.debug(
-            f"[MultilingualAgent] Unicode fast-path → {dominant!r} "
+            f"[MultilingualAgent] Unicode fast-path -> {dominant!r} "
             f"(counts={script_counts})"
         )
         return dominant
@@ -133,10 +133,10 @@ def detect_language(text: str) -> str:
     if _LANGDETECT_AVAILABLE:
         try:
             raw_code = _ld_detect(text)
-            # langdetect can return compound codes like "zh-cn" → normalise
+            # langdetect can return compound codes like "zh-cn" -> normalise
             iso_code = raw_code.split("-")[0].lower()
             if iso_code in LANG_NAMES:
-                logger.debug(f"[MultilingualAgent] langdetect → {iso_code!r}")
+                logger.debug(f"[MultilingualAgent] langdetect -> {iso_code!r}")
                 return iso_code
         except LangDetectException:
             # Raised for text that is too short or ambiguous (e.g. single word)
@@ -174,7 +174,7 @@ def translate_to_english(text: str, source_language: str, groq_client) -> str:
       POCSO, PMLA, NDPS, RTI, RERA, section numbers (e.g. Section 302),
       court names (Supreme Court, High Court, District Court, etc.)
     - Only surrounding natural-language text is translated.
-    - Temperature = 0.05 → deterministic, minimal hallucination risk.
+    - Temperature = 0.05 -> deterministic, minimal hallucination risk.
 
     Args:
         text:            Input text in source language (may be mixed-script)
@@ -218,14 +218,14 @@ def translate_to_english(text: str, source_language: str, groq_client) -> str:
         result = _strip_llm_preamble(result)
 
         if not result:
-            logger.warning(f"[MultilingualAgent] Empty translation result for {lang_name}→EN")
+            logger.warning(f"[MultilingualAgent] Empty translation result for {lang_name}->EN")
             return text
 
-        logger.info(f"[MultilingualAgent] {lang_name}→EN: {result[:80]!r}")
+        logger.info(f"[MultilingualAgent] {lang_name}->EN: {result[:80]!r}")
         return result
 
     except Exception as e:
-        logger.error(f"[MultilingualAgent] translate_to_english failed ({lang_name}→EN): {e}")
+        logger.error(f"[MultilingualAgent] translate_to_english failed ({lang_name}->EN): {e}")
         return text  # safe fallback — raw query will still work for English RAG
 
 
@@ -293,14 +293,14 @@ def translate_to_source(text: str, target_language: str, groq_client) -> str:
         result = _strip_llm_preamble(result)
 
         if not result:
-            logger.warning(f"[MultilingualAgent] Empty translation result EN→{lang_name}")
+            logger.warning(f"[MultilingualAgent] Empty translation result EN->{lang_name}")
             return text
 
-        logger.info(f"[MultilingualAgent] EN→{lang_name}: {result[:80]!r}")
+        logger.info(f"[MultilingualAgent] EN->{lang_name}: {result[:80]!r}")
         return result
 
     except Exception as e:
-        logger.error(f"[MultilingualAgent] translate_to_source failed (EN→{lang_name}): {e}")
+        logger.error(f"[MultilingualAgent] translate_to_source failed (EN->{lang_name}): {e}")
         return text  # return English as fallback rather than empty string
 
 
@@ -343,10 +343,10 @@ def process_multilingual_query(
     Full multilingual query processing pipeline.
 
     End-to-end flow:
-      1. detect_language(query)          → ISO code
-      2. translate_to_english(query)     → English query (if non-English)
-      3. rag_pipeline.query(en_query)    → English legal answer
-      4. translate_to_source(en_answer)  → Source language answer (if non-English)
+      1. detect_language(query)          -> ISO code
+      2. translate_to_english(query)     -> English query (if non-English)
+      3. rag_pipeline.query(en_query)    -> English legal answer
+      4. translate_to_source(en_answer)  -> Source language answer (if non-English)
 
     Performance notes:
       - Steps 2 and 4 are each one Groq API call (~0.5–1s each on free tier).

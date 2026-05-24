@@ -183,7 +183,7 @@ def evaluate_routing(results: list) -> dict:
         got      = result.intent
         ok       = got == expected
         passed  += int(ok)
-        mark     = "✓" if ok else "✗"
+        mark     = "OK" if ok else "FAIL"
         rows.append((mark, query[:55], expected, got, f"{result.confidence:.2f}"))
         print(f"  {mark}  [{expected:>20}]  conf={result.confidence:.2f}  {query[:50]!r}")
 
@@ -229,12 +229,12 @@ def evaluate_stage_completion(results: list) -> dict:
 
             if not errors:
                 passed += 1
-                print(f"  ✓  {case['doc_type']:30} — 3 turns completed, session cleared")
+                print(f"  OK  {case['doc_type']:30} — 3 turns completed, session cleared")
             else:
-                print(f"  ✗  {case['doc_type']:30} — {'; '.join(errors)}")
+                print(f"  FAIL  {case['doc_type']:30} — {'; '.join(errors)}")
 
         except Exception as e:
-            print(f"  ✗  {case['doc_type']:30} — Exception: {e}")
+            print(f"  FAIL  {case['doc_type']:30} — Exception: {e}")
 
     score = passed / total * 100
     print(f"\n  Score: {passed}/{total} ({score:.0f}%)")
@@ -270,7 +270,7 @@ def evaluate_template_coverage(results: list) -> dict:
         total_sections += len(required)
         found_sections += len(found)
 
-        mark = "✓" if not missing else "~"
+        mark = "OK" if not missing else "~"
         print(f"  {mark}  {case['doc_type']:30} — {len(found)}/{len(required)} sections found", end="")
         if missing:
             print(f"  [missing: {', '.join(missing)}]")
@@ -311,7 +311,7 @@ def evaluate_detail_grounding(results: list) -> dict:
         total_details += len(details)
         found_details += len(found)
 
-        mark = "✓" if not missing else "~"
+        mark = "OK" if not missing else "~"
         print(f"  {mark}  {case['doc_type']:30} — {len(found)}/{len(details)} details grounded", end="")
         if missing:
             print(f"  [missing: {', '.join(missing)}]")
@@ -370,7 +370,7 @@ def write_report(results: list, elapsed: float):
         f.write(f"Grade: {grade}\n")
         f.write(f"Elapsed: {elapsed:.2f}s\n")
 
-    print(f"\n  Report saved → {report_path}")
+    print(f"\n  Report saved -> {report_path}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -77,7 +77,7 @@ class LegalEmbedder:
             normalize_embeddings=True,   # cosine similarity works best normalised
         )
 
-        # Convert numpy array → plain Python list (required by ChromaDB)
+        # Convert numpy array -> plain Python list (required by ChromaDB)
         return vectors.tolist()
 
     def embed_single(self, text: str) -> list[float]:

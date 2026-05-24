@@ -355,9 +355,9 @@ class HybridSearcher:
             if act_filtered:
                 # Only apply filter if it leaves enough results
                 merged = act_filtered
-                print(f"[HybridSearch] act_hint={final_act_hint!r} → filtered to {len(merged)} chunk(s)")
+                print(f"[HybridSearch] act_hint={final_act_hint!r} -> filtered to {len(merged)} chunk(s)")
             else:
-                print(f"[HybridSearch] act_hint={final_act_hint!r} → filter yielded 0; keeping all {len(merged)} chunks")
+                print(f"[HybridSearch] act_hint={final_act_hint!r} -> filter yielded 0; keeping all {len(merged)} chunks")
 
         return merged[:n_results]
 

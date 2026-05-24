@@ -7,8 +7,8 @@ POST /api/v1/document/query    — Q&A on a previously analyzed document
 /analyze pipeline
 -----------------
 1. Extract text  (PyMuPDF for digital PDFs, OCR for scanned/images)
-2. Classify      (XGBoost → document type + confidence)
-3. NER           (spaCy + regex → structured entities)
+2. Classify      (XGBoost -> document type + confidence)
+3. NER           (spaCy + regex -> structured entities)
 4. Risk Score    (clause-level risk with legal references)
 5. Rights Alerts (rule-based proactive rights violation detection — NEW)
 6. RAG Q&A       (optional: pass extracted text to RAG pipeline)

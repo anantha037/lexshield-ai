@@ -11,9 +11,9 @@ Model used: nvidia/llama-3.2-nv-rerankqa-1b-v2
   • Returns a relevance score per passage, we re-sort by it
 
 Fallback chain:
-  NVIDIA API available  →  reranked order
-  NVIDIA API down/slow  →  original hybrid order (no crash)
-  API key missing       →  original hybrid order + warning logged
+  NVIDIA API available  ->  reranked order
+  NVIDIA API down/slow  ->  original hybrid order (no crash)
+  API key missing       ->  original hybrid order + warning logged
 """
 
 import os
@@ -73,8 +73,8 @@ class NVIDIAReranker:
 
         Returns:
             (reranked_chunks, used_reranker)
-            used_reranker = True  → NVIDIA API was called successfully
-            used_reranker = False → fallback order used (first top_n from input)
+            used_reranker = True  -> NVIDIA API was called successfully
+            used_reranker = False -> fallback order used (first top_n from input)
 
         The returned chunks have a new field:
             rerank_score  (float) — relevance score from NVIDIA, or None on fallback
@@ -137,7 +137,7 @@ class NVIDIAReranker:
         if not rankings:
             raise ValueError("Empty rankings in NVIDIA response.")
 
-        # Map index → score
+        # Map index -> score
         score_map: dict[int, float] = {
             r["index"]: float(r.get("logit", 0.0))
             for r in rankings

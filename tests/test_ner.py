@@ -266,7 +266,7 @@ def run_document(doc: dict, verbose: bool = False) -> DocResult:
         missing[entity_type] = miss
 
     passed = all(checks.values())
-    print("PASS ✓" if passed else "FAIL ✗")
+    print("PASS OK" if passed else "FAIL FAIL")
 
     if verbose:
         print(f"\n  Extracted entities for '{doc['name']}':")
@@ -302,10 +302,10 @@ def print_summary(results: list[DocResult]) -> None:
 
     for r in results:
         marks = [
-            ("✓" if r.checks.get(t, True) else "✗")
+            ("OK" if r.checks.get(t, True) else "FAIL")
             for t in ENTITY_TYPES
         ]
-        status = "✓ YES" if r.passed else "✗ NO "
+        status = "OK YES" if r.passed else "FAIL NO "
         print(f"{r.doc_name:<22}  "
               + "  ".join(f"{m:^{COL}}" for m in marks)
               + f"  {status}")
@@ -322,10 +322,10 @@ def print_summary(results: list[DocResult]) -> None:
             print(f"\n  {r.doc_name}:")
             for etype, ok in r.checks.items():
                 if not ok:
-                    print(f"    ✗ {etype}: expected keywords {r.missing[etype]} "
+                    print(f"    FAIL {etype}: expected keywords {r.missing[etype]} "
                           f"not found in {r.extracted.get(etype, [])}")
     else:
-        print("\n✓ All document types passed. Day 4 NER checkpoint complete.")
+        print("\nOK All document types passed. Day 4 NER checkpoint complete.")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

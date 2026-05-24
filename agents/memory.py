@@ -16,19 +16,19 @@ checkpoints / checkpoint_blobs / checkpoint_writes).
 
 Public interface (unchanged from in-memory version)
 ----------------------------------------------------
-session_memory.ensure_session(sid)              → str
-session_memory.session_exists(sid)              → bool
-session_memory.create_session()                 → str
-session_memory.delete_session(sid)              → bool
+session_memory.ensure_session(sid)              -> str
+session_memory.session_exists(sid)              -> bool
+session_memory.create_session()                 -> str
+session_memory.delete_session(sid)              -> bool
 session_memory.add_turn(sid, role, content, intent=None)
-session_memory.get_history(sid)                 → list[dict]  (ALL turns)
-session_memory.get_context_block(sid)           → str
-session_memory.turn_count(sid)                  → int
+session_memory.get_history(sid)                 -> list[dict]  (ALL turns)
+session_memory.get_context_block(sid)           -> str
+session_memory.turn_count(sid)                  -> int
 
 New in Session 6 (auth)
 ------------------------
-session_memory.link_session_to_user(sid, uid)   → None
-session_memory.get_user_sessions(uid)           → list[dict]
+session_memory.link_session_to_user(sid, uid)   -> None
+session_memory.get_user_sessions(uid)           -> list[dict]
 """
 
 import os

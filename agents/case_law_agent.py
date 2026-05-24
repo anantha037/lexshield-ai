@@ -20,10 +20,10 @@ Optional enrichment flag (default: true):
   that mentions specific IPC/BNS section numbers.
 
 Architecture note:
-  search_cases()          → raw API call → list of case dicts
-  summarize_case()        → Groq 2-sentence summary of one case
-  search_and_summarize()  → search + summarize all results → structured dict
-  format_case_law_response() → dict → formatted markdown string for state["response"]
+  search_cases()          -> raw API call -> list of case dicts
+  summarize_case()        -> Groq 2-sentence summary of one case
+  search_and_summarize()  -> search + summarize all results -> structured dict
+  format_case_law_response() -> dict -> formatted markdown string for state["response"]
 """
 
 import os
@@ -170,9 +170,9 @@ def search_cases(query: str, max_results: int = 3) -> list[dict]:
       Header:    Authorization: Token <INDIANKANOON_API_KEY>
 
     Error handling:
-      Timeout, connection errors, HTTP errors → log warning, return [].
-      API returns empty docs array → return [].
-      Missing INDIANKANOON_API_KEY → log warning, return [].
+      Timeout, connection errors, HTTP errors -> log warning, return [].
+      API returns empty docs array -> return [].
+      Missing INDIANKANOON_API_KEY -> log warning, return [].
 
     Args:
         query:       English-language legal search query.
@@ -386,7 +386,7 @@ async def search_and_summarize(
     """
     End-to-end case law search + summarisation pipeline.
 
-    Calls search_cases() → summarize_case() for each result concurrently.
+    Calls search_cases() -> summarize_case() for each result concurrently.
 
     Args:
         query:       Legal search query (English)
@@ -405,8 +405,8 @@ async def search_and_summarize(
             "Section 138 NI Act cheque bounce conviction precedent",
             groq_client = llm,
         )
-        # result["results"][0]["case"]["title"] → "MMTC Ltd. v. Medchi Chemicals..."
-        # result["results"][0]["summary"]       → "The Supreme Court held that..."
+        # result["results"][0]["case"]["title"] -> "MMTC Ltd. v. Medchi Chemicals..."
+        # result["results"][0]["summary"]       -> "The Supreme Court held that..."
     """
     cases = search_cases(query, max_results=max_results)
 

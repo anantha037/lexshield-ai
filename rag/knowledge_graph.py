@@ -4,17 +4,17 @@ LexShield AI — Legal Knowledge Graph (Session 3 — Full Implementation)
 GraphRAG layer over data/legal_graph.json.
 
 Provides:
-  load_graph()               → loads JSON once, cached as module singleton
-  get_related_sections()     → BFS traversal up to N hops
-  get_bns_equivalent()       → IPC→BNS or BNS→IPC lookup
-  get_era()                  → "legacy" | "current" | "unknown"
-  enrich_retrieval()         → augments chunk pool with graph-connected sections
+  load_graph()               -> loads JSON once, cached as module singleton
+  get_related_sections()     -> BFS traversal up to N hops
+  get_bns_equivalent()       -> IPC->BNS or BNS->IPC lookup
+  get_era()                  -> "legacy" | "current" | "unknown"
+  enrich_retrieval()         -> augments chunk pool with graph-connected sections
 
-Wire-in point (agents/graph.py → legal_rag_node):
+Wire-in point (agents/graph.py -> legal_rag_node):
   After NER extracts section IDs from query, call enrich_retrieval() to
   add graph-connected chunks to the pool before reranking.
 
-Wire-in point (rag/pipeline.py → _inject_kg):
+Wire-in point (rag/pipeline.py -> _inject_kg):
   Already uses rag/knowledge_graph.py (the NetworkX version).
   This module (data/legal_graph.json based) is the NEW implementation —
   lighter, no NetworkX dependency, works on Windows i5/8GB.
@@ -79,13 +79,13 @@ def _normalise(node_id: str) -> str:
     Accepts various formats and maps to the JSON key format (ACT_SECTION).
 
     Examples:
-        "IPC 302"   → "IPC_302"
-        "ipc_302"   → "IPC_302"
-        "Section 302 IPC" → "IPC_302"
-        "NI Act 138"      → "NI_138"
-        "BNS 85"          → "BNS_85"
-        "CrPC 154"        → "CrPC_154"
-        "BNSS 173"        → "BNSS_173"
+        "IPC 302"   -> "IPC_302"
+        "ipc_302"   -> "IPC_302"
+        "Section 302 IPC" -> "IPC_302"
+        "NI Act 138"      -> "NI_138"
+        "BNS 85"          -> "BNS_85"
+        "CrPC 154"        -> "CrPC_154"
+        "BNSS 173"        -> "BNSS_173"
     """
     s = node_id.strip()
 
@@ -153,7 +153,7 @@ def get_related_sections(section_id: str, hops: int = 1) -> list[str]:
 
     Example:
         get_related_sections("IPC_420", hops=1)
-        → ["IPC_415", "IPC_417", "IPC_406", "IPC_471", "BNS_318"]
+        -> ["IPC_415", "IPC_417", "IPC_406", "IPC_471", "BNS_318"]
     """
     graph  = load_graph()
     hops   = min(hops, 3)  # Safety cap for performance on i5/8GB
@@ -162,7 +162,7 @@ def get_related_sections(section_id: str, hops: int = 1) -> list[str]:
     if start is None:
         return []
 
-    visited: dict[str, int] = {start: 0}   # node_id → hop_distance
+    visited: dict[str, int] = {start: 0}   # node_id -> hop_distance
     queue:   list[tuple[str, int]] = [(start, 0)]
 
     while queue:
@@ -208,9 +208,9 @@ def get_bns_equivalent(section_id: str) -> Optional[str]:
         Equivalent node ID string, or None if no mapping exists.
 
     Examples:
-        get_bns_equivalent("IPC_302")  → "BNS_101"
-        get_bns_equivalent("BNS_101")  → "IPC_302"
-        get_bns_equivalent("CrPC_154") → "BNSS_173"
+        get_bns_equivalent("IPC_302")  -> "BNS_101"
+        get_bns_equivalent("BNS_101")  -> "IPC_302"
+        get_bns_equivalent("CrPC_154") -> "BNSS_173"
     """
     graph = load_graph()
     node  = _lookup(section_id, graph)
@@ -348,7 +348,7 @@ def enrich_retrieval(
     then fetch their chunks from the vector store and add to the pool.
 
     This implements GraphRAG: instead of relying purely on semantic similarity,
-    we use structural legal relationships (IPC→BNS equivalents, definitional
+    we use structural legal relationships (IPC->BNS equivalents, definitional
     chains, penalty↔definition pairs) to ensure completeness of retrieval.
 
     Args:
@@ -382,7 +382,7 @@ def enrich_retrieval(
         return chunk_pool
 
     # Collect all related section IDs across all NER hits
-    all_related: dict[str, str] = {}  # section_id → source_ner_section
+    all_related: dict[str, str] = {}  # section_id -> source_ner_section
 
     for raw_id in ner_sections:
         resolved = _resolve_id(raw_id, graph)
@@ -413,7 +413,7 @@ def enrich_retrieval(
             else:
                 if len(related) < len(related_all):
                     print(f"[KG] act_hint={act_hint!r}: {resolved!r} "
-                          f"{len(related_all)}→{len(related)} related after act filter")
+                          f"{len(related_all)}->{len(related)} related after act filter")
         else:
             related = related_all
 
@@ -476,7 +476,7 @@ def _fetch_via_vectorstore_singleton(
         if node is None:
             continue
 
-        # Parse act_key and section number from rel_id (e.g. "IPC_302" → act="IPC", sec="302")
+        # Parse act_key and section number from rel_id (e.g. "IPC_302" -> act="IPC", sec="302")
         parts      = rel_id.split("_", 1)
         act_key    = parts[0] if len(parts) == 2 else ""
         sec_number = parts[1] if len(parts) == 2 else rel_id
@@ -635,8 +635,8 @@ class _FlatGraphAdapter:
     rag/pipeline.py's _inject_kg() expects from the old NetworkX-based KG.
 
     Methods implemented:
-        query_related_sections(section, source_hint, hops) → list[dict]
-        format_context(section, source_hint, related)      → str
+        query_related_sections(section, source_hint, hops) -> list[dict]
+        format_context(section, source_hint, related)      -> str
         _built: bool
         build()
     """
@@ -661,7 +661,7 @@ class _FlatGraphAdapter:
         """
         graph = load_graph()
 
-        # Resolve section + source_hint → node_id
+        # Resolve section + source_hint -> node_id
         if source_hint:
             # Try to derive act_key from source_hint
             import re

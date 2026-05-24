@@ -5,7 +5,7 @@ Multi-turn, SQLite-persisted, 6-stage workflow for generating
 professional Indian legal complaint drafts.
 
 Stage Flow:
-  INIT → CLARIFY → RETRIEVE_SECTIONS → IDENTIFY_AUTHORITY → CONFIRM → GENERATE → DONE
+  INIT -> CLARIFY -> RETRIEVE_SECTIONS -> IDENTIFY_AUTHORITY -> CONFIRM -> GENERATE -> DONE
 
 8 Complaint Categories:
   wage_theft | illegal_eviction | cheque_bounce | consumer_complaint |
@@ -41,7 +41,7 @@ from pydantic import BaseModel
 
 class FactExtractionResult(BaseModel):
     """Result of a single Groq JSON-mode fact-extraction call."""
-    extracted_facts: dict[str, str]  # field_name → extracted value
+    extracted_facts: dict[str, str]  # field_name -> extracted value
     missing_fields:  list[str]       # fields that could not be extracted
     confidence:      float           # 0.0 to 1.0
 
@@ -257,7 +257,7 @@ _CLARIFYING_QUESTIONS: dict[str, list[str]] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FIELD → QUESTION MAPPING  (used by dynamic clarification path)
+# FIELD -> QUESTION MAPPING  (used by dynamic clarification path)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Explicit question overrides for always-ask fields.
@@ -379,9 +379,9 @@ _FILING_AUTHORITY: dict[str, str] = {
     "consumer_complaint": (
         "District Consumer Disputes Redressal Commission (DCDRC) under "
         "Section 35 of the Consumer Protection Act, 2019.\n"
-        "— Pecuniary jurisdiction: Claims up to ₹50 lakh → DCDRC; "
-        "₹50 lakh to ₹2 crore → State Consumer Disputes Redressal Commission (SCDRC); "
-        "above ₹2 crore → National Consumer Disputes Redressal Commission (NCDRC).\n"
+        "— Pecuniary jurisdiction: Claims up to ₹50 lakh -> DCDRC; "
+        "₹50 lakh to ₹2 crore -> State Consumer Disputes Redressal Commission (SCDRC); "
+        "above ₹2 crore -> National Consumer Disputes Redressal Commission (NCDRC).\n"
         "— File at the DCDRC of the district where the opposite party resides, "
         "carries on business, or where the cause of action arose.\n"
         "— Online filing also available at: consumerhelpline.gov.in"
@@ -1371,7 +1371,7 @@ class DraftingAgent:
         Extract facts from the user's initial query via a single Groq JSON-mode call.
 
         Returns FactExtractionResult with extracted_facts, missing_fields, confidence.
-        On any failure → returns empty extraction (all fields missing, confidence=0.0)
+        On any failure -> returns empty extraction (all fields missing, confidence=0.0)
         so the caller silently falls back to the full sequential question flow.
         """
         required = REQUIRED_FIELDS.get(doc_type)
@@ -1465,7 +1465,7 @@ class DraftingAgent:
                 confidence=0.0,
             )
 
-    # ── STAGE: START (INIT → CLARIFY) ──────────────────────────────────────────
+    # ── STAGE: START (INIT -> CLARIFY) ──────────────────────────────────────────
 
 
     def _field_question(self, field: str, category: str) -> str:
@@ -1579,7 +1579,7 @@ class DraftingAgent:
 
         first_q    = questions[0]
         draft_data = {
-            "answers":          {},    # q_index (str) → answer
+            "answers":          {},    # q_index (str) -> answer
             "current_q_index":  0,
             "use_dynamic":      False,
             "applicable_sections_text": "",
@@ -1632,7 +1632,7 @@ class DraftingAgent:
                     "draft":    "",
                 }
 
-            # All missing fields answered → RETRIEVE_SECTIONS
+            # All missing fields answered -> RETRIEVE_SECTIONS
             self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
             return self._retrieve_sections(session_id, {"category": category, "draft_data": draft_data})
 
@@ -1706,7 +1706,7 @@ class DraftingAgent:
 
         outline_lines = []
         if draft_data.get("use_dynamic"):
-            # Dynamic path — labeled field→value pairs
+            # Dynamic path — labeled field->value pairs
             for field, value in answers.items():
                 if field == "correction":
                     continue

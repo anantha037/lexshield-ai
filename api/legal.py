@@ -2,7 +2,7 @@
 LexShield AI — Legal Query API
 =======================================================
 Changes in this version:
-  - category field validator added: converts "" → None before Pydantic
+  - category field validator added: converts "" -> None before Pydantic
     Literal validation runs. Fixes 422 error when client sends category="".
   - era field added to CitationResponse and LegalQueryResponse.
   - Everything else unchanged.
@@ -48,7 +48,7 @@ class LegalQueryRequest(BaseModel):
         ),
     )
 
-    # ── FIX: convert empty string → None before Literal validation ────────────
+    # ── FIX: convert empty string -> None before Literal validation ────────────
     # When a client sends { "category": "" } Pydantic's Literal check raises a
     # 422 because "" is not one of the allowed values. This validator runs first
     # (mode="before") and normalises "" to None so the field is treated as
@@ -98,7 +98,7 @@ async def legal_query(request: LegalQueryRequest):
 
     Pipeline steps:
       1. Abbreviation expansion (40+ mappings)
-      2. LLM query rewriting → angle-diverse search queries
+      2. LLM query rewriting -> angle-diverse search queries
       3. Hybrid vector+BM25 search (with optional category filter)
       4. Section metadata fast-path — pins exact section chunks to top
       5. Paired act retrieval (IPC↔BNS, CrPC↔BNSS, Evidence↔BSA)
