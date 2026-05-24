@@ -5,7 +5,7 @@ Thin wrapper around the LangGraph agent_graph.
 Passes thread_id=session_id in config so SqliteSaver checkpointer
 stores and restores state across server restarts.
 
-State field mapping (agents/graph.py AgentState → here)
+State field mapping (agents/graph.py AgentState -> here)
 --------------------------------------------------------
 state["response"]    — final answer text  (was state["result"]["answer"])
 state["rag_result"]  — RAG pipeline output dict  (was state["result"])
@@ -14,7 +14,10 @@ state["ner_result"]  — NER output  {entities: [...]}
 state["draft_stage"] — current DraftingAgent stage
 state["draft_data"]  — accumulated draft fields
 """
-
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 from typing import Optional
 import json
 import time
@@ -119,17 +122,23 @@ class MasterOrchestrator:
                     "summary":  item.get("summary", ""),
                 })
 
+        # Derive citation_status from raw pipeline output fields
         # Derive citation_status
-        citations = rag_result.get("citations", [])
-        grounding_warning = rag_result.get("grounding_warning", "")
-        
-        if citations or case_law_results:
-            if grounding_warning:
-                citation_status = "partial"
-            else:
-                citation_status = "cited"
+        _rag = final_state.get("rag_result", {})
+        _grounding = _rag.get("grounding_warning", "") or ""
+        _sources = _rag.get("sources_consulted", 0)
+
+        if _sources > 0 and not _grounding:
+            citation_status = "cited"
+        elif _sources > 0 and _grounding:
+            citation_status = "partial"
         else:
             citation_status = "unverified"
+
+        # Override for case law intent
+        if intent == "case_law_search":
+            case_law_results = _rag.get("case_law_results", [])
+            citation_status = "cited" if case_law_results else "unverified"
 
         # Extract scope and validation status
         scope_status  = final_state.get("scope_status", "in_scope")
@@ -224,11 +233,11 @@ class MasterOrchestrator:
             validation_status = validation_status,
             scope_status      = scope_status,
             scope_message     = scope_message,
-            citations         = citations,
+            citations         = rag_result.get("citations", []),
             draft             = draft,
             sources_consulted = rag_result.get("sources_consulted", 0),
             synthesis_note    = rag_result.get("synthesis_note",    ""),
-            grounding_warning = grounding_warning,
+            grounding_warning = rag_result.get("grounding_warning", ""),
             rewritten_queries = rag_result.get("rewritten_queries", []),
             reranker_used     = rag_result.get("reranker_used",     False),
             case_law_results  = case_law_results,
