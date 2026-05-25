@@ -145,9 +145,12 @@ class MasterOrchestrator:
         else:
             citation_status = "unverified"
 
-        # Override for case law intent
+        # Override for case law intent — citation_status only
+        # Do NOT reassign case_law_results here — it was already built
+        # correctly from final_state["case_law_result"]["results"] above.
+        # _rag (rag_result dict) has no case_law_results key, so the old
+        # assignment always produced [] and discarded the real results.
         if intent == "case_law_search":
-            case_law_results = _rag.get("case_law_results", [])
             citation_status = "cited" if case_law_results else "unverified"
 
         # Extract scope and validation status
