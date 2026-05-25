@@ -190,6 +190,30 @@ def classify_intent_node(state: AgentState) -> dict:
             "pipeline_depth":  1,
         }
 
+    # ── Priority 0: active draft session short-circuit ────────────────────────
+    # If this session has an in-progress draft (any stage except DONE),
+    # bypass LLM classification entirely. Returning intent="draft_request" here
+    # ensures route_by_intent's Priority 1 check also fires correctly.
+    _session_id_early = state.get("session_id", "")
+    if _session_id_early:
+        try:
+            from agents.drafting_agent import drafting_agent as _da
+            if _da.has_active_draft(_session_id_early):
+                print(
+                    f"[Graph] classify_intent_node -> active draft detected "
+                    f"for session {_session_id_early[:8]}… -> short-circuit to draft_request"
+                )
+                return {
+                    "intent":          "draft_request",
+                    "confidence":      1.0,
+                    "source_language": "en",
+                    "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+                    "scratchpad":      dict(state.get("scratchpad", {})),
+                }
+        except Exception as _e:
+            print(f"[Graph] classify_intent_node active-draft check failed (non-fatal): {_e}")
+    # ── End short-circuit ──────────────────────────────────────────────────────
+
     source_language = detect_language(query)
     if source_language != "en":
         print(f"[Graph] classify_intent_node -> detected language: {source_language!r}")
