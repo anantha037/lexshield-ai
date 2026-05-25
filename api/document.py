@@ -7,7 +7,7 @@ POST /api/v1/document/query    — Q&A on a previously analyzed document
 /analyze pipeline
 -----------------
 1. Extract text  (PyMuPDF for digital PDFs, OCR for scanned/images)
-2. Classify      (XGBoost -> document type + confidence)
+2. Classify      (InLegalBERT -> document type + confidence)
 3. NER           (spaCy + regex -> structured entities)
 4. Risk Score    (clause-level risk with legal references)
 5. Rights Alerts (rule-based proactive rights violation detection — NEW)
@@ -18,6 +18,19 @@ POST /api/v1/document/query    — Q&A on a previously analyzed document
 Takes OCR-extracted doc_text + a user question, constructs a Groq prompt
 with the document as context, runs multilingual pipeline if needed,
 stores turn in session memory.
+
+BUG FIX (Session 7):
+  Replaced hardcoded doc_text[:3000] truncation with an ephemeral
+  in-memory ChromaDB vector store scoped to each /query request.
+  Pipeline:
+    1. Chunk full doc_text by sentence boundaries (≈200 chars/chunk)
+    2. Embed chunks using the existing rag.embedder singleton
+       (reuses all-MiniLM-L6-v2 already loaded — no extra RAM cost)
+    3. Store in a temporary ChromaDB collection named for this request
+    4. Retrieve top 5 chunks most relevant to the user's question
+    5. Pass those chunks as context to the Groq LLM
+    6. Delete the ephemeral collection immediately after response
+  Handles documents of any length. Silent 3000-char cutoff is gone.
 
 Response additions
 -------------------
@@ -34,6 +47,7 @@ DocumentAnalysisResponse now includes:
 """
 
 import io
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +58,12 @@ router = APIRouter(prefix="/api/v1/document", tags=["document"])
 
 MAX_FILE_SIZE_MB = 10
 SUPPORTED_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".txt"}
+
+# ── /query ephemeral RAG constants ───────────────────────────────────────────
+_CHUNK_SIZE      = 200   # approximate characters per sentence-boundary chunk
+_CHUNK_OVERLAP   = 30    # characters of overlap between consecutive chunks
+_TOP_K_CHUNKS    = 5     # how many chunks to pass to the LLM as context
+_MAX_CHUNK_CHARS = 400   # hard cap per chunk sent to LLM prompt
 
 
 # ── Response models ───────────────────────────────────────────────────────────
@@ -124,7 +144,7 @@ class DocumentAnalysisResponse(BaseModel):
     classification:     ClassificationResult
     entities:           EntitiesModel
     risk:               RiskModel
-    rights_alerts:      list[RightsAlertModel] = []   # NEW — proactive rights violation alerts
+    rights_alerts:      list[RightsAlertModel] = []   # proactive rights violation alerts
     legal_explanation:  Optional[LegalExplanationModel] = None
     warning:            Optional[str]                   = None
 
@@ -206,6 +226,184 @@ def _extract_image(file_bytes: bytes) -> tuple[str, int, bool]:
         raise HTTPException(status_code=500, detail=f"Image OCR failed: {e}")
 
 
+# ── Ephemeral RAG helpers (Bug Fix — replaces [:3000] truncation) ─────────────
+
+def _chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP) -> list[str]:
+    """
+    Split text into overlapping chunks at sentence boundaries.
+
+    Strategy:
+      1. Split on sentence-ending punctuation (. ! ?) followed by whitespace
+      2. Accumulate sentences until chunk_size is reached
+      3. Apply overlap by re-including the last sentence of the previous chunk
+      4. Fallback: if a single sentence exceeds chunk_size, split by words
+
+    This ensures no sentence is split mid-way and context bleeds across
+    chunk boundaries via the overlap window.
+    """
+    import re
+
+    if not text or not text.strip():
+        return []
+
+    # Split into sentences — keep the delimiter attached to the sentence
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    if not sentences:
+        return []
+
+    chunks:       list[str] = []
+    current:      list[str] = []
+    current_len:  int       = 0
+    last_sentence: str      = ""
+
+    for sentence in sentences:
+        # If a single sentence is too long, split it by words
+        if len(sentence) > chunk_size * 2:
+            words     = sentence.split()
+            sub_chunk = []
+            sub_len   = 0
+            for word in words:
+                sub_chunk.append(word)
+                sub_len += len(word) + 1
+                if sub_len >= chunk_size:
+                    chunks.append(" ".join(sub_chunk))
+                    sub_chunk = []
+                    sub_len   = 0
+            if sub_chunk:
+                sentences_remaining = [" ".join(sub_chunk)]
+                # feed back into normal flow
+                sentence = sentences_remaining[0]
+            else:
+                continue
+
+        if current_len + len(sentence) > chunk_size and current:
+            chunks.append(" ".join(current))
+            last_sentence = current[-1] if current else ""
+            # Start new chunk with overlap from previous chunk's last sentence
+            current     = [last_sentence, sentence] if last_sentence else [sentence]
+            current_len = len(last_sentence) + len(sentence) + 1
+        else:
+            current.append(sentence)
+            current_len += len(sentence) + 1
+
+    if current:
+        chunks.append(" ".join(current))
+
+    return [c for c in chunks if c.strip()]
+
+
+def _build_ephemeral_context(doc_text: str, question: str, top_k: int = _TOP_K_CHUNKS) -> str:
+    """
+    Core of the Bug Fix.
+
+    Creates a temporary in-memory ChromaDB collection, embeds all chunks
+    of the full document, retrieves the top_k most relevant to the question,
+    then immediately destroys the collection.
+
+    Uses the existing rag.embedder singleton (all-MiniLM-L6-v2) so no
+    second model is loaded into RAM. ChromaDB runs fully in-memory —
+    nothing is written to disk.
+
+    Args:
+        doc_text  : full document text (any length)
+        question  : user's question for similarity search
+        top_k     : number of chunks to return
+
+    Returns:
+        A formatted string of the top_k relevant chunks ready for the
+        LLM prompt. Falls back to doc_text[:3000] only if anything fails,
+        so the endpoint never errors out due to this fix.
+    """
+    # ── Fallback: used if anything in the ephemeral pipeline fails ────────────
+    fallback = doc_text[:3000]
+
+    try:
+        from rag.embedder import embedder
+        import chromadb
+
+        # ── Step 1: Chunk the full document ───────────────────────────────────
+        chunks = _chunk_text(doc_text)
+
+        if not chunks:
+            return fallback
+
+        # If the document is short enough, skip the whole pipeline
+        if len(doc_text) <= 3000 and len(chunks) <= top_k:
+            return doc_text
+
+        # ── Step 2: Create ephemeral in-memory ChromaDB client + collection ───
+        # EphemeralClient() creates a fully in-memory instance — no disk I/O,
+        # no connection to the persistent RAG vectorstore, no side effects.
+        ephemeral_client = chromadb.EphemeralClient()
+
+        # Unique collection name scoped to this request — prevents any
+        # collision if two /query requests run concurrently
+        collection_name = f"doc_query_{uuid.uuid4().hex}"
+        collection = ephemeral_client.create_collection(
+            name     = collection_name,
+            metadata = {"hnsw:space": "cosine"},
+        )
+
+        try:
+            # ── Step 3: Embed all chunks ──────────────────────────────────────
+            # embedder.embed() returns list[list[float]] — ChromaDB expects this
+            chunk_embeddings = embedder.embed(
+                chunks,
+                batch_size     = 8,    # safe for 8GB RAM on i5-8250U
+                show_progress  = False,
+            )
+
+            # ── Step 4: Store chunks in ephemeral collection ──────────────────
+            collection.add(
+                ids        = [f"chunk_{i}" for i in range(len(chunks))],
+                embeddings = chunk_embeddings,
+                documents  = chunks,
+            )
+
+            # ── Step 5: Embed the question and retrieve top_k chunks ──────────
+            question_embedding = embedder.embed_single(question)
+
+            results = collection.query(
+                query_embeddings = [question_embedding],
+                n_results        = min(top_k, len(chunks)),
+                include          = ["documents", "distances"],
+            )
+
+            retrieved_chunks: list[str] = results["documents"][0] if results["documents"] else []
+
+            if not retrieved_chunks:
+                return fallback
+
+            # ── Step 6: Format retrieved chunks for LLM prompt ────────────────
+            context_parts = []
+            for i, chunk in enumerate(retrieved_chunks, 1):
+                # Hard-cap each chunk to avoid prompt overflow
+                safe_chunk = chunk[:_MAX_CHUNK_CHARS]
+                context_parts.append(f"[Excerpt {i}]\n{safe_chunk}")
+
+            return "\n\n".join(context_parts)
+
+        finally:
+            # ── Step 7: Always destroy the ephemeral collection ───────────────
+            # EphemeralClient is in-memory so GC would handle it, but explicit
+            # deletion is cleaner and prevents any memory accumulation under load
+            try:
+                ephemeral_client.delete_collection(collection_name)
+            except Exception:
+                pass  # non-fatal — collection dies with the client anyway
+
+    except Exception as e:
+        # Any failure in the ephemeral pipeline falls back silently
+        # The endpoint never errors out because of this fix
+        import logging
+        logging.getLogger(__name__).warning(
+            "Ephemeral RAG fallback to [:3000] for /query — reason: %s", e
+        )
+        return fallback
+
+
 # ── Analyze endpoint ──────────────────────────────────────────────────────────
 
 @router.post("/analyze", response_model=DocumentAnalysisResponse)
@@ -220,10 +418,10 @@ async def analyze_document(
 
     Steps:
       1. Extract text from uploaded file
-      2. Classify document type (XGBoost, 15 categories)
+      2. Classify document type (InLegalBERT, 15 categories)
       3. Extract entities (spaCy + custom regex NER)
       4. Score legal risk per clause
-      5. Detect rights violations (rule-based, zero LLM cost) — NEW
+      5. Detect rights violations (rule-based, zero LLM cost)
       6. (Optional) RAG legal explanation — set run_rag=true
 
     Supported: PDF, JPEG, PNG, TIFF, BMP, TXT (max 10 MB)
@@ -298,7 +496,7 @@ async def analyze_document(
         clause_risks    = [
             ClauseRiskModel(**cr.to_dict())
             for cr in doc_risk.clause_risks
-            if cr.score > 0   # only include clauses with some risk
+            if cr.score > 0
         ],
     )
 
@@ -347,7 +545,7 @@ async def analyze_document(
 
     return DocumentAnalysisResponse(
         filename          = filename,
-        text              = text[:5000],
+        text              = text[:5000],   # response payload trim — intentional
         word_count        = len(text.split()),
         ocr_used          = ocr_used,
         page_count        = page_count,
@@ -374,7 +572,8 @@ def document_query(req: DocQueryRequest):
       - language   : optional — pass "ml" for Malayalam, "hi" for Hindi, etc.
 
     The endpoint:
-      1. Builds a Groq prompt with doc_text injected as context (first 3000 chars)
+      1. Retrieves the top 5 most relevant chunks from the full doc_text
+         using an ephemeral in-memory ChromaDB collection (Bug Fix — was [:3000])
       2. Runs through the multilingual pipeline if language != "en"
       3. Stores user question + assistant answer in session memory
       4. Returns: answer, applicable_sections, risk_note, session_id
@@ -389,7 +588,7 @@ def document_query(req: DocQueryRequest):
         raise HTTPException(status_code=400, detail="question must not be empty")
 
     # ── Multilingual: translate question to English if needed ─────────────────
-    question_en = req.question.strip()
+    question_en   = req.question.strip()
     detected_lang = req.language or "en"
 
     if detected_lang not in ("en", "english", None, ""):
@@ -399,8 +598,16 @@ def document_query(req: DocQueryRequest):
         except Exception:
             pass  # fall through with original question
 
+    # ── BUG FIX: Build relevant context via ephemeral ChromaDB ────────────────
+    # Previously: doc_excerpt = req.doc_text[:3000]
+    # Now: retrieve the top _TOP_K_CHUNKS chunks most semantically relevant
+    # to the user's question from the FULL document text.
+    # _build_ephemeral_context() is self-contained — it creates an in-memory
+    # ChromaDB collection, queries it, destroys it, and returns a string.
+    # If anything fails it falls back to [:3000] silently — endpoint is safe.
+    doc_excerpt = _build_ephemeral_context(req.doc_text, question_en)
+
     # ── Build Groq prompt ─────────────────────────────────────────────────────
-    doc_excerpt = req.doc_text[:3000]
     prompt = (
         "You are LexShield AI, an expert in Indian law.\n\n"
         "The user has uploaded the following legal document. "
@@ -419,16 +626,16 @@ def document_query(req: DocQueryRequest):
         "RISK NOTE: <any risk or caution>\n"
     )
 
-    answer_text        = ""
+    answer_text         = ""
     applicable_sections = []
-    risk_note          = ""
+    risk_note           = ""
 
     try:
         from rag.llm import llm
         raw_response = llm.generate(prompt, max_tokens=600, temperature=0.2)
 
         # Parse structured response
-        lines = raw_response.strip().split("\n")
+        lines           = raw_response.strip().split("\n")
         current_section = None
         answer_lines    = []
         sections_lines  = []
@@ -480,7 +687,7 @@ def document_query(req: DocQueryRequest):
         from agents.memory import session_memory
         session_memory.ensure_session(req.session_id)
         session_memory.add_turn(req.session_id, "user",      req.question.strip(), intent="document_query")
-        session_memory.add_turn(req.session_id, "assistant", answer_text,           intent="document_query")
+        session_memory.add_turn(req.session_id, "assistant", answer_text,          intent="document_query")
     except Exception:
         pass  # non-fatal — don't fail the request over memory error
 
