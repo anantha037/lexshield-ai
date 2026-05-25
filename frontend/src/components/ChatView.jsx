@@ -22,14 +22,14 @@ const CASE_LAW_QUICK = [
   { q: 'Landmark judgments on right to privacy' },
 ];
 
-const DOC_RE   = /analys[ei]s?\s+(a\s+)?document|upload\s+document|check\s+this\s+(document|file)|review\s+this\s+file/i;
+const DOC_RE = /analys[ei]s?\s+(a\s+)?document|upload\s+document|check\s+this\s+(document|file)|review\s+this\s+file/i;
 const DRAFT_RE = /draft\s+a?\s+complaint|write\s+a?\s+complaint|help\s+me\s+file|draft\s+an?\s+(fir|legal\s+notice)/i;
 const RIGHT_RE = /what\s+are\s+my\s+rights|know\s+my\s+rights|my\s+rights\s+as/i;
 
 function detectRedirect(text) {
-  if (DOC_RE.test(text))   return { view: 'document', label: 'Document Analysis' };
-  if (DRAFT_RE.test(text)) return { view: 'draft',    label: 'Draft Complaint' };
-  if (RIGHT_RE.test(text)) return { view: 'rights',   label: 'Know Your Rights' };
+  if (DOC_RE.test(text)) return { view: 'document', label: 'Document Analysis' };
+  if (DRAFT_RE.test(text)) return { view: 'draft', label: 'Draft Complaint' };
+  if (RIGHT_RE.test(text)) return { view: 'rights', label: 'Know Your Rights' };
   return null;
 }
 
@@ -44,11 +44,10 @@ function timeAgo(ts) {
 
 function parseText(text) {
   if (!text) return null;
-  // Use parseResponse logic as requested
   let html = text.replace(/\[(IPC|BNS|CrPC|BNSS|IEA|BSA)\s*§\d+[a-zA-Z]*\]|Section\s+\d+[a-zA-Z]*(\s+of\s+the)?\s+([A-Za-z\s]+Act|IPC|BNS|CrPC|BNSS|IEA|BSA)/gi, match => `<span class="citation-badge" style="margin:0 4px">${match}</span>`);
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--c-text);font-weight:600">$1</strong>');
-  html = html.replace(/--(.*?)--/g, ''); 
-  
+  html = html.replace(/--(.*?)--/g, '');
+
   const blocks = html.split(/\n\s*\n/);
   return blocks.map((block, i) => {
     const lines = block.split('\n');
@@ -75,7 +74,7 @@ function parseText(text) {
 function CopyBtn({ text }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button 
+    <button
       style={{ position: 'absolute', top: 8, right: 8, opacity: 0, transition: 'opacity 150ms', background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 4, padding: 4, cursor: 'pointer', color: 'var(--c-text2)' }}
       className="copy-btn"
       onClick={() => {
@@ -214,16 +213,16 @@ export default function ChatView() {
 
   useEffect(() => { sessionRef.current = activeSession; }, [activeSession]);
   useEffect(() => { langRef.current = language; }, [language]);
-  
+
   const scrollToBottom = () => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  useEffect(() => { 
+  useEffect(() => {
     if (!areaRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = areaRef.current;
     if (scrollHeight - scrollTop - clientHeight < 150) {
-      scrollToBottom(); 
+      scrollToBottom();
     }
   }, [chatMessages, loading]);
 
@@ -240,18 +239,20 @@ export default function ChatView() {
     }
   }, [prefillInput, setPrefillInput]);
 
-  const handleSend = useCallback(async (textOverride) => {
+  const handleSend = useCallback(async (textOverride, suppressRedirect = false) => {
     const q = (textOverride ?? inputValRef.current).trim();
     if (!q || loading) return;
     setInput(''); inputValRef.current = '';
 
-    const redirect = detectRedirect(q);
-    if (redirect) {
-      setChatMessages(m => [...m,
+    if (!suppressRedirect) {
+      const redirect = detectRedirect(q);
+      if (redirect) {
+        setChatMessages(m => [...m,
         { role: 'user', content: q, ts: Date.now() / 1000 },
         { role: 'assistant', content: q, ts: Date.now() / 1000, redirect },
-      ]);
-      return;
+        ]);
+        return;
+      }
     }
 
     if (abortRef.current) abortRef.current.abort(new Error('superseded'));
@@ -267,9 +268,16 @@ export default function ChatView() {
       if (!r) return;
       if (!sessionRef.current && r.sessionId) { setActiveSession(r.sessionId); refreshSessions(); }
       setChatMessages(m => [...m, {
-        role: 'assistant', content: r.answer || r.draft || r.summary || 'No response received.',
-        intent: r.intent, riskLevel: r.riskLevel, riskScore: r.riskScore, citations: r.citations,
+        role: 'assistant',
+        content: r.answer || r.draft || r.summary || 'No response received.',
+        intent: r.intent,
+        riskLevel: r.riskLevel,
+        riskScore: r.riskScore,
+        citations: r.citations,
         caseLawResults: r.caseLawResults || [],
+        citationStatus: r.citationStatus || 'unverified', // ← FIX: was missing, always showed "Unverified"
+        scopeStatus: r.scopeStatus || 'in_scope',
+        scopeMessage: r.scopeMessage || '',
         ts: Date.now() / 1000,
       }]);
       setLastResponse(r);
@@ -280,13 +288,13 @@ export default function ChatView() {
     } finally { setLoading(false); abortRef.current = null; }
   }, [loading, setActiveSession, refreshSessions, setChatMessages, setLastResponse, toast]);
 
-  const onInput = (e) => { 
-    setInput(e.target.value); 
-    inputValRef.current = e.target.value; 
+  const onInput = (e) => {
+    setInput(e.target.value);
+    inputValRef.current = e.target.value;
     e.target.style.height = 'auto';
     e.target.style.height = Math.min(Math.max(e.target.scrollHeight, 44), 140) + 'px';
   };
-  
+
   const onKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
 
   // Determine which quick prompts to show
@@ -340,8 +348,9 @@ export default function ChatView() {
                   <button className="btn-gold" onClick={() => setActiveView(m.redirect.view)}>Go to {m.redirect.label} →</button>
                   <button className="btn-ghost" onClick={() => {
                     setChatMessages(msgs => msgs.filter((_, j) => j !== i));
-                    inputValRef.current = m.content + ' (legal question)';
-                    handleSend(m.content + ' (legal question)');
+                    const originalQ = m.content.replace("(legal question)", "").trim();
+                    inputValRef.current = originalQ;
+                    handleSend(originalQ, true);
                   }}>I have a legal question instead</button>
                 </div>
               </div>
@@ -423,7 +432,7 @@ export default function ChatView() {
       </div>
 
       {showScrollBtn && (
-        <button 
+        <button
           onClick={scrollToBottom}
           style={{ position: 'absolute', bottom: 120, right: 60, width: 36, height: 36, borderRadius: '50%', background: 'var(--c-surface)', border: '1px solid var(--c-border)', color: 'var(--c-gold)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'fadeIn 150ms ease forwards', zIndex: 10 }}
         >
@@ -434,7 +443,7 @@ export default function ChatView() {
       <div className="chat-input-area" style={{ padding: '16px 40px 20px', borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
           {LANGS.map(l => (
-            <button key={l.code} 
+            <button key={l.code}
               style={{ padding: '3px 12px', borderRadius: 99, fontSize: 12, fontWeight: 600, border: `1px solid ${language === l.code ? 'var(--c-gold)' : 'var(--c-border)'}`, color: language === l.code ? 'var(--c-gold)' : 'var(--c-text3)', background: language === l.code ? 'var(--c-gold-dim)' : 'transparent', cursor: 'pointer', transition: 'all 150ms' }}
               onMouseDown={(e) => e.currentTarget.style.transform = 'scale(0.95)'}
               onMouseUp={(e) => e.currentTarget.style.transform = 'scale(1)'}
