@@ -344,12 +344,15 @@ def build_structured_response(
         "Consult a qualified Indian advocate for advice specific to your situation.",
     ]
 
-    if citations and not grounding_warning:
-        citation_status = "cited"
-    elif citations and grounding_warning:
-        citation_status = "partial"
-    else:
-        citation_status = "unverified"
+    # Honor the citation_status derived by the orchestrator.
+    # Fall back to citation-list inference only when the caller
+    # did not supply an explicit status.
+    if citation_status == "unverified":          # default / not overridden by caller
+        if citations and not grounding_warning:
+            citation_status = "cited"
+        elif citations and grounding_warning:
+            citation_status = "partial"
+        # else stays "unverified"
 
     return LexShieldResponse(
         answer_text       = answer_text,
