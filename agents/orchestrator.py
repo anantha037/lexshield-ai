@@ -68,7 +68,8 @@ class MasterOrchestrator:
         session_memory.add_turn(session_id, role="user", content=query, intent=None)
 
         def _is_vague_followup(q: str) -> bool:
-            words = q.lower().split()
+            import re
+            words = re.sub(r"[^\w\s]", "", q.lower()).split()
             pronouns = {"that", "it", "this", "those", "its", "them", "same"}
             return len(words) < 10 and any(p in words for p in pronouns)
 
