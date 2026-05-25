@@ -504,12 +504,14 @@ class IntentClassifier:
         r'|\b(cheque\s+bounce|cheque\s+dishonour)\s+complaint\b'
         r'|\billegal(ly)?\s+evict(ed|ion)?\b'
         r'|\bdomestic\s+violence\s+complaint\b'
-        r'|\bwrongful\s+termination\b'
+        r'|\b(draft|write|prepare|help\s+me\s+(file|draft|write))\b.{0,100}\bwrongful\s+termination\b'
+        r'|\bwrongful\s+termination\b.{0,100}\b(draft|write|prepare|file\s+a?\s*complaint)\b'
+        r'|\b(draft|write|prepare|help\s+me\s+(file|draft|write))\b.{0,100}\bwrongfully?\s+terminat\w*\b'
+        r'|\bwrongfully?\s+terminat\w*\b.{0,100}\b(draft|write|prepare|file\s+a?\s*complaint)\b'
         r'|\bwrite\s+(a\s+)?complaint\b'
         r'|\bfile\s+(a\s+)?complaint\b'
         r'|\bhelp\s+me\s+file\b'
-        r'|\bsalary\s+not\s+(paid|received)\b'
-        r'|\bwrongfully?\s+terminat(ed|ion)\b',
+        r'|\bsalary\s+not\s+(paid|received)\b',
         re.IGNORECASE,
     )
 
