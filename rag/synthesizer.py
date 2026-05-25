@@ -245,8 +245,6 @@ def build_citations(chunks: list[dict]) -> list[Citation]:
 # ── Grounding checker ─────────────────────────────────────────────────────────
 
 _HALLUCINATION_SIGNALS = [
-    "generally speaking", "typically", "usually",
-    "in most cases", "it is widely understood", "commonly known", "experts say",
     "legal experts", "lawyers agree", "based on my knowledge",
     "i believe", "i think",
 ]
