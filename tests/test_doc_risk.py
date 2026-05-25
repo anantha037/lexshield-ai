@@ -110,7 +110,7 @@ def test_classifier(verbose: bool = False) -> bool:
     from models.classifier import classifier
 
     if not classifier.is_ready():
-        print("  ✗ Classifier not loaded. Run training first.")
+        print("  FAIL Classifier not loaded. Run training first.")
         return False
 
     # Quick sanity check on 5 known document types
@@ -127,7 +127,7 @@ def test_classifier(verbose: bool = False) -> bool:
         confidence= result["confidence"]
         ok        = predicted == expected
         passed   += int(ok)
-        mark      = "✓" if ok else "✗"
+        mark      = "OK" if ok else "FAIL"
         print(f"  {mark} Expected: {expected:25s} | Got: {predicted:25s} | conf={confidence:.2f}")
         if verbose and not ok:
             print(f"    All scores: {result['all_scores']}")
@@ -162,9 +162,9 @@ def test_risk_scorer(verbose: bool = False) -> bool:
 
     missing = expected_flags - found_flags
     if missing:
-        print(f"  ✗ Missing expected flags: {missing}")
+        print(f"  FAIL Missing expected flags: {missing}")
     else:
-        print(f"  ✓ All expected flags detected")
+        print(f"  OK All expected flags detected")
 
     if verbose:
         for cr in result.clause_risks:
@@ -189,9 +189,9 @@ def test_risk_scorer(verbose: bool = False) -> bool:
     print(f"  Overall score  : {result2.overall_score} ({result2.risk_level})")
     print(f"  Flags found    : {flags2}")
     if missing2:
-        print(f"  ✗ Missing flags: {missing2}")
+        print(f"  FAIL Missing flags: {missing2}")
     else:
-        print(f"  ✓ All expected flags detected")
+        print(f"  OK All expected flags detected")
 
     passed_b = len(missing2) == 0
 
@@ -200,7 +200,7 @@ def test_risk_scorer(verbose: bool = False) -> bool:
     result3 = risk_scorer.score(CLEAN_COURT_NOTICE, doc_type="court_notice")
     print(f"  Overall score  : {result3.overall_score} ({result3.risk_level})")
     passed_c = result3.overall_score < 40
-    print(f"  {'✓' if passed_c else '✗'} Score < 40 (expected for court notice)")
+    print(f"  {'OK' if passed_c else 'FAIL'} Score < 40 (expected for court notice)")
 
     return passed_a and passed_b and passed_c
 
@@ -221,7 +221,7 @@ def test_full_pipeline(verbose: bool = False) -> bool:
     clf     = classifier.predict(text)
     checks["classification_correct"] = clf["label_name"] == "rental_agreement"
     print(f"\n  Classification: {clf['label_name']} (conf={clf['confidence']:.2f})")
-    print(f"  {'✓' if checks['classification_correct'] else '✗'} Expected: rental_agreement")
+    print(f"  {'OK' if checks['classification_correct'] else 'FAIL'} Expected: rental_agreement")
 
     # NER
     ents    = extract_entities(text)
@@ -231,9 +231,9 @@ def test_full_pipeline(verbose: bool = False) -> bool:
     checks["monetary_found"]  = len(ed["monetary"]) > 0
 
     print(f"\n  NER results:")
-    print(f"  {'✓' if checks['persons_found']   else '✗'} Persons:   {ed['persons'][:3]}")
-    print(f"  {'✓' if checks['locations_found'] else '✗'} Locations: {ed['locations'][:3]}")
-    print(f"  {'✓' if checks['monetary_found']  else '✗'} Monetary:  {ed['monetary'][:3]}")
+    print(f"  {'OK' if checks['persons_found']   else 'FAIL'} Persons:   {ed['persons'][:3]}")
+    print(f"  {'OK' if checks['locations_found'] else 'FAIL'} Locations: {ed['locations'][:3]}")
+    print(f"  {'OK' if checks['monetary_found']  else 'FAIL'} Monetary:  {ed['monetary'][:3]}")
 
     # Risk
     risk    = risk_scorer.score(text, doc_type=clf["label_name"])
@@ -241,11 +241,11 @@ def test_full_pipeline(verbose: bool = False) -> bool:
     checks["clauses_flagged"] = risk.high_risk_count > 0
 
     print(f"\n  Risk scoring:")
-    print(f"  {'✓' if checks['risk_nonzero']    else '✗'} Overall score: {risk.overall_score}")
-    print(f"  {'✓' if checks['clauses_flagged'] else '✗'} High-risk clauses: {risk.high_risk_count}")
+    print(f"  {'OK' if checks['risk_nonzero']    else 'FAIL'} Overall score: {risk.overall_score}")
+    print(f"  {'OK' if checks['clauses_flagged'] else 'FAIL'} High-risk clauses: {risk.high_risk_count}")
 
     passed = all(checks.values())
-    print(f"\n  Pipeline: {'✓ PASS' if passed else '✗ FAIL'}")
+    print(f"\n  Pipeline: {'OK PASS' if passed else 'FAIL FAIL'}")
     return passed
 
 
@@ -271,7 +271,7 @@ if __name__ == "__main__":
         # ── Hot-swap the singleton to the freshly saved model ─────────────────
         print("\n  Reloading classifier singleton from new .pkl...")
         ok = classifier.reload()
-        print(f"  {'✓ Reload succeeded' if ok else '✗ Reload FAILED — check disk write'}")
+        print(f"  {'OK Reload succeeded' if ok else 'FAIL Reload FAILED — check disk write'}")
         if not ok:
             print("  Aborting tests.")
             sys.exit(1)
@@ -280,7 +280,7 @@ if __name__ == "__main__":
             print(f"\n  ⚠ WARNING: CV val accuracy {metrics['cv_val_accuracy']*100:.1f}% "
                   f"< 85% target.")
         else:
-            print(f"\n  ✓ Accuracy target met.")
+            print(f"\n  OK Accuracy target met.")
     else:
         print("\n[Pre-test] Skipping training — using existing saved model.")
 
@@ -291,10 +291,10 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"  Test 1 — Classifier   : {'✓ PASS' if r1 else '✗ FAIL'}")
-    print(f"  Test 2 — Risk Scorer  : {'✓ PASS' if r2 else '✗ FAIL'}")
-    print(f"  Test 3 — Full Pipeline: {'✓ PASS' if r3 else '✗ FAIL'}")
+    print(f"  Test 1 — Classifier   : {'OK PASS' if r1 else 'FAIL FAIL'}")
+    print(f"  Test 2 — Risk Scorer  : {'OK PASS' if r2 else 'FAIL FAIL'}")
+    print(f"  Test 3 — Full Pipeline: {'OK PASS' if r3 else 'FAIL FAIL'}")
 
     all_pass = r1 and r2 and r3
-    print(f"\n{'✓ DAY 5 CHECKPOINT COMPLETE' if all_pass else '✗ SOME TESTS FAILED'}")
+    print(f"\n{'OK DAY 5 CHECKPOINT COMPLETE' if all_pass else 'FAIL SOME TESTS FAILED'}")
     sys.exit(0 if all_pass else 1)

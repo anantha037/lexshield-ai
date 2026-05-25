@@ -247,8 +247,8 @@ def run_rag_evaluation(fresh: bool = False) -> dict:
     Evaluate RAG pipeline using RAGAS on 28 legally accurate Q&A pairs.
 
     Architecture:
-      RAG pipeline calls → Groq (primary) with OpenRouter failover via MultiLLMRouter
-      RAGAS scoring calls → OpenRouter priority-2 provider (separate rate limit)
+      RAG pipeline calls -> Groq (primary) with OpenRouter failover via MultiLLMRouter
+      RAGAS scoring calls -> OpenRouter priority-2 provider (separate rate limit)
 
     This separation is the key fix: previously both competed for the same
     30 RPM Groq limit, causing 429 at ~Q14. Now they use different providers.
@@ -423,7 +423,7 @@ def _build_eval_llm():
     """
     from ragas.llms import LangchainLLMWrapper
 
-    # Strategy 1: MultiLLMRouter.get_langchain_llm() → OpenRouter priority=2
+    # Strategy 1: MultiLLMRouter.get_langchain_llm() -> OpenRouter priority=2
     try:
         from rag.multi_llm import MultiLLMRouter
         router   = MultiLLMRouter()
@@ -578,7 +578,7 @@ def run_intent_evaluation() -> dict:
                 "confidence": result.confidence,
             })
             logger.warning(
-                f"MISS: [{expected} → {predicted}] conf={result.confidence:.2f} | "
+                f"MISS: [{expected} -> {predicted}] conf={result.confidence:.2f} | "
                 f"'{query[:55]}'"
             )
 
@@ -592,7 +592,7 @@ def run_intent_evaluation() -> dict:
     logger.info(f"\nOverall: {overall_acc:.1%} ({total_correct}/{total})")
     for intent, acc in sorted(per_intent_acc.items()):
         c = per_intent[intent]
-        m = "✓" if acc == 1.0 else ("△" if acc >= 0.8 else "✗")
+        m = "OK" if acc == 1.0 else ("△" if acc >= 0.8 else "FAIL")
         logger.info(f"  {m} {intent:25} {acc:.1%}  ({c['correct']}/{c['total']})")
 
     return {
@@ -675,9 +675,9 @@ def main():
     else:
         logger.info(
             "Mode: full eval | "
-            "RAG → Groq+OpenRouter failover | "
-            "RAGAS scoring → OpenRouter (separate rate limit) | "
-            "Checkpoint → tests/eval_progress.json"
+            "RAG -> Groq+OpenRouter failover | "
+            "RAGAS scoring -> OpenRouter (separate rate limit) | "
+            "Checkpoint -> tests/eval_progress.json"
         )
         rag_metrics = run_rag_evaluation(fresh=args.fresh)
 

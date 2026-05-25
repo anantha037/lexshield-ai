@@ -575,5 +575,5 @@ def run_ner(text: str) -> dict:
     return extract_entities(text).to_dict()
 
 print(f"[NER] Pipeline ready. "
-      f"spaCy={'✓' if _SPACY_READY else '✗'}  "
-      f"OpenNyAI={'✓' if _OPENNYAI_READY else '✗ (optional)'}")
+      f"spaCy={'OK' if _SPACY_READY else 'FAIL'}  "
+      f"OpenNyAI={'OK' if _OPENNYAI_READY else 'FAIL (optional)'}")

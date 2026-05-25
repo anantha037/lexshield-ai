@@ -4,8 +4,8 @@ LexShield AI — Legacy Orchestrator Router
 Kept for backward compatibility.
 Both endpoints now delegate to MasterOrchestrator (Week 3).
 
-POST /api/v1/orchestrate/query    → master_orchestrator.handle_query()
-POST /api/v1/orchestrate/document → master_orchestrator.handle_document()
+POST /api/v1/orchestrate/query    -> master_orchestrator.handle_query()
+POST /api/v1/orchestrate/document -> master_orchestrator.handle_document()
 """
 
 import tempfile

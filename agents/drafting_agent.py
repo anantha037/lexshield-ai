@@ -5,7 +5,7 @@ Multi-turn, SQLite-persisted, 6-stage workflow for generating
 professional Indian legal complaint drafts.
 
 Stage Flow:
-  INIT → CLARIFY → RETRIEVE_SECTIONS → IDENTIFY_AUTHORITY → CONFIRM → GENERATE → DONE
+  INIT -> CLARIFY -> RETRIEVE_SECTIONS -> IDENTIFY_AUTHORITY -> CONFIRM -> GENERATE -> DONE
 
 8 Complaint Categories:
   wage_theft | illegal_eviction | cheque_bounce | consumer_complaint |
@@ -31,6 +31,19 @@ import sqlite3
 import time
 from enum import Enum
 from typing import Optional
+
+from pydantic import BaseModel
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PYDANTIC MODELS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class FactExtractionResult(BaseModel):
+    """Result of a single Groq JSON-mode fact-extraction call."""
+    extracted_facts: dict[str, str]  # field_name -> extracted value
+    missing_fields:  list[str]       # fields that could not be extracted
+    confidence:      float           # 0.0 to 1.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -136,6 +149,58 @@ def _detect_category(description: str) -> Optional[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# REQUIRED FIELDS PER DOC TYPE  (used by _extract_facts for LLM extraction)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+REQUIRED_FIELDS: dict[str, list[str]] = {
+    "wage_theft": [
+        "complainant_name", "employer_name", "employer_address",
+        "unpaid_amount", "unpaid_period", "jurisdiction",
+        "documentary_proof",   # always-ask — never extracted from query
+    ],
+    "illegal_eviction": [
+        "complainant_name", "landlord_name", "property_address",
+        "monthly_rent", "jurisdiction", "eviction_date",
+    ],
+    "cheque_bounce": [
+        "complainant_name", "accused_name", "cheque_number",
+        "cheque_amount", "dishonour_date", "dishonour_reason",
+    ],
+    "consumer_complaint": [
+        "complainant_name", "respondent_name", "product_service",
+        "defect_description", "relief_sought", "jurisdiction",
+    ],
+    "fir_complaint": [
+        "complainant_name", "accused_name_or_description",
+        "incident_description", "incident_date",
+        "incident_location", "sections_applicable",
+    ],
+    "domestic_violence": [
+        "complainant_name", "respondent_name", "relationship",
+        "violence_type", "jurisdiction",
+        "supporting_evidence",  # always-ask — never extracted from query
+    ],
+    "employment_termination": [
+        "complainant_name", "employer_name", "jurisdiction",
+        "termination_reason", "service_period", "last_salary",
+    ],
+    "loan_default": [
+        "complainant_name", "lender_name", "loan_amount",
+        "loan_type", "defaulted_emis", "outstanding_amount",
+    ],
+}
+
+# Fields that are ALWAYS added to missing_fields regardless of what the LLM
+# extracts.  These map to documentary-evidence questions in _CLARIFYING_QUESTIONS
+# that must always be asked explicitly — the LLM cannot reliably extract
+# "do you have documents?" intent from the user's initial query.
+ALWAYS_ASK_FIELDS: dict[str, list[str]] = {
+    "wage_theft":        ["documentary_proof"],
+    "domestic_violence": ["supporting_evidence"],
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CLARIFYING QUESTIONS  (asked one at a time, stored as list)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -192,6 +257,91 @@ _CLARIFYING_QUESTIONS: dict[str, list[str]] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# FIELD -> QUESTION MAPPING  (used by dynamic clarification path)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Explicit question overrides for always-ask fields.
+# Keys must match ALWAYS_ASK_FIELDS values exactly.
+_FIELD_QUESTION_OVERRIDES: dict[str, str] = {
+    "documentary_proof": (
+        "Do you have any documentary proof? "
+        "(e.g., appointment letter, salary slips, bank statement showing last salary credited, "
+        "Form 16, or any written communication from employer)"
+    ),
+    "supporting_evidence": (
+        "Do you have any supporting evidence? "
+        "(e.g., medical reports, photographs of injuries, witness names, "
+        "police diary entries, written communications)"
+    ),
+}
+
+# keyword fragments used to match field names to existing _CLARIFYING_QUESTIONS text
+_FIELD_KEYWORDS: dict[str, list[str]] = {
+    "complainant_name":            ["your name", "your full name"],
+    "employer_name":               ["name and complete address of your employer"],
+    "employer_address":            ["name and complete address of your employer", "employer"],
+    "unpaid_amount":               ["total amount of unpaid wages", "amount of unpaid"],
+    "unpaid_period":               ["total amount of unpaid wages", "period"],
+    "jurisdiction":                ["state and district", "state and police station"],
+    "landlord_name":               ["landlord", "owner"],
+    "property_address":            ["residential or commercial", "full address"],
+    "monthly_rent":                ["monthly rent", "rent amount"],
+    "eviction_date":               ["written notice before eviction", "landlord give any"],
+    "accused_name":                ["cheque details", "names and addresses of the accused"],
+    "cheque_number":               ["cheque details", "cheque number"],
+    "cheque_amount":               ["cheque details", "amount"],
+    "dishonour_date":              ["cheque dishonoured", "date was the cheque dishonoured"],
+    "dishonour_reason":            ["reason did the bank give", "dishonoured"],
+    "respondent_name":             ["name of the company", "service provider"],
+    "product_service":             ["name of the product or service"],
+    "defect_description":          ["defect in the product", "deficiency in the service"],
+    "relief_sought":               ["lodged a complaint with the company"],
+    "accused_name_or_description": ["names and addresses of the accused"],
+    "incident_description":        ["nature of the offence"],
+    "incident_date":               ["date, time, and exact location"],
+    "incident_location":           ["state and police station", "police station jurisdiction"],
+    "sections_applicable":         ["nature of the offence"],
+    "relationship":                ["relationship with the respondent"],
+    "violence_type":               ["type of violence"],
+    "termination_reason":          ["reason, if any, was given for your termination"],
+    "service_period":              ["total period of service, designation"],
+    "last_salary":                 ["total period of service, designation", "salary"],
+    "lender_name":                 ["full name of the lender"],
+    "loan_amount":                 ["total loan amount"],
+    "loan_type":                   ["type of loan"],
+    "defaulted_emis":              ["how many emis have been defaulted"],
+    "outstanding_amount":          ["total outstanding amount"],
+}
+
+
+def _field_question(field: str, category: str) -> str:
+    """
+    Return a human-readable question for a given REQUIRED_FIELDS field name.
+
+    Resolution order:
+      1. _FIELD_QUESTION_OVERRIDES — explicit string (used for always-ask fields).
+      2. Keyword scan of _CLARIFYING_QUESTIONS[category] — returns the best-matching
+         existing question so users see the same high-quality prompts.
+      3. Generic prettified fallback.
+    """
+    override = _FIELD_QUESTION_OVERRIDES.get(field)
+    if override:
+        return override
+
+    questions = _CLARIFYING_QUESTIONS.get(category, [])
+    keywords  = _FIELD_KEYWORDS.get(field, [field.replace("_", " ")])
+
+    for q in questions:
+        q_lower = q.lower()
+        if any(kw.lower() in q_lower for kw in keywords):
+            return q
+
+    # Generic fallback
+    pretty = field.replace("_", " ").title()
+    return f"Please provide the {pretty} for your {category.replace('_', ' ')} document."
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # FILING AUTHORITY  (rule-based lookup — no LLM)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -229,9 +379,9 @@ _FILING_AUTHORITY: dict[str, str] = {
     "consumer_complaint": (
         "District Consumer Disputes Redressal Commission (DCDRC) under "
         "Section 35 of the Consumer Protection Act, 2019.\n"
-        "— Pecuniary jurisdiction: Claims up to ₹50 lakh → DCDRC; "
-        "₹50 lakh to ₹2 crore → State Consumer Disputes Redressal Commission (SCDRC); "
-        "above ₹2 crore → National Consumer Disputes Redressal Commission (NCDRC).\n"
+        "— Pecuniary jurisdiction: Claims up to ₹50 lakh -> DCDRC; "
+        "₹50 lakh to ₹2 crore -> State Consumer Disputes Redressal Commission (SCDRC); "
+        "above ₹2 crore -> National Consumer Disputes Redressal Commission (NCDRC).\n"
         "— File at the DCDRC of the district where the opposite party resides, "
         "carries on business, or where the cause of action arose.\n"
         "— Online filing also available at: consumerhelpline.gov.in"
@@ -549,11 +699,24 @@ def _build_generation_prompt(
     sections_txt = draft_data.get("applicable_sections_text", "")
 
     # Format answers into a readable block
-    questions = _CLARIFYING_QUESTIONS.get(category, [])
-    facts_block = "\n".join(
-        f"Q{i+1}: {q}\nA{i+1}: {answers.get(str(i), 'Not provided')}"
-        for i, q in enumerate(questions)
-    )
+    if draft_data.get("use_dynamic"):
+        # Dynamic path — labeled facts (LLM-extracted + user-answered)
+        facts_block = "\n".join(
+            f"{k.replace('_', ' ').title()}: {v}"
+            for k, v in answers.items()
+            if k != "correction"
+        )
+    else:
+        # Fallback path — original Q/A format
+        questions = _CLARIFYING_QUESTIONS.get(category, [])
+        facts_block = "\n".join(
+            f"Q{i+1}: {q}\nA{i+1}: {answers.get(str(i), 'Not provided')}"
+            for i, q in enumerate(questions)
+        )
+
+    missing = draft_data.get("missing_elements_to_inject", [])
+    if missing:
+        facts_block += "\n\nCRITICAL FEEDBACK ON PREVIOUS DRAFT:\nYour previous draft was rejected for missing the following required elements:\n- " + "\n- ".join(missing) + "\nYou MUST include them in this new draft."
 
     relief = _STANDARD_RELIEF.get(category, "Such other relief as the authority deems fit.")
 
@@ -1201,7 +1364,138 @@ class DraftingAgent:
             "draft":    "",
         }
 
-    # ── STAGE: START (INIT → CLARIFY) ──────────────────────────────────────────
+    # ── FACT EXTRACTION (Groq JSON-mode) ───────────────────────────────────────
+
+    def _extract_facts(self, query: str, doc_type: str) -> FactExtractionResult:
+        """
+        Extract facts from the user's initial query via a single Groq JSON-mode call.
+
+        Returns FactExtractionResult with extracted_facts, missing_fields, confidence.
+        On any failure -> returns empty extraction (all fields missing, confidence=0.0)
+        so the caller silently falls back to the full sequential question flow.
+        """
+        required = REQUIRED_FIELDS.get(doc_type)
+        if not required:
+            return FactExtractionResult(
+                extracted_facts={}, missing_fields=[], confidence=0.0
+            )
+
+        always_ask = set(ALWAYS_ASK_FIELDS.get(doc_type, []))
+        # Fields the LLM should attempt to extract (exclude always-ask)
+        extractable = [f for f in required if f not in always_ask]
+
+        field_list = ", ".join(extractable)
+        system_prompt = (
+            f"You are a legal fact extractor for LexShield AI.\n"
+            f"Extract facts for a {doc_type.replace('_', ' ')} legal document "
+            f"from the user's query.\n\n"
+            f"Required fields: {field_list}\n\n"
+            f"For each field, extract the value if clearly present in the query.\n"
+            f"If a field is NOT present or cannot be inferred with confidence, "
+            f"include it in missing_fields.\n\n"
+            f"Respond ONLY with valid JSON:\n"
+            f'{{\n'
+            f'  "extracted_facts": {{"field_name": "value", ...}},\n'
+            f'  "missing_fields": ["field_name", ...],\n'
+            f'  "confidence": 0.0\n'
+            f'}}\n\n'
+            f"Rules:\n"
+            f"- Only include a field in extracted_facts if the value is "
+            f"explicitly present in the query.\n"
+            f"- Every required field must appear in exactly one of: "
+            f"extracted_facts or missing_fields.\n"
+            f"- confidence: 0.0–1.0, reflecting overall extraction quality.\n"
+            f"- Do NOT invent or hallucinate values."
+        )
+
+        try:
+            import os
+            from groq import Groq
+
+            api_key = os.getenv("GROQ_API_KEY", "")
+            if not api_key:
+                raise RuntimeError("GROQ_API_KEY not set")
+
+            client = Groq(api_key=api_key)
+            resp = client.chat.completions.create(
+                model           = "llama-3.3-70b-versatile",
+                messages        = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": query},
+                ],
+                temperature     = 0,
+                max_tokens      = 512,
+                response_format = {"type": "json_object"},
+                timeout         = 5,
+            )
+            raw = resp.choices[0].message.content.strip()
+
+            # Parse and validate
+            parsed = json.loads(raw)
+            extracted = parsed.get("extracted_facts", {})
+            missing   = parsed.get("missing_fields", [])
+            conf      = max(0.0, min(1.0, float(parsed.get("confidence", 0.0))))
+
+            # Ensure only valid fields are in extracted_facts
+            valid_extracted = {
+                k: v for k, v in extracted.items()
+                if k in extractable and isinstance(v, str) and v.strip()
+            }
+            # Rebuild missing: anything not successfully extracted
+            valid_missing = [
+                f for f in extractable if f not in valid_extracted
+            ]
+            # Always-ask fields go into missing_fields unconditionally
+            for field in always_ask:
+                if field not in valid_missing:
+                    valid_missing.append(field)
+
+            return FactExtractionResult(
+                extracted_facts=valid_extracted,
+                missing_fields=valid_missing,
+                confidence=conf,
+            )
+
+        except Exception as e:
+            print(f"[DraftingAgent] Fact extraction failed (non-fatal): {e}")
+            # Fallback: all fields missing
+            return FactExtractionResult(
+                extracted_facts={},
+                missing_fields=list(required),
+                confidence=0.0,
+            )
+
+    # ── STAGE: START (INIT -> CLARIFY) ──────────────────────────────────────────
+
+
+    def _field_question(self, field: str, category: str) -> str:
+        """Map a REQUIRED_FIELDS field name to a human-readable question.
+
+        Strategy:
+        1. Check _FIELD_QUESTION_OVERRIDES if it exists.
+        2. Scan _CLARIFYING_QUESTIONS[category] for keyword match.
+        3. Fall back to a generic prettified question.
+        """
+        # Check overrides first
+        overrides = getattr(self, '_FIELD_QUESTION_OVERRIDES', {})
+        key = f"{category}.{field}"
+        if key in overrides:
+            return overrides[key]
+        if field in overrides:
+            return overrides[field]
+
+        # Scan existing clarifying questions for keyword match
+        questions = _CLARIFYING_QUESTIONS.get(category, [])
+        field_keywords = field.replace('_', ' ').lower().split()
+        for q in questions:
+            q_lower = q.lower()
+            if any(kw in q_lower for kw in field_keywords):
+                return q
+
+        # Generic fallback
+        pretty = field.replace('_', ' ').title()
+        pretty_cat = category.replace('_', ' ').title()
+        return f"Please provide the {pretty} for your {pretty_cat} document."
 
     def _start_draft(self, session_id: str, description: str) -> dict:
         category = _detect_category(description)
@@ -1231,10 +1525,63 @@ class DraftingAgent:
 
         label      = _CATEGORY_LABELS[category]
         questions  = _CLARIFYING_QUESTIONS[category]
+
+        # ── Attempt dynamic fact extraction ────────────────────────────────────
+        extraction = self._extract_facts(description, category)
+
+        if extraction.confidence >= 0.5 and extraction.extracted_facts:
+            # Dynamic path — store extracted facts and ask only for missing
+            n_extracted = len(extraction.extracted_facts)
+            n_missing   = len(extraction.missing_fields)
+            print(
+                f"[DraftingAgent] Extracted {n_extracted} facts, "
+                f"{n_missing} fields missing for {category}"
+            )
+
+            draft_data = {
+                "answers":                  dict(extraction.extracted_facts),
+                "current_q_index":          0,
+                "missing_fields":           list(extraction.missing_fields),
+                "use_dynamic":              True,
+                "applicable_sections_text": "",
+                "authority":                "",
+            }
+
+            if not extraction.missing_fields:
+                # All facts present — skip CLARIFY entirely
+                self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
+                return self._retrieve_sections(
+                    session_id, {"category": category, "draft_data": draft_data}
+                )
+
+            # Some fields missing — ask the first one
+            first_field = extraction.missing_fields[0]
+            first_q     = _field_question(first_field, category)
+            self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+
+            return {
+                "answer": (
+                    f"I will help you draft a **{label}**.\n\n"
+                    f"I've noted the details you provided. I just need a few more:\n\n"
+                    f"**Question 1 of {n_missing}:**\n{first_q}"
+                ),
+                "stage":    DraftStage.CLARIFY,
+                "doc_type": category,
+                "complete": False,
+                "draft":    "",
+            }
+
+        # ── Fallback path — full sequential questioning ────────────────────────
+        print(
+            f"[DraftingAgent] Extracted 0 facts, "
+            f"{len(REQUIRED_FIELDS.get(category, []))} fields missing for {category}"
+        )
+
         first_q    = questions[0]
         draft_data = {
-            "answers":          {},    # q_index (str) → answer
+            "answers":          {},    # q_index (str) -> answer
             "current_q_index":  0,
+            "use_dynamic":      False,
             "applicable_sections_text": "",
             "authority":        "",
         }
@@ -1259,7 +1606,38 @@ class DraftingAgent:
     def _process_answer(self, session_id: str, answer: str, row: dict) -> dict:
         category   = row["category"]
         draft_data = row["draft_data"]
-        questions  = _CLARIFYING_QUESTIONS[category]
+        use_dynamic = draft_data.get("use_dynamic", False)
+
+        if use_dynamic:
+            # ── Dynamic path — iterate over missing_fields ─────────────────────
+            missing = draft_data.get("missing_fields", [])
+            idx     = draft_data["current_q_index"]
+            field   = missing[idx]
+            draft_data["answers"][field] = answer.strip()
+
+            next_idx = idx + 1
+            if next_idx < len(missing):
+                draft_data["current_q_index"] = next_idx
+                next_field = missing[next_idx]
+                next_q     = _field_question(next_field, category)
+                self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+                return {
+                    "answer": (
+                        f"**Question {next_idx + 1} of {len(missing)}:**\n"
+                        f"{next_q}"
+                    ),
+                    "stage":    DraftStage.CLARIFY,
+                    "doc_type": category,
+                    "complete": False,
+                    "draft":    "",
+                }
+
+            # All missing fields answered -> RETRIEVE_SECTIONS
+            self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
+            return self._retrieve_sections(session_id, {"category": category, "draft_data": draft_data})
+
+        # ── Fallback path — original sequential loop ───────────────────────────
+        questions = _CLARIFYING_QUESTIONS[category]
 
         idx = draft_data["current_q_index"]
         draft_data["answers"][str(idx)] = answer.strip()
@@ -1325,13 +1703,22 @@ class DraftingAgent:
         category   = row["category"]
         draft_data = row["draft_data"]
         answers    = draft_data.get("answers", {})
-        questions  = _CLARIFYING_QUESTIONS.get(category, [])
 
         outline_lines = []
-        for i, q in enumerate(questions):
-            a = answers.get(str(i), "Not provided")
-            # Show only first 100 chars of each answer
-            outline_lines.append(f"  • {q.split('?')[0]}: {a[:100]}{'...' if len(a) > 100 else ''}")
+        if draft_data.get("use_dynamic"):
+            # Dynamic path — labeled field->value pairs
+            for field, value in answers.items():
+                if field == "correction":
+                    continue
+                pretty = field.replace("_", " ").title()
+                val_display = value[:100] + ("..." if len(value) > 100 else "")
+                outline_lines.append(f"  • {pretty}: {val_display}")
+        else:
+            # Fallback path — original Q/A index-based outline
+            questions = _CLARIFYING_QUESTIONS.get(category, [])
+            for i, q in enumerate(questions):
+                a = answers.get(str(i), "Not provided")
+                outline_lines.append(f"  • {q.split('?')[0]}: {a[:100]}{'...' if len(a) > 100 else ''}")
         outline_str = "\n".join(outline_lines)
 
         authority_short = draft_data.get("authority", "").split("\n")[0]
@@ -1386,11 +1773,35 @@ class DraftingAgent:
 
         print(f"[DraftingAgent] Generating {category} draft for session {session_id[:8]}…")
 
+        validation_status = "passed"
         try:
             draft_text = self._call_llm(category, draft_data)
+            
+            # Validation Step
+            val_result = self._validate_draft(draft_text, category)
+            if not val_result.get("passed", True):
+                missing_items = val_result.get("missing", [])
+                print(f"[DraftingAgent] Validation failed. Missing: {missing_items}. Regenerating...")
+                
+                draft_data["missing_elements_to_inject"] = missing_items
+                draft_text_2 = self._call_llm(category, draft_data)
+                
+                # Validate second attempt
+                val_result_2 = self._validate_draft(draft_text_2, category)
+                if not val_result_2.get("passed", True):
+                    print(f"[DraftingAgent] Second attempt failed validation. Returning as-is.")
+                    validation_status = "failed_returned"
+                else:
+                    print(f"[DraftingAgent] Second attempt passed validation.")
+                    validation_status = "failed_regenerated"
+                
+                draft_text = draft_text_2
+                draft_data["missing_elements"] = missing_items
+
         except Exception as e:
             print(f"[DraftingAgent] LLM generation failed: {e}")
             draft_text = f"[Draft generation failed: {e}. Please try again.]"
+            validation_status = "failed_returned"
 
         # Mark DONE
         self._save(session_id, DraftStage.DONE, category, draft_data)
@@ -1419,7 +1830,36 @@ class DraftingAgent:
             "complete":  True,
             "draft":     draft_text,
             "draft_data": draft_data,
+            "validation_status": validation_status,
         }
+
+    # ── Validation ─────────────────────────────────────────────────────────────
+    
+    def _validate_draft(self, draft_text: str, doc_type: str) -> dict:
+        prompt = f"""You are a legal document validator. Check if this {doc_type} draft contains ALL of:
+1. Party names (complainant and respondent)
+2. Specific legal basis or act cited
+3. Clear statement of facts
+4. Specific relief sought
+5. Verification/declaration clause
+Respond ONLY as JSON: {{"passed": true}} or {{"passed": false, "missing": ["item1", "item2"]}}
+
+Draft to validate:
+{draft_text}"""
+        try:
+            from rag.llm import llm
+            response = llm.generate(
+                prompt=prompt, 
+                system_prompt="You are a strict legal validator outputting ONLY JSON.", 
+                temperature=0.0, 
+                max_tokens=200
+            )
+            
+            clean_json = response.strip().strip('`').replace('json', '').strip()
+            return json.loads(clean_json)
+        except Exception as e:
+            print(f"[DraftingAgent] Validation parse error: {e}")
+            return {"passed": True}
 
     # ── LLM call ───────────────────────────────────────────────────────────────
 

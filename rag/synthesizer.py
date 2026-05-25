@@ -25,6 +25,7 @@ Everything else (grounding checker, synthesis note, LegalAnswer) unchanged.
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+from langsmith import traceable
 
 
 # ── Structured citation ───────────────────────────────────────────────────────
@@ -92,12 +93,12 @@ PAIRED_ACT_SYSTEM_PROMPT = """You are LexShield, an AI legal assistant specialis
 You will receive numbered legal sources from BOTH old Indian laws AND their 2023 replacements.
 
 IMPORTANT CONTEXT — Indian Criminal Law Reform (effective July 1, 2024):
-  • Indian Penal Code (IPC) 1860      → replaced by Bharatiya Nyaya Sanhita (BNS) 2023
-  • Code of Criminal Procedure (CrPC) → replaced by Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023
-  • Indian Evidence Act 1872          → replaced by Bharatiya Sakshya Adhiniyam (BSA) 2023
+  • Indian Penal Code (IPC) 1860      -> replaced by Bharatiya Nyaya Sanhita (BNS) 2023
+  • Code of Criminal Procedure (CrPC) -> replaced by Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023
+  • Indian Evidence Act 1872          -> replaced by Bharatiya Sakshya Adhiniyam (BSA) 2023
 
-  For offences/cases BEFORE July 1, 2024 → the OLD law (IPC/CrPC/Evidence Act) applies.
-  For offences/cases ON OR AFTER July 1, 2024 → the NEW law (BNS/BNSS/BSA) applies.
+  For offences/cases BEFORE July 1, 2024 -> the OLD law (IPC/CrPC/Evidence Act) applies.
+  For offences/cases ON OR AFTER July 1, 2024 -> the NEW law (BNS/BNSS/BSA) applies.
   Old cases already in court continue under the old law even after July 1, 2024.
 
 STRICT RULES — follow every one:
@@ -244,8 +245,6 @@ def build_citations(chunks: list[dict]) -> list[Citation]:
 # ── Grounding checker ─────────────────────────────────────────────────────────
 
 _HALLUCINATION_SIGNALS = [
-    "generally speaking", "typically", "usually",
-    "in most cases", "it is widely understood", "commonly known", "experts say",
     "legal experts", "lawyers agree", "based on my knowledge",
     "i believe", "i think",
 ]
@@ -265,7 +264,47 @@ def check_grounding(answer_text: str, chunks: list[dict]) -> Optional[str]:
     }
     phantom = cited_secs - available_secs
     if phantom:
-        return f"Answer cites section(s) {phantom} not found in retrieved sources. Possible hallucination."
+        true_hallucinations = list(phantom)
+        try:
+            from rag.knowledge_graph import get_related_sections
+            
+            retrieved_graph_ids = []
+            for c in chunks:
+                sec = str(c.get("section", ""))
+                src = c.get("source", "")
+                if sec and len(sec) >= 2 and src != "Knowledge Graph":
+                    src_lower = src.lower()
+                    acronym = src
+                    if "penal code" in src_lower or "ipc" in src_lower: acronym = "IPC"
+                    elif "nyaya sanhita" in src_lower or "bns" in src_lower: acronym = "BNS"
+                    elif "criminal procedure" in src_lower or "crpc" in src_lower: acronym = "CrPC"
+                    elif "nagarik suraksha" in src_lower or "bnss" in src_lower: acronym = "BNSS"
+                    elif "negotiable" in src_lower or "ni act" in src_lower: acronym = "NI"
+                    elif "consumer protection" in src_lower or "cpa" in src_lower: acronym = "CPA"
+                    elif "evidence act" in src_lower or "iea" in src_lower: acronym = "IEA"
+                    elif "sakshya" in src_lower or "bsa" in src_lower: acronym = "BSA"
+                    elif "pocso" in src_lower or "protection of children" in src_lower: acronym = "POCSO"
+                    elif "narcotic" in src_lower or "ndps" in src_lower: acronym = "NDPS"
+                    elif "unlawful" in src_lower or "uapa" in src_lower: acronym = "UAPA"
+                    
+                    retrieved_graph_ids.append(f"{acronym}_{sec}")
+                    
+            def is_graph_neighbor(mentioned_section: str, retrieved_ids: list[str], hops: int = 2) -> bool:
+                for retrieved_id in retrieved_ids:
+                    related = get_related_sections(retrieved_id, hops=hops)
+                    if any(mentioned_section == rid.split("_")[-1] for rid in related):
+                        return True
+                return False
+
+            true_hallucinations = [
+                s for s in phantom
+                if not is_graph_neighbor(s, retrieved_graph_ids, hops=2)
+            ]
+        except Exception as e:
+            pass
+            
+        if true_hallucinations:
+            return f"Answer cites section(s) {set(true_hallucinations)} not found in retrieved sources or related graph. Possible hallucination."
 
     inline = re.findall(r'\[\d+\]', answer_text)
     if not inline and len(answer_text) > 100:
@@ -295,6 +334,7 @@ def build_synthesis_note(chunks: list[dict]) -> str:
 
 # ── Main synthesize function ──────────────────────────────────────────────────
 
+@traceable(name="synthesizer.synthesize", run_type="chain")
 def synthesize(
     query:             str,
     chunks:            list[dict],

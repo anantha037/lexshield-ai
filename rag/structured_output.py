@@ -61,6 +61,7 @@ class LexShieldResponse:
     session_id:        str
     confidence:        float
     mode:              str
+    citation_status:   str
 
     # RAG metadata
     sources_consulted: int
@@ -68,6 +69,16 @@ class LexShieldResponse:
     grounding_warning: str
     rewritten_queries: list[str]
     reranker_used:     bool
+
+    # Case law (populated only when intent == case_law_search)
+    case_law_results:  list[dict] = field(default_factory=list)
+    
+    validation_status: str = "not_applicable"
+    scope_status:      str = "in_scope"
+    scope_message:     Optional[str] = None
+
+    # Debug scratchpad (populated from final graph state when ?debug=true)
+    debug_scratchpad:  Optional[dict] = None
 
     @staticmethod
     def _safe_str(value) -> str:
@@ -110,11 +121,18 @@ class LexShieldResponse:
             "session_id":        s(self.session_id),
             "confidence":        self.confidence,
             "mode":              s(self.mode),
+            "citation_status":   s(self.citation_status),
+            "validation_status": s(self.validation_status),
+            "scope_status":      s(self.scope_status),
+            "scope_message":     s(self.scope_message),
+            "kg_sections_used":  [s(k) for k in self.kg_sections_used],
             "sources_consulted": self.sources_consulted,
             "synthesis_note":    s(self.synthesis_note),
             "grounding_warning": s(self.grounding_warning),
             "rewritten_queries": [s(q) for q in self.rewritten_queries],
             "reranker_used":     self.reranker_used,
+            "case_law_results":  self.case_law_results,
+            "debug_scratchpad":  self.debug_scratchpad,
         }
 
 
@@ -241,15 +259,22 @@ def build_structured_response(
     session_id:        str,
     confidence:        float,
     mode:              str,
-    citations:         list[Citation]  = None,
-    draft:             str             = "",
-    sources_consulted: int             = 0,
-    synthesis_note:    str             = "",
-    grounding_warning: str             = "",
-    rewritten_queries: list[str]       = None,
-    reranker_used:     bool            = False,
-    doc_type:          str             = "",
-    entities:          dict            = None,
+    citations:         list[Citation]      = None,
+    draft:             str                 = "",
+    sources_consulted: int                 = 0,
+    synthesis_note:    str                 = "",
+    grounding_warning: str                 = "",
+    rewritten_queries: Optional[list[str]] = None,
+    reranker_used:     bool                = False,
+    citation_status:   str                 = "unverified",
+    validation_status: str                 = "not_applicable",
+    scope_status:      str                 = "in_scope",
+    scope_message:     Optional[str]       = None,
+    kg_sections_used:  Optional[list[str]] = None,
+    doc_type:          str                 = "",
+    entities:          dict                = None,
+    case_law_results:  list[dict]          = None,
+    debug_scratchpad:  Optional[dict]      = None,
 ) -> LexShieldResponse:
     """
     Build a fully structured LexShieldResponse from raw agent output.
@@ -261,6 +286,11 @@ def build_structured_response(
         session_id:        session identifier
         confidence:        intent confidence
         mode:              agent node that handled request
+        citation_status:   'cited', 'partial', or 'unverified'
+        validation_status: 'passed', 'failed_regenerated', 'failed_returned', 'not_applicable'
+        scope_status:      'in_scope', 'out_of_scope', etc.
+        scope_message:     reason if out of scope
+        kg_sections_used:  list of KG sections referenced
         citations:         Citation list from LegalAnswer
         draft:             completed draft (DraftingAgent only)
         sources_consulted: chunk count used
@@ -277,6 +307,8 @@ def build_structured_response(
     citations         = citations         or []
     rewritten_queries = rewritten_queries or []
     entities          = entities          or {}
+    case_law_results  = case_law_results  or []
+    kg_sections_used  = kg_sections_used  or []
 
     # ── Summary ────────────────────────────────────────────────────────────────
     summary = _extract_summary(answer_text)
@@ -312,6 +344,16 @@ def build_structured_response(
         "Consult a qualified Indian advocate for advice specific to your situation.",
     ]
 
+    # Honor the citation_status derived by the orchestrator.
+    # Fall back to citation-list inference only when the caller
+    # did not supply an explicit status.
+    if citation_status == "unverified":          # default / not overridden by caller
+        if citations and not grounding_warning:
+            citation_status = "cited"
+        elif citations and grounding_warning:
+            citation_status = "partial"
+        # else stays "unverified"
+
     return LexShieldResponse(
         answer_text       = answer_text,
         summary           = summary,
@@ -326,9 +368,13 @@ def build_structured_response(
         session_id        = session_id,
         confidence        = confidence,
         mode              = mode,
+        citation_status   = citation_status,
+        validation_status = validation_status,
         sources_consulted = sources_consulted,
         synthesis_note    = synthesis_note,
         grounding_warning = grounding_warning or "",
         rewritten_queries = rewritten_queries,
         reranker_used     = reranker_used,
+        case_law_results  = case_law_results,
+        debug_scratchpad  = debug_scratchpad,
     )

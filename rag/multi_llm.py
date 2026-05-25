@@ -6,8 +6,8 @@ Production-grade LLM client with proactive provider failover.
 Architecture:
   - Sliding window rate tracker per provider (avoids 429 before it happens)
   - Circuit breaker per provider (backs off after 3 consecutive failures)
-  - Priority queue: Groq → OpenRouter Llama → OpenRouter Qwen → Gemini →
-                    OpenRouter Nemotron → OpenRouter DeepSeek → OpenRouter Mistral
+  - Priority queue: Groq -> OpenRouter Llama -> OpenRouter Qwen -> Gemini ->
+                    OpenRouter Nemotron -> OpenRouter DeepSeek -> OpenRouter Mistral
   - Identical generate() interface to LegalLLM — drop-in replacement
   - get_langchain_llm() returns a LangChain-compatible LLM for RAGAS eval
 
@@ -166,11 +166,11 @@ class MultiLLMRouter:
       Each provider maintains a deque of request timestamps.
       Before dispatching, we prune entries older than 60s and compare
       len(deque) against (rpm_limit - preempt_buffer).
-      If near-limit → skip to next provider without making an API call.
+      If near-limit -> skip to next provider without making an API call.
       Only if all providers are near-limit do we sleep and retry.
 
     Circuit breaker:
-      3 consecutive failures → circuit opens for 5 minutes.
+      3 consecutive failures -> circuit opens for 5 minutes.
       Prevents hammering a provider that is returning 5xx errors.
     """
 
@@ -199,7 +199,7 @@ class MultiLLMRouter:
         )
         print(
             f"[MultiLLMRouter] {len(self._available_providers)} provider(s) ready: "
-            f"{' → '.join(p.name for p in self._available_providers)}"
+            f"{' -> '.join(p.name for p in self._available_providers)}"
         )
 
     def _init_clients(self):

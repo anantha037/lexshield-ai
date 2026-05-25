@@ -135,8 +135,8 @@ def check_grounding(grounding_warning: str | None) -> tuple[bool, str]:
 def check_multi_source(citations: list, answer_text: str, expected: bool) -> tuple[bool, str]:
     """
     Check 3: multi-source synthesis.
-    If expected=True  → at least 2 different sources must be cited.
-    If expected=False → single source is acceptable; just verify at least 1 cited.
+    If expected=True  -> at least 2 different sources must be cited.
+    If expected=False -> single source is acceptable; just verify at least 1 cited.
     """
     distinct_sources = {c.source for c in citations}
     # Count how many distinct sources appear in the answer via [N] references
@@ -221,8 +221,8 @@ def print_results(results: list[QueryResult]) -> None:
 
     passed_total = 0
     for r in results:
-        marks = [("✓" if r.checks[cn] else "✗") for cn in CHECK_NAMES]
-        status = "✓ YES" if r.passed else "✗ NO "
+        marks = [("OK" if r.checks[cn] else "FAIL") for cn in CHECK_NAMES]
+        status = "OK YES" if r.passed else "FAIL NO "
         query_short = r.query[:40]
         print(f"{r.query_id:>2}  {query_short:<40}  "
               f"{marks[0]:^4} {marks[1]:^4} {marks[2]:^4} {marks[3]:^4}  {status}")
@@ -235,9 +235,9 @@ def print_results(results: list[QueryResult]) -> None:
 
     target = 8
     if passed_total >= target:
-        print(f"✓ TARGET MET ({passed_total} >= {target}). Day 3 checkpoint passed.")
+        print(f"OK TARGET MET ({passed_total} >= {target}). Day 3 checkpoint passed.")
     else:
-        print(f"✗ TARGET NOT MET ({passed_total} < {target}). "
+        print(f"FAIL TARGET NOT MET ({passed_total} < {target}). "
               f"Review failing checks below and tune the synthesis prompt.")
 
     # Failure details
@@ -248,7 +248,7 @@ def print_results(results: list[QueryResult]) -> None:
             print(f"\n  Q{r.query_id}: {r.query}")
             for cn in CHECK_NAMES:
                 if not r.checks[cn]:
-                    print(f"    ✗ {cn}: {r.reasons[cn]}")
+                    print(f"    FAIL {cn}: {r.reasons[cn]}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -106,10 +106,10 @@ else:
     # Show what will be processed
     if args.category:
         relevant = [c for c in STATUTE_CONFIGS if c.get("category") == args.category]
-        print(f"Category filter: '{args.category}' → {len(relevant)} statute(s)")
+        print(f"Category filter: '{args.category}' -> {len(relevant)} statute(s)")
     elif args.slugs:
         relevant = [c for c in STATUTE_CONFIGS if c["slug"] in args.slugs]
-        print(f"Slug filter: {args.slugs} → {len(relevant)} statute(s)")
+        print(f"Slug filter: {args.slugs} -> {len(relevant)} statute(s)")
         missing = set(args.slugs) - {c["slug"] for c in relevant}
         if missing:
             print(f"  ⚠️  Unknown slugs (check STATUTE_CONFIGS): {missing}")

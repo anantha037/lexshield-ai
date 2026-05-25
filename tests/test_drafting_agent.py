@@ -30,7 +30,7 @@ def test_unknown_doc_type_returns_menu(agent):
     assert result["complete"] == False
     assert "FIR" in result["answer"]
     assert "Legal Notice" in result["answer"]
-    print(f"\n✓ Unknown doc type → menu shown")
+    print(f"\nOK Unknown doc type -> menu shown")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -41,7 +41,7 @@ def test_fir_three_turn_workflow(agent):
     """
     Turn 1: Trigger FIR draft
     Turn 2: Provide incident details
-    Turn 3: Provide party details → get draft
+    Turn 3: Provide party details -> get draft
     """
     sid = "fir-session-001"
 
@@ -52,7 +52,7 @@ def test_fir_three_turn_workflow(agent):
     assert r1["complete"] == False
     assert "incident" in r1["answer"].lower() or "happened" in r1["answer"].lower()
     assert agent.has_active_draft(sid)
-    print(f"\n✓ FIR Turn 1 — stage=1, asking for incident details")
+    print(f"\nOK FIR Turn 1 — stage=1, asking for incident details")
 
     # Turn 2 — incident details
     r2 = agent.handle(
@@ -64,7 +64,7 @@ def test_fir_three_turn_workflow(agent):
     assert r2["complete"] == False
     assert "party" in r2["answer"].lower() or "name" in r2["answer"].lower()
     assert agent.has_active_draft(sid)
-    print(f"\n✓ FIR Turn 2 — stage=2, asking for party details")
+    print(f"\nOK FIR Turn 2 — stage=2, asking for party details")
 
     # Turn 3 — party details + draft generation (mock LLM)
     mock_draft = (
@@ -88,7 +88,7 @@ def test_fir_three_turn_workflow(agent):
     assert r3["draft"]    == mock_draft
     assert mock_draft in r3["answer"]
     assert not agent.has_active_draft(sid)  # session cleaned up
-    print(f"\n✓ FIR Turn 3 — draft generated, session cleared")
+    print(f"\nOK FIR Turn 3 — draft generated, session cleared")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -103,7 +103,7 @@ def test_legal_notice_ni_three_turn_workflow(agent):
     assert r1["stage"]    == 1
     assert r1["doc_type"] == "legal_notice_ni"
     assert "cheque" in r1["answer"].lower()
-    print(f"\n✓ NI Notice Turn 1 — stage=1, asking for cheque details")
+    print(f"\nOK NI Notice Turn 1 — stage=1, asking for cheque details")
 
     # Turn 2
     r2 = agent.handle(
@@ -114,7 +114,7 @@ def test_legal_notice_ni_three_turn_workflow(agent):
     )
     assert r2["stage"]    == 2
     assert r2["complete"] == False
-    print(f"\n✓ NI Notice Turn 2 — stage=2, asking for party details")
+    print(f"\nOK NI Notice Turn 2 — stage=2, asking for party details")
 
     # Turn 3 with mock
     mock_draft = "LEGAL NOTICE\nUnder Section 138 NI Act...[complete notice]..."
@@ -129,7 +129,7 @@ def test_legal_notice_ni_three_turn_workflow(agent):
     assert r3["complete"] == True
     assert r3["draft"]    == mock_draft
     assert not agent.has_active_draft(sid)
-    print(f"\n✓ NI Notice Turn 3 — draft generated, session cleared")
+    print(f"\nOK NI Notice Turn 3 — draft generated, session cleared")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -151,7 +151,7 @@ def test_has_active_draft_lifecycle(agent):
         agent.handle("My name is Test User", session_id=sid)
     assert not agent.has_active_draft(sid)                          # after stage 3
 
-    print(f"\n✓ has_active_draft lifecycle correct across all 3 stages")
+    print(f"\nOK has_active_draft lifecycle correct across all 3 stages")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -170,7 +170,7 @@ def test_cancel_draft(agent):
 
     # Cancel non-existent returns False
     assert agent.cancel_draft("no-such-session") == False
-    print(f"\n✓ cancel_draft clears session correctly")
+    print(f"\nOK cancel_draft clears session correctly")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -207,4 +207,4 @@ def test_graph_routes_active_draft_followup():
 
     # Cleanup
     drafting_agent.cancel_draft(sid)
-    print(f"\n✓ Active draft session overrides intent routing → draft_node")
+    print(f"\nOK Active draft session overrides intent routing -> draft_node")

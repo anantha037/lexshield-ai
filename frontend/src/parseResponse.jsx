@@ -6,7 +6,10 @@ const BOLD_RE = /\*\*([^*\n]+)\*\*/g;
 
 function parseLine(line, keyPrefix) {
   const result = [];
-  const combined = new RegExp(`${CITATION_RE.source}|\\*\\*([^*\\n]+)\\*\\*`, 'g');
+  const combined = new RegExp(
+    `${CITATION_RE.source}|\\*\\*([^*\\n]+)\\*\\*|\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)`,
+    'g'
+  );
   let last = 0;
   let idx = 0;
   let m;
@@ -19,6 +22,19 @@ function parseLine(line, keyPrefix) {
     } else if (m[2]) {
       // bold match
       result.push(<strong key={`${keyPrefix}-${idx++}`}>{m[2]}</strong>);
+    } else if (m[3] && m[4]) {
+      // markdown link match: [linkText](url)
+      result.push(
+        <a
+          key={`${keyPrefix}-${idx++}`}
+          href={m[4]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="parsed-link"
+        >
+          {m[3]}
+        </a>
+      );
     }
     last = m.index + m[0].length;
   }

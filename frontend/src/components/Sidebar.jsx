@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { deleteSession, getSessionHistory } from '../api';
-import { IconChat, IconDocument, IconDraft, IconShield, IconScale, IconPlus, IconTrash, IconLogout } from '../icons';
+import { IconChat, IconDocument, IconDraft, IconShield, IconScale, IconPlus, IconTrash, IconLogout, IconGavel } from '../icons';
 
 function timeAgo(ts) {
   if (!ts) return '';
@@ -16,6 +16,7 @@ const NAV = [
   { id: 'chat',     Icon: IconChat,     label: 'Legal Q&A' },
   { id: 'document', Icon: IconDocument, label: 'Document Analysis' },
   { id: 'draft',    Icon: IconDraft,    label: 'Draft Complaint' },
+  { id: 'caselaw',  Icon: IconGavel,    label: 'Case Law' },
   { id: 'rights',   Icon: IconShield,   label: 'Know Your Rights' },
 ];
 
@@ -54,7 +55,8 @@ export default function Sidebar() {
     user, logout, activeView, setActiveView, 
     sessions, activeSession, setActiveSession, 
     refreshSessions, toast, setChatMessages, 
-    setDraftCategory, setCurrentDoc 
+    setDraftCategory, setCurrentDoc,
+    caseLawMode, setCaseLawMode,
   } = useStore();
 
   useEffect(() => {
@@ -76,6 +78,16 @@ export default function Sidebar() {
   };
 
   const handleNavClick = (id) => {
+    if (id === 'caselaw') {
+      // Case Law is rendered inside ChatView with case law mode on
+      setCaseLawMode(true);
+      setChatMessages([]);
+      setActiveSession(null);
+      setActiveView('chat');
+      return;
+    }
+    // Clicking any non-caselaw nav disables case law mode
+    if (caseLawMode) setCaseLawMode(false);
     if (activeView === id) {
       if (id === 'chat') {
         setChatMessages([]);
@@ -94,6 +106,7 @@ export default function Sidebar() {
     setActiveSession(null);
     setChatMessages([]);
     setDraftCategory(null);
+    setCaseLawMode(false);
     setActiveView('chat');
   };
 
@@ -117,7 +130,15 @@ export default function Sidebar() {
       const data = await getSessionHistory(sid);
       const hist = data?.history || data;
       if (Array.isArray(hist)) {
-        setChatMessages(hist.map(h => ({ role: h.role, content: h.content, intent: h.intent, ts: h.ts })));
+        setChatMessages(hist.map(h => ({ 
+          role: h.role, 
+          content: h.content, 
+          intent: h.intent, 
+          ts: h.ts,
+          citationStatus: h.citation_status || h.citationStatus || 'unverified',
+          scopeStatus: h.scope_status || h.scopeStatus || 'in_scope',
+          scopeMessage: h.scope_message || h.scopeMessage || ''
+        })));
       }
       setActiveSession(sid);
       setActiveView('chat');
@@ -157,7 +178,8 @@ export default function Sidebar() {
         sessions: sessions.slice(0, 5) // last 5 sessions of any type
       };
     }
-    return { label: '', sessions: [] };
+    // caselaw shares sessions with chat (both use master/query)
+    return { label: 'RECENT QUERIES', sessions: sessions.slice(0, 5) };
   };
 
   const { label, sessions: filteredSessions } = getFilteredSessions();
@@ -199,7 +221,7 @@ export default function Sidebar() {
         {NAV.map(({ id, Icon, label }) => (
           <div 
             key={id} 
-            className={`nav-item ${activeView === id ? 'active' : ''}`}
+            className={`nav-item ${activeView === id ? 'active' : ''} ${id === 'caselaw' && caseLawMode && activeView === 'chat' ? 'active' : ''}`}
             onClick={() => handleNavClick(id)}
           >
             <Icon />

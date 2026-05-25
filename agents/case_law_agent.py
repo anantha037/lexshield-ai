@@ -20,19 +20,22 @@ Optional enrichment flag (default: true):
   that mentions specific IPC/BNS section numbers.
 
 Architecture note:
-  search_cases()          → raw API call → list of case dicts
-  summarize_case()        → Groq 2-sentence summary of one case
-  search_and_summarize()  → search + summarize all results → structured dict
-  format_case_law_response() → dict → formatted markdown string for state["response"]
+  search_cases()          -> raw API call -> list of case dicts
+  summarize_case()        -> Groq 2-sentence summary of one case
+  search_and_summarize()  -> search + summarize all results -> structured dict
+  format_case_law_response() -> dict -> formatted markdown string for state["response"]
 """
 
 import os
 import re
 import time
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
 import requests
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -167,9 +170,9 @@ def search_cases(query: str, max_results: int = 3) -> list[dict]:
       Header:    Authorization: Token <INDIANKANOON_API_KEY>
 
     Error handling:
-      Timeout, connection errors, HTTP errors → log warning, return [].
-      API returns empty docs array → return [].
-      Missing INDIANKANOON_API_KEY → log warning, return [].
+      Timeout, connection errors, HTTP errors -> log warning, return [].
+      API returns empty docs array -> return [].
+      Missing INDIANKANOON_API_KEY -> log warning, return [].
 
     Args:
         query:       English-language legal search query.
@@ -213,8 +216,8 @@ def search_cases(query: str, max_results: int = 3) -> list[dict]:
             f"for: {query[:60]!r}"
         )
         return []
-    except requests.exceptions.ConnectionError:
-        logger.warning("[CaseLawAgent] Connection error — Indian Kanoon unreachable")
+    except requests.exceptions.ConnectionError as e:
+        logger.warning(f"[CaseLawAgent] Connection error — Indian Kanoon unreachable. Exception: {e}")
         return []
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "?"
@@ -271,7 +274,7 @@ _SUMMARISE_SYSTEM = (
 )
 
 
-def summarize_case(case: dict, groq_client) -> str:
+async def summarize_case(case: dict, groq_client) -> str:
     """
     Generate a precise 2-sentence precedent summary of an Indian court case.
 
@@ -313,12 +316,14 @@ def summarize_case(case: dict, groq_client) -> str:
     )
 
     try:
-        result = groq_client.generate(
+        result = await asyncio.to_thread(
+            groq_client.generate,
             prompt        = prompt,
             system_prompt = _SUMMARISE_SYSTEM,
             max_tokens    = 220,
             temperature   = 0.1,
-        ).strip()
+        )
+        result = result.strip()
 
         if not result:
             raise ValueError("Empty response from LLM")
@@ -338,7 +343,42 @@ def summarize_case(case: dict, groq_client) -> str:
 # COMBINED: SEARCH + SUMMARISE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def search_and_summarize(
+def _validate_case_results(results: list[dict]) -> list[dict]:
+    valid_results = []
+    for i, item in enumerate(results):
+        case = item.get("case", {})
+        summary = item.get("summary", "")
+        
+        reasons = []
+        if not case.get("title"): reasons.append("missing title")
+        if not case.get("citation"): reasons.append("missing citation")
+        if not case.get("court"): reasons.append("missing court")
+        if not case.get("date"): reasons.append("missing date")
+        if not case.get("url"): 
+            reasons.append("missing url")
+        elif not str(case.get("url")).startswith("https://"):
+            reasons.append("invalid url format")
+            
+        if not summary or len(summary) < 30:
+            reasons.append(f"summary too short ({len(summary) if summary else 0} chars)")
+            
+        if reasons:
+            print(f"[DEBUG CaseLaw] Case {i} failed. reasons={reasons}")
+            print(f"  title: {case.get('title')}")
+            print(f"  citation: {case.get('citation')}")
+            print(f"  court: {case.get('court')}")
+            print(f"  date: {case.get('date')}")
+            print(f"  url: {case.get('url')}")
+            print(f"  summary len: {len(summary) if summary else 0}")
+            logger.warning(f"[CaseLawAgent] Case {i} failed validation: {', '.join(reasons)}")
+        else:
+            valid_results.append(item)
+            
+    return valid_results
+
+
+@traceable(name="case_law.search_and_summarize", run_type="chain")
+async def search_and_summarize(
     query:       str,
     groq_client,
     max_results: int = 3,
@@ -346,8 +386,7 @@ def search_and_summarize(
     """
     End-to-end case law search + summarisation pipeline.
 
-    Calls search_cases() → summarize_case() for each result.
-    A 300ms sleep between Groq calls respects free-tier rate limits.
+    Calls search_cases() -> summarize_case() for each result concurrently.
 
     Args:
         query:       Legal search query (English)
@@ -362,21 +401,43 @@ def search_and_summarize(
         }
 
     Example:
-        result = search_and_summarize(
+        result = await search_and_summarize(
             "Section 138 NI Act cheque bounce conviction precedent",
             groq_client = llm,
         )
-        # result["results"][0]["case"]["title"] → "MMTC Ltd. v. Medchi Chemicals..."
-        # result["results"][0]["summary"]       → "The Supreme Court held that..."
+        # result["results"][0]["case"]["title"] -> "MMTC Ltd. v. Medchi Chemicals..."
+        # result["results"][0]["summary"]       -> "The Supreme Court held that..."
     """
     cases = search_cases(query, max_results=max_results)
 
     enriched: list[dict] = []
-    for case in cases:
-        summary = summarize_case(case, groq_client)
-        enriched.append({"case": case, "summary": summary})
-        if len(enriched) < len(cases):
-            time.sleep(_GROQ_DELAY_SECONDS)  # rate-limit buffer
+    if cases:
+        summaries = await asyncio.gather(
+            *[summarize_case(case, groq_client) for case in cases],
+            return_exceptions=True
+        )
+
+        for i, (case, summary) in enumerate(zip(cases, summaries)):
+            if isinstance(summary, Exception):
+                logger.error(f"[CaseLawAgent] Summarization failed for case {i}: {summary}")
+                summary_text = (
+                    f"The {case.get('court', 'Indian Court')} decided {case.get('title', 'Unknown case')} on {case.get('date', '')}. "
+                    f"This judgment is available on Indian Kanoon for reference."
+                )
+            else:
+                summary_text = summary
+                
+            enriched.append({"case": case, "summary": summary_text})
+            
+        # Validate structural constraints
+        enriched = _validate_case_results(enriched)
+
+    rt = get_current_run_tree()
+    if rt:
+        rt.add_metadata({
+            "cases_found": len(enriched),
+            "enriched_query": query
+        })
 
     return {
         "query":       query,
@@ -519,8 +580,6 @@ def enrich_rag_response_with_case_law(
         try:
             cases = search_cases(search_query, max_results=max_cases_per_section)
             all_cases.extend(cases)
-            if cases:
-                time.sleep(_GROQ_DELAY_SECONDS)
         except Exception as e:
             logger.warning(f"[CaseLawAgent] Enrichment search failed for {sec_id}: {e}")
             continue
@@ -544,19 +603,27 @@ def enrich_rag_response_with_case_law(
         "",
     ]
 
-    for case in unique_cases:
-        try:
-            summary = summarize_case(case, groq_client)
-            time.sleep(_GROQ_DELAY_SECONDS)
-        except Exception:
-            summary = f"Judgment by {case['court']} ({case['date']})."
+    async def _batch_summarize():
+        return await asyncio.gather(
+            *[summarize_case(case, groq_client) for case in unique_cases],
+            return_exceptions=True
+        )
+
+    summaries = asyncio.run(_batch_summarize())
+
+    for i, (case, summary) in enumerate(zip(unique_cases, summaries)):
+        if isinstance(summary, Exception):
+            logger.error(f"[CaseLawAgent] Summarization failed for case {i}: {summary}")
+            summary_text = f"Judgment by {case.get('court', 'Indian Court')} ({case.get('date', '')})."
+        else:
+            summary_text = summary
 
         judgment_lines.append(
-            f"• **{case['title']}** — {case['court']}, {case['date']}"
+            f"• **{case.get('title', 'Untitled')}** — {case.get('court', 'Indian Court')}, {case.get('date', '')}"
         )
         if case.get("citation"):
             judgment_lines.append(f"  *{case['citation']}*")
-        judgment_lines.append(f"  {summary}")
+        judgment_lines.append(f"  {summary_text}")
         if case.get("url"):
             judgment_lines.append(f"  🔗 [{case['url']}]({case['url']})")
         judgment_lines.append("")

@@ -14,6 +14,10 @@ Run:
 """
 
 import os
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 1: Load .env FIRST — before any other import
@@ -32,13 +36,13 @@ load_dotenv()
 # LangGraph reads these at import time to configure the LangSmith callback handler.
 #
 # How it works:
-#   - LANGCHAIN_TRACING_V2=true  → enables automatic trace instrumentation
-#   - LANGCHAIN_API_KEY          → authenticates to LangSmith
-#   - LANGCHAIN_PROJECT          → groups traces under "lexshield-ai" project
-#   - LANGCHAIN_ENDPOINT         → LangSmith API endpoint (default is correct)
+#   - LANGCHAIN_TRACING_V2=true  -> enables automatic trace instrumentation
+#   - LANGCHAIN_API_KEY          -> authenticates to LangSmith
+#   - LANGCHAIN_PROJECT          -> groups traces under "lexshield-ai" project
+#   - LANGCHAIN_ENDPOINT         -> LangSmith API endpoint (default is correct)
 #
 # Once active, EVERY graph.invoke() call creates a trace showing:
-#   • classify_intent_node → route_by_intent → [node] → END
+#   • classify_intent_node -> route_by_intent -> [node] -> END
 #   • Each Groq LLM call with prompt, completion, token counts, latency
 #   • ChromaDB retrieval with query vector and returned chunks
 #   • Total wall-clock time per node and end-to-end
@@ -56,16 +60,24 @@ for _key, _val in _LANGSMITH_KEYS.items():
 _tracing_enabled = _LANGSMITH_KEYS["LANGCHAIN_TRACING_V2"].lower() == "true"
 _api_key_present = bool(_LANGSMITH_KEYS["LANGCHAIN_API_KEY"])
 
+import logging
+logger = logging.getLogger(__name__)
+
 if _tracing_enabled and _api_key_present:
-    print(
-        f"[LexShield] LangSmith tracing ENABLED — "
-        f"project='{_LANGSMITH_KEYS['LANGCHAIN_PROJECT']}' | "
-        f"dashboard: https://smith.langchain.com/projects/lexshield-ai"
-    )
+    try:
+        from langsmith import Client
+        _ = Client()
+        print(
+            f"[LexShield] LangSmith tracing ENABLED — "
+            f"project='{_LANGSMITH_KEYS['LANGCHAIN_PROJECT']}' | "
+            f"dashboard: https://smith.langchain.com/projects/lexshield-ai"
+        )
+    except Exception as e:
+        logger.warning(f"[LexShield] Failed to initialize LangSmith tracing: {e}")
 elif _tracing_enabled and not _api_key_present:
-    print(
+    logger.warning(
         "[LexShield] WARNING: LANGCHAIN_TRACING_V2=true but LANGCHAIN_API_KEY "
-        "is not set. Add it to .env — get key from smith.langchain.com"
+        "is not set. Tracing will fail. Continuing without observability."
     )
 else:
     print("[LexShield] LangSmith tracing DISABLED (set LANGCHAIN_TRACING_V2=true to enable)")

@@ -5,9 +5,9 @@ Resolves an act name from a query string to a ChromaDB source partial string.
 
 Problem solved:
   "Limited Liability Partnership Act section 24"
-  → old code: dict iteration hit "partnership" → "Indian Partnership Act" ❌
-  → this module: sorts all act names longest-first, "limited liability partnership"
-    (31 chars) matches before "partnership" (11 chars) → correct source ✅
+  -> old code: dict iteration hit "partnership" -> "Indian Partnership Act" ❌
+  -> this module: sorts all act names longest-first, "limited liability partnership"
+    (31 chars) matches before "partnership" (11 chars) -> correct source ✅
 
 Design:
   - ACT_REGISTRY: complete list of (match_phrase, source_partial) pairs
@@ -18,7 +18,7 @@ Design:
 Usage:
     from rag.act_resolver import act_resolver
     source = act_resolver.resolve_act("limited liability partnership act section 24")
-    # → "Limited Liability Partnership"
+    # -> "Limited Liability Partnership"
 """
 
 import re
@@ -232,8 +232,8 @@ class ActResolver:
         Example:
           query = "Limited Liability Partnership Act section 24"
           section_number = "24"
-          → scans local context → finds "limited liability partnership act"
-          → returns "Limited Liability Partnership"
+          -> scans local context -> finds "limited liability partnership act"
+          -> returns "Limited Liability Partnership"
         """
         # Find section number position in query
         pattern = re.compile(

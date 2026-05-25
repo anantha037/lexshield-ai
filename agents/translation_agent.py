@@ -2,9 +2,9 @@
 LexShield AI — Translation Agent
 ===================================
 Detects non-English queries and performs:
-  1. Translate query → English
+  1. Translate query -> English
   2. Run RAG on English query
-  3. Translate answer → original language
+  3. Translate answer -> original language
 
 Language detection:
   Script-based (Unicode range check) + keyword matching.
@@ -157,7 +157,7 @@ def _strip_legal_content(query: str, target_lang: str) -> str:
     """
     Remove the translation instruction from query to extract the actual legal question.
     e.g. "Translate this into Malayalam: What is Section 302 IPC?"
-         → "What is Section 302 IPC?"
+         -> "What is Section 302 IPC?"
     """
     patterns = [
         re.compile(
@@ -198,7 +198,7 @@ class TranslationAgent:
 
         Workflow:
           Case A — Non-English input (e.g. Malayalam query):
-            1. Detect script → translate query to English
+            1. Detect script -> translate query to English
             2. Run RAG on English query
             3. Translate RAG answer back to detected language
 
@@ -208,7 +208,7 @@ class TranslationAgent:
             3. Translate RAG answer to requested language
 
           Case C — Translation request with no clear legal question:
-            → Direct LLM translation of provided text
+            -> Direct LLM translation of provided text
 
         Returns:
           answer:            translated answer string
@@ -232,11 +232,11 @@ class TranslationAgent:
         return self._handle_direct_translation(query)
 
     def _handle_script_query(self, query: str, source_lang: str) -> dict:
-        """Non-English query → translate → RAG → translate back."""
+        """Non-English query -> translate -> RAG -> translate back."""
         llm = self._get_llm()
         rag = self._get_rag()
 
-        print(f"[TranslationAgent] Detected {source_lang} script → translating to English")
+        print(f"[TranslationAgent] Detected {source_lang} script -> translating to English")
 
         # Step 1: Translate to English
         try:
@@ -284,7 +284,7 @@ class TranslationAgent:
         llm = self._get_llm()
         rag = self._get_rag()
 
-        print(f"[TranslationAgent] English query → answer in {target_lang}")
+        print(f"[TranslationAgent] English query -> answer in {target_lang}")
 
         # Extract the actual legal question
         english_query = _strip_legal_content(query, target_lang)

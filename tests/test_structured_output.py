@@ -58,14 +58,14 @@ def test_summary_shorter_than_answer():
     assert len(summary) > 0
     assert len(summary) <= len(LEGAL_ANSWER)
     assert "[1]" not in summary  # citations stripped
-    print(f"\n✓ Summary: {summary[:80]}")
+    print(f"\nOK Summary: {summary[:80]}")
 
 
 def test_summary_max_3_sentences():
     summary = _extract_summary(LEGAL_ANSWER, max_sentences=3)
     sentence_count = summary.count(". ") + summary.count("! ") + summary.count("? ")
     assert sentence_count <= 4  # generous bound for sentence splitting
-    print(f"\n✓ Summary sentence count within limit")
+    print(f"\nOK Summary sentence count within limit")
 
 
 def test_key_clauses_extracted():
@@ -74,7 +74,7 @@ def test_key_clauses_extracted():
     has_ipc  = any("Indian Penal Code" in c or "IPC" in c for c in clauses)
     has_bns  = any("Bharatiya Nyaya Sanhita" in c or "BNS" in c for c in clauses)
     assert has_ipc or has_bns, f"No act found in clauses: {clauses}"
-    print(f"\n✓ Key clauses: {clauses}")
+    print(f"\nOK Key clauses: {clauses}")
 
 
 def test_build_structured_response_all_fields():
@@ -108,7 +108,7 @@ def test_build_structured_response_all_fields():
     assert resp.sources_consulted == 3
     assert resp.reranker_used     == True
 
-    print(f"\n✓ All LexShieldResponse fields populated")
+    print(f"\nOK All LexShieldResponse fields populated")
     print(f"   summary:     {resp.summary[:60]}")
     print(f"   key_clauses: {resp.key_clauses}")
     print(f"   risk:        {resp.risk_score:.2f} ({resp.risk_level})")
@@ -126,7 +126,7 @@ def test_risk_score_range():
         )
         assert 0.0 <= resp.risk_score <= 1.0, f"Risk score out of range for {intent}: {resp.risk_score}"
         assert resp.risk_level in ("Low", "Medium", "High", "Critical")
-    print(f"\n✓ Risk score in [0.0, 1.0] for all intents")
+    print(f"\nOK Risk score in [0.0, 1.0] for all intents")
 
 
 def test_suggestions_non_empty():
@@ -139,7 +139,7 @@ def test_suggestions_non_empty():
     )
     assert len(resp.suggestions) > 0
     assert all(isinstance(s, str) for s in resp.suggestions)
-    print(f"\n✓ Suggestions: {resp.suggestions[:2]}")
+    print(f"\nOK Suggestions: {resp.suggestions[:2]}")
 
 
 def test_draft_field_populated():
@@ -152,7 +152,7 @@ def test_draft_field_populated():
         draft       = "LEGAL NOTICE\nDear Sir...",
     )
     assert resp.draft == "LEGAL NOTICE\nDear Sir..."
-    print(f"\n✓ Draft field preserved in structured response")
+    print(f"\nOK Draft field preserved in structured response")
 
 
 def test_to_dict_serializable():
@@ -173,7 +173,7 @@ def test_to_dict_serializable():
     assert "intent"       in d
     assert isinstance(d["risk"], dict)
     assert "score" in d["risk"]
-    print(f"\n✓ to_dict() produces correct structure")
+    print(f"\nOK to_dict() produces correct structure")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -185,20 +185,20 @@ def test_detect_language_english():
     assert result.is_english      == True
     assert result.detected_script is None
     assert result.target_language is None
-    print(f"\n✓ English query detected as English")
+    print(f"\nOK English query detected as English")
 
 
 def test_detect_language_translation_request():
     result = detect_language("Translate this into Malayalam: What is Section 138 NI Act?")
     assert result.is_english      == True
     assert result.target_language == "Malayalam"
-    print(f"\n✓ Translation request detected: target={result.target_language}")
+    print(f"\nOK Translation request detected: target={result.target_language}")
 
 
 def test_detect_language_explain_in():
     result = detect_language("Explain this in Hindi")
     assert result.target_language == "Hindi"
-    print(f"\n✓ 'Explain in Hindi' detected: target={result.target_language}")
+    print(f"\nOK 'Explain in Hindi' detected: target={result.target_language}")
 
 
 def test_detect_language_malayalam_script():
@@ -207,7 +207,7 @@ def test_detect_language_malayalam_script():
     result = detect_language(malayalam_query)
     assert result.is_english      == False
     assert result.detected_script == "Malayalam"
-    print(f"\n✓ Malayalam script detected correctly")
+    print(f"\nOK Malayalam script detected correctly")
 
 
 def test_detect_language_hindi_script():
@@ -215,7 +215,7 @@ def test_detect_language_hindi_script():
     result = detect_language(hindi_query)
     assert result.is_english      == False
     assert result.detected_script == "Hindi"
-    print(f"\n✓ Hindi script detected correctly")
+    print(f"\nOK Hindi script detected correctly")
 
 
 def test_strip_legal_content_malayalam():
@@ -223,11 +223,11 @@ def test_strip_legal_content_malayalam():
     result = _strip_legal_content(query, "Malayalam")
     assert "Section 302" in result
     assert "Translate" not in result
-    print(f"\n✓ Stripped: {result!r}")
+    print(f"\nOK Stripped: {result!r}")
 
 
 def test_strip_legal_content_hindi():
     query  = "Explain this in Hindi: What are the bail provisions under BNSS?"
     result = _strip_legal_content(query, "Hindi")
     assert "bail" in result.lower() or "BNSS" in result
-    print(f"\n✓ Stripped: {result!r}")
+    print(f"\nOK Stripped: {result!r}")

@@ -65,7 +65,7 @@ for text, expected in REAL_TESTS:
     r = classifier.predict(text)
     got   = r["label_name"]
     conf  = r["confidence"]
-    ok    = "✓" if got == expected else "✗"
+    ok    = "OK" if got == expected else "FAIL"
     if got == expected:
         correct += 1
     print(f"{ok} Expected: {expected:<25} Got: {got:<25} Conf: {conf:.2f}")
@@ -78,6 +78,6 @@ print("=" * 55)
 print(f"Real-world accuracy: {correct}/{len(REAL_TESTS)} = {correct/len(REAL_TESTS)*100:.0f}%")
 print()
 print("Interpretation:")
-print("  ≥87% → Model generalized well, synthetic data was high quality")
-print("  70–87% → Mild overfit, acceptable for portfolio")
-print("  <70%  → Significant overfit, need more diverse training data")
+print("  ≥87% -> Model generalized well, synthetic data was high quality")
+print("  70–87% -> Mild overfit, acceptable for portfolio")
+print("  <70%  -> Significant overfit, need more diverse training data")

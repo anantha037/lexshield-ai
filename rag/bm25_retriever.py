@@ -8,16 +8,16 @@ Changes in this version:
        At index build time, a vocabulary set is extracted from the
        BM25Okapi IDF table (all unique terms seen across the corpus).
        During search(), each query token is checked:
-         - If it's in the vocabulary → keep as-is
-         - If it's OOV (out-of-vocab) AND len > 4 chars → find closest
+         - If it's in the vocabulary -> keep as-is
+         - If it's OOV (out-of-vocab) AND len > 4 chars -> find closest
            vocabulary word using difflib.get_close_matches (cutoff=0.82)
-         - If no close match found → keep original (no hallucination)
+         - If no close match found -> keep original (no hallucination)
 
        This handles:
-         "xonsequences" → "consequences"
-         "drivig"       → "driving"
-         "imprisoment"  → "imprisonment"
-         "vehical"      → "vehicle"
+         "xonsequences" -> "consequences"
+         "drivig"       -> "driving"
+         "imprisoment"  -> "imprisonment"
+         "vehical"      -> "vehicle"
 
        difflib is Python stdlib — zero new dependencies.
        Correction adds ~2ms per query on 22K corpus vocabulary.
@@ -126,7 +126,7 @@ class BM25Retriever:
         self._ready = True
 
         # Build vocabulary from BM25 IDF table for typo correction
-        # BM25Okapi stores IDF in self.bm25.idf (dict: token → idf_score)
+        # BM25Okapi stores IDF in self.bm25.idf (dict: token -> idf_score)
         if hasattr(self.bm25, 'idf'):
             self._vocabulary = set(self.bm25.idf.keys())
             print(f"[BM25] Vocabulary: {len(self._vocabulary)} unique terms.")
@@ -153,18 +153,18 @@ class BM25Retriever:
         Replace out-of-vocabulary tokens with the closest vocabulary word.
 
         Rules:
-          - Token in vocabulary → keep as-is
-          - Token len ≤ 4       → keep as-is (too short to correct reliably)
-          - Token OOV, len > 4  → difflib.get_close_matches with cutoff=0.82
-          - No match found      → keep original (never hallucinate)
+          - Token in vocabulary -> keep as-is
+          - Token len ≤ 4       -> keep as-is (too short to correct reliably)
+          - Token OOV, len > 4  -> difflib.get_close_matches with cutoff=0.82
+          - No match found      -> keep original (never hallucinate)
 
         Examples:
-          "xonsequences" → "consequences"
-          "drivig"       → "driving"
-          "imprisoment"  → "imprisonment"
-          "vehical"      → "vehicle"
-          "ipc"          → "ipc"  (in vocab, kept)
-          "bns"          → "bns"  (in vocab, kept)
+          "xonsequences" -> "consequences"
+          "drivig"       -> "driving"
+          "imprisoment"  -> "imprisonment"
+          "vehical"      -> "vehicle"
+          "ipc"          -> "ipc"  (in vocab, kept)
+          "bns"          -> "bns"  (in vocab, kept)
         """
         if not self._vocabulary:
             return tokens
@@ -175,7 +175,7 @@ class BM25Retriever:
                 corrected.append(token)
             else:
                 # difflib finds closest match in vocabulary
-                # cutoff=0.82 → only correct when very confident
+                # cutoff=0.82 -> only correct when very confident
                 matches = difflib.get_close_matches(
                     token,
                     self._vocabulary,
@@ -185,7 +185,7 @@ class BM25Retriever:
                 if matches:
                     corrected.append(matches[0])
                     if matches[0] != token:
-                        print(f"[BM25] Typo correction: {token!r} → {matches[0]!r}")
+                        print(f"[BM25] Typo correction: {token!r} -> {matches[0]!r}")
                 else:
                     corrected.append(token)  # keep original
 

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useStore } from '../store';
 import { sendQuery, adaptQueryResponse } from '../api';
-import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown } from '../icons';
+import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown, IconGavel, IconExternalLink, IconCheckCircle, IconWarning, IconXCircle } from '../icons';
 
 const LANGS = [
   { code: 'en', label: 'EN' }, { code: 'ml', label: 'ML' },
@@ -15,14 +15,21 @@ const QUICK = [
   { q: 'Rights of an arrested person under BNSS 2023' },
 ];
 
-const DOC_RE   = /analys[ei]s?\s+(a\s+)?document|upload\s+document|check\s+this\s+(document|file)|review\s+this\s+file/i;
+const CASE_LAW_QUICK = [
+  { q: 'Find landmark cases on Section 302 IPC' },
+  { q: 'Show me judgments about cheque bounce Section 138 NI Act' },
+  { q: 'Kesavananda Bharati case and basic structure doctrine' },
+  { q: 'Landmark judgments on right to privacy' },
+];
+
+const DOC_RE = /analys[ei]s?\s+(a\s+)?document|upload\s+document|check\s+this\s+(document|file)|review\s+this\s+file/i;
 const DRAFT_RE = /draft\s+a?\s+complaint|write\s+a?\s+complaint|help\s+me\s+file|draft\s+an?\s+(fir|legal\s+notice)/i;
 const RIGHT_RE = /what\s+are\s+my\s+rights|know\s+my\s+rights|my\s+rights\s+as/i;
 
 function detectRedirect(text) {
-  if (DOC_RE.test(text))   return { view: 'document', label: 'Document Analysis' };
-  if (DRAFT_RE.test(text)) return { view: 'draft',    label: 'Draft Complaint' };
-  if (RIGHT_RE.test(text)) return { view: 'rights',   label: 'Know Your Rights' };
+  if (DOC_RE.test(text)) return { view: 'document', label: 'Document Analysis' };
+  if (DRAFT_RE.test(text)) return { view: 'draft', label: 'Draft Complaint' };
+  if (RIGHT_RE.test(text)) return { view: 'rights', label: 'Know Your Rights' };
   return null;
 }
 
@@ -37,11 +44,10 @@ function timeAgo(ts) {
 
 function parseText(text) {
   if (!text) return null;
-  // Use parseResponse logic as requested
   let html = text.replace(/\[(IPC|BNS|CrPC|BNSS|IEA|BSA)\s*§\d+[a-zA-Z]*\]|Section\s+\d+[a-zA-Z]*(\s+of\s+the)?\s+([A-Za-z\s]+Act|IPC|BNS|CrPC|BNSS|IEA|BSA)/gi, match => `<span class="citation-badge" style="margin:0 4px">${match}</span>`);
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--c-text);font-weight:600">$1</strong>');
-  html = html.replace(/--(.*?)--/g, ''); 
-  
+  html = html.replace(/--(.*?)--/g, '');
+
   const blocks = html.split(/\n\s*\n/);
   return blocks.map((block, i) => {
     const lines = block.split('\n');
@@ -68,7 +74,7 @@ function parseText(text) {
 function CopyBtn({ text }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button 
+    <button
       style={{ position: 'absolute', top: 8, right: 8, opacity: 0, transition: 'opacity 150ms', background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 4, padding: 4, cursor: 'pointer', color: 'var(--c-text2)' }}
       className="copy-btn"
       onClick={() => {
@@ -82,8 +88,117 @@ function CopyBtn({ text }) {
   );
 }
 
+function TrustBadge({ status }) {
+  if (status === 'cited') {
+    return (
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(16, 185, 129, 0.1)', color: '#10B981', padding: '2px 8px', borderRadius: 99, fontSize: 11, fontWeight: 600, border: '1px solid rgba(16, 185, 129, 0.2)', marginBottom: 8 }}>
+        <IconCheckCircle size={12} /> Sourced
+      </div>
+    );
+  }
+  if (status === 'partial') {
+    return (
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(245, 158, 11, 0.1)', color: '#F59E0B', padding: '2px 8px', borderRadius: 99, fontSize: 11, fontWeight: 600, border: '1px solid rgba(245, 158, 11, 0.2)', marginBottom: 8 }} title="Some content in this response may not be fully cited. Verify with primary sources.">
+        <IconWarning size={12} /> Partially sourced
+      </div>
+    );
+  }
+  return null;
+}
+
+function UnverifiedBanner() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, background: 'rgba(239, 68, 68, 0.1)', color: '#EF4444', padding: '10px 14px', borderRadius: 8, fontSize: 13, border: '1px solid rgba(239, 68, 68, 0.2)', marginBottom: 12 }}>
+      <IconXCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+      <div>
+        <strong style={{ display: 'block', marginBottom: 2 }}>Unverified</strong>
+        This response could not be grounded in a retrieved source. Do not rely on this as legal advice.
+      </div>
+    </div>
+  );
+}
+
+/* ── Case Law Cards Component ─────────────────────────────────────────────── */
+
+function CaseLawCards({ cases }) {
+  if (!cases || cases.length === 0) {
+    return (
+      <div className="case-law-container">
+        <div className="case-law-empty">
+          <IconGavel size={32} color="var(--c-text3)" />
+          <div className="case-law-empty-title" style={{ marginTop: 12 }}>No Judgments Found</div>
+          <div className="case-law-empty-hint">
+            Try a more specific query using the section number, act name, and key legal issue.
+            <br />
+            Example: <em>"Section 302 IPC murder culpable homicide"</em>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="case-law-container">
+      <div className="case-law-header">
+        <div className="case-law-header-title">
+          <IconGavel size={18} color="var(--c-gold)" />
+          Case Law Results
+        </div>
+        <div className="case-law-header-meta">
+          <span className="case-law-source-badge">Indian Kanoon</span>
+          <span>{cases.length} judgment{cases.length !== 1 ? 's' : ''} found</span>
+        </div>
+      </div>
+
+      {cases.map((c, i) => (
+        <div
+          key={i}
+          className="case-law-card"
+          style={{ animationDelay: `${i * 80}ms` }}
+        >
+          <div className="case-law-card-number">#{i + 1}</div>
+          <div className="case-law-card-title">{c.title}</div>
+
+          <div className="case-law-card-pills">
+            {c.court && <span className="case-law-pill court">{c.court}</span>}
+            {c.date && <span className="case-law-pill date">{c.date}</span>}
+          </div>
+
+          {c.citation && (
+            <div className="case-law-citation">{c.citation}</div>
+          )}
+
+          {c.summary && (
+            <div className="case-law-summary">{c.summary}</div>
+          )}
+
+          {c.url && (
+            <a
+              href={c.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="case-law-link"
+            >
+              <IconExternalLink size={12} />
+              Read full judgment
+            </a>
+          )}
+        </div>
+      ))}
+
+      <div className="case-law-disclaimer">
+        ⚖️ Source: Indian Kanoon (indiankanoon.org). Case summaries are AI-generated
+        for reference only. Always verify judgments directly from the official source
+        before relying on them in legal proceedings.
+      </div>
+    </div>
+  );
+}
+
+/* ── Main ChatView ────────────────────────────────────────────────────────── */
+
 export default function ChatView() {
-  const { activeSession, setActiveSession, refreshSessions, toast, setLastResponse, chatMessages, setChatMessages, prefillInput, setPrefillInput, setActiveView, language, setLanguage } = useStore();
+  const { activeSession, setActiveSession, refreshSessions, toast, setLastResponse, chatMessages, setChatMessages, prefillInput, setPrefillInput, setActiveView, language, setLanguage, caseLawMode, setCaseLawMode } = useStore();
 
   const [loading, setLoading] = useState(false);
   const [input, setInput] = useState('');
@@ -98,16 +213,16 @@ export default function ChatView() {
 
   useEffect(() => { sessionRef.current = activeSession; }, [activeSession]);
   useEffect(() => { langRef.current = language; }, [language]);
-  
+
   const scrollToBottom = () => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  useEffect(() => { 
+  useEffect(() => {
     if (!areaRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = areaRef.current;
     if (scrollHeight - scrollTop - clientHeight < 150) {
-      scrollToBottom(); 
+      scrollToBottom();
     }
   }, [chatMessages, loading]);
 
@@ -124,18 +239,20 @@ export default function ChatView() {
     }
   }, [prefillInput, setPrefillInput]);
 
-  const handleSend = useCallback(async (textOverride) => {
+  const handleSend = useCallback(async (textOverride, suppressRedirect = false) => {
     const q = (textOverride ?? inputValRef.current).trim();
     if (!q || loading) return;
     setInput(''); inputValRef.current = '';
 
-    const redirect = detectRedirect(q);
-    if (redirect) {
-      setChatMessages(m => [...m,
+    if (!suppressRedirect) {
+      const redirect = detectRedirect(q);
+      if (redirect) {
+        setChatMessages(m => [...m,
         { role: 'user', content: q, ts: Date.now() / 1000 },
         { role: 'assistant', content: q, ts: Date.now() / 1000, redirect },
-      ]);
-      return;
+        ]);
+        return;
+      }
     }
 
     if (abortRef.current) abortRef.current.abort(new Error('superseded'));
@@ -151,8 +268,16 @@ export default function ChatView() {
       if (!r) return;
       if (!sessionRef.current && r.sessionId) { setActiveSession(r.sessionId); refreshSessions(); }
       setChatMessages(m => [...m, {
-        role: 'assistant', content: r.answer || r.draft || r.summary || 'No response received.',
-        intent: r.intent, riskLevel: r.riskLevel, riskScore: r.riskScore, citations: r.citations,
+        role: 'assistant',
+        content: r.answer || r.draft || r.summary || 'No response received.',
+        intent: r.intent,
+        riskLevel: r.riskLevel,
+        riskScore: r.riskScore,
+        citations: r.citations,
+        caseLawResults: r.caseLawResults || [],
+        citationStatus: r.citationStatus || 'unverified', // ← FIX: was missing, always showed "Unverified"
+        scopeStatus: r.scopeStatus || 'in_scope',
+        scopeMessage: r.scopeMessage || '',
         ts: Date.now() / 1000,
       }]);
       setLastResponse(r);
@@ -163,32 +288,44 @@ export default function ChatView() {
     } finally { setLoading(false); abortRef.current = null; }
   }, [loading, setActiveSession, refreshSessions, setChatMessages, setLastResponse, toast]);
 
-  const onInput = (e) => { 
-    setInput(e.target.value); 
-    inputValRef.current = e.target.value; 
+  const onInput = (e) => {
+    setInput(e.target.value);
+    inputValRef.current = e.target.value;
     e.target.style.height = 'auto';
     e.target.style.height = Math.min(Math.max(e.target.scrollHeight, 44), 140) + 'px';
   };
-  
+
   const onKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
+
+  // Determine which quick prompts to show
+  const quickPrompts = caseLawMode ? CASE_LAW_QUICK : QUICK;
+  const emptyTitle = caseLawMode ? 'Search Case Law' : 'Ask a Legal Question';
+  const emptySubtitle = caseLawMode
+    ? 'Search Indian Kanoon for Supreme Court & High Court judgments, precedents, and rulings.'
+    : 'Grounded in Indian statutes, case law, and constitutional provisions.';
+  const EmptyIcon = caseLawMode ? IconGavel : IconScale;
 
   return (
     <div className="chat-container view-enter" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--c-bg)', position: 'relative' }}>
       <div className="view-header" style={{ padding: '32px 40px 24px', borderBottom: '1px solid var(--c-border2)', flexShrink: 0 }}>
-        <h1 style={{ fontFamily: 'var(--f-head)', fontSize: 32, fontWeight: 700, color: 'var(--c-text)', letterSpacing: '-0.01em', margin: 0 }}>Legal Q&A</h1>
-        <p style={{ fontSize: 14, color: 'var(--c-text2)', marginTop: 6, margin: 0 }}>Ask any question grounded in Indian law</p>
+        <h1 style={{ fontFamily: 'var(--f-head)', fontSize: 32, fontWeight: 700, color: 'var(--c-text)', letterSpacing: '-0.01em', margin: 0 }}>
+          {caseLawMode ? 'Case Law Search' : 'Legal Q&A'}
+        </h1>
+        <p style={{ fontSize: 14, color: 'var(--c-text2)', marginTop: 6, margin: 0 }}>
+          {caseLawMode ? 'Search Indian Kanoon for court judgments and precedents' : 'Ask any question grounded in Indian law'}
+        </p>
       </div>
 
       <div className="messages-area" ref={areaRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: 20, scrollBehavior: 'smooth' }}>
         {chatMessages.length === 0 && !loading && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 40 }}>
-            <IconScale size={48} color="var(--c-gold-dim)" />
-            <h2 style={{ fontFamily: 'var(--f-head)', fontSize: 28, fontWeight: 600, color: 'var(--c-text)', margin: 0 }}>Ask a Legal Question</h2>
+            <EmptyIcon size={48} color="var(--c-gold-dim)" />
+            <h2 style={{ fontFamily: 'var(--f-head)', fontSize: 28, fontWeight: 600, color: 'var(--c-text)', margin: 0 }}>{emptyTitle}</h2>
             <p style={{ fontSize: 14, color: 'var(--c-text2)', textAlign: 'center', maxWidth: 400, margin: 0 }}>
-              Grounded in Indian statutes, case law, and constitutional provisions.
+              {emptySubtitle}
             </p>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 8, maxWidth: 520 }}>
-              {QUICK.map((q, i) => (
+              {quickPrompts.map((q, i) => (
                 <div key={i} className="card-hover" onClick={() => handleSend(q.q)} style={{ padding: '16px 20px', background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)', fontSize: 13, color: 'var(--c-text2)', cursor: 'pointer', textAlign: 'left', animation: `fadeIn 200ms ease forwards ${i * 60}ms`, opacity: 0 }}>
                   {q.q}
                 </div>
@@ -211,8 +348,9 @@ export default function ChatView() {
                   <button className="btn-gold" onClick={() => setActiveView(m.redirect.view)}>Go to {m.redirect.label} →</button>
                   <button className="btn-ghost" onClick={() => {
                     setChatMessages(msgs => msgs.filter((_, j) => j !== i));
-                    inputValRef.current = m.content + ' (legal question)';
-                    handleSend(m.content + ' (legal question)');
+                    const originalQ = m.content.replace("(legal question)", "").trim();
+                    inputValRef.current = originalQ;
+                    handleSend(originalQ, true);
                   }}>I have a legal question instead</button>
                 </div>
               </div>
@@ -226,16 +364,51 @@ export default function ChatView() {
             </div>
           );
 
-          return (
-            <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '82%' }}>
-              <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <IconScale size={16} />
-              </div>
-              <div style={{ position: 'relative', background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }} className="msg-bubble-wrap">
-                <style>{`.msg-bubble-wrap:hover .copy-btn { opacity: 1 !important; }`}</style>
-                <div style={{ fontSize: 14, color: 'var(--c-text2)', lineHeight: 1.75 }}>
-                  {parseText(m.content)}
+          // ── Case Law intent → render rich cards ──
+          const isCaseLaw = m.intent === 'case_law_search' && m.caseLawResults && m.caseLawResults.length > 0;
+          const isLegalIntent = ['legal_query', 'case_law_search', 'document_analysis', 'rights', 'draft'].includes(m.intent);
+          const cStatus = m.citationStatus || 'unverified';
+
+          if (m.role === 'assistant' && m.scopeStatus === 'out_of_scope') {
+            return (
+              <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '88%' }}>
+                <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <IconScale size={16} />
                 </div>
+                <div className="scope-warning-block">
+                  <div className="scope-warning-heading">
+                    <IconWarning size={16} /> Out of Scope Request
+                  </div>
+                  <div className="scope-warning-body">
+                    {m.scopeMessage || 'This request falls outside the supported scope of LexShield AI.'}
+                  </div>
+                  <div className="scope-warning-footer">
+                    LexShield is optimized for Indian jurisdiction, case law search, and supported legal templates.
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '88%' }}>
+              <div style={{ background: isCaseLaw ? 'rgba(6,182,212,0.10)' : 'var(--c-gold-dim)', border: `1px solid ${isCaseLaw ? 'rgba(6,182,212,0.25)' : 'var(--c-gold)'}`, color: isCaseLaw ? '#06B6D4' : 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {isCaseLaw ? <IconGavel size={16} /> : <IconScale size={16} />}
+              </div>
+              <div style={{ position: 'relative', background: 'var(--c-surface)', border: `1px solid ${isCaseLaw ? 'rgba(6,182,212,0.15)' : 'var(--c-border)'}`, borderRadius: '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }} className="msg-bubble-wrap">
+                <style>{`.msg-bubble-wrap:hover .copy-btn { opacity: 1 !important; }`}</style>
+
+                {isLegalIntent && cStatus === 'unverified' && <UnverifiedBanner />}
+                {isLegalIntent && cStatus !== 'unverified' && <TrustBadge status={cStatus} />}
+
+                {isCaseLaw ? (
+                  <CaseLawCards cases={m.caseLawResults} />
+                ) : (
+                  <div style={{ fontSize: 14, color: 'var(--c-text2)', lineHeight: 1.75 }}>
+                    {parseText(m.content)}
+                  </div>
+                )}
+
                 <div style={{ fontSize: 11, color: 'var(--c-text3)', textAlign: 'right', marginTop: 6 }}>{timeAgo(m.ts)}</div>
                 <CopyBtn text={m.content} />
               </div>
@@ -259,7 +432,7 @@ export default function ChatView() {
       </div>
 
       {showScrollBtn && (
-        <button 
+        <button
           onClick={scrollToBottom}
           style={{ position: 'absolute', bottom: 120, right: 60, width: 36, height: 36, borderRadius: '50%', background: 'var(--c-surface)', border: '1px solid var(--c-border)', color: 'var(--c-gold)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'fadeIn 150ms ease forwards', zIndex: 10 }}
         >
@@ -270,7 +443,7 @@ export default function ChatView() {
       <div className="chat-input-area" style={{ padding: '16px 40px 20px', borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
           {LANGS.map(l => (
-            <button key={l.code} 
+            <button key={l.code}
               style={{ padding: '3px 12px', borderRadius: 99, fontSize: 12, fontWeight: 600, border: `1px solid ${language === l.code ? 'var(--c-gold)' : 'var(--c-border)'}`, color: language === l.code ? 'var(--c-gold)' : 'var(--c-text3)', background: language === l.code ? 'var(--c-gold-dim)' : 'transparent', cursor: 'pointer', transition: 'all 150ms' }}
               onMouseDown={(e) => e.currentTarget.style.transform = 'scale(0.95)'}
               onMouseUp={(e) => e.currentTarget.style.transform = 'scale(1)'}
@@ -282,7 +455,7 @@ export default function ChatView() {
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
           <textarea ref={inputRef} className="textarea" value={input} onChange={onInput} onKeyDown={onKey}
-            placeholder="Ask a legal question..." style={{ flex: 1, minHeight: 44, maxHeight: 140, resize: 'none' }} rows={1} />
+            placeholder={caseLawMode ? 'Search for case law, judgments, or precedents...' : 'Ask a legal question...'} style={{ flex: 1, minHeight: 44, maxHeight: 140, resize: 'none' }} rows={1} />
           <button className="btn-send" onClick={() => handleSend()} disabled={loading || !input.trim()}>
             <IconSend />
           </button>

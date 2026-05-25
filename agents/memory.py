@@ -8,7 +8,7 @@ in-memory version so orchestrator.py needs no changes.
 Tables
 ------
 sessions (session_id PK, created_ts, user_id TEXT nullable)
-turns    (id PK, session_id FK, role, content, intent, ts)
+turns    (id PK, session_id FK, role, content, intent, ts, citation_status)
 
 Uses the SAME data/sessions.db file as the LangGraph SqliteSaver
 checkpointer — the table names do not overlap (LangGraph uses
@@ -16,19 +16,19 @@ checkpoints / checkpoint_blobs / checkpoint_writes).
 
 Public interface (unchanged from in-memory version)
 ----------------------------------------------------
-session_memory.ensure_session(sid)              → str
-session_memory.session_exists(sid)              → bool
-session_memory.create_session()                 → str
-session_memory.delete_session(sid)              → bool
-session_memory.add_turn(sid, role, content, intent=None)
-session_memory.get_history(sid)                 → list[dict]  (ALL turns)
-session_memory.get_context_block(sid)           → str
-session_memory.turn_count(sid)                  → int
+session_memory.ensure_session(sid)              -> str
+session_memory.session_exists(sid)              -> bool
+session_memory.create_session()                 -> str
+session_memory.delete_session(sid)              -> bool
+session_memory.add_turn(sid, role, content, intent=None, citation_status=None)
+session_memory.get_history(sid)                 -> list[dict]  (ALL turns)
+session_memory.get_context_block(sid)           -> str
+session_memory.turn_count(sid)                  -> int
 
 New in Session 6 (auth)
 ------------------------
-session_memory.link_session_to_user(sid, uid)   → None
-session_memory.get_user_sessions(uid)           → list[dict]
+session_memory.link_session_to_user(sid, uid)   -> None
+session_memory.get_user_sessions(uid)           -> list[dict]
 """
 
 import os
@@ -36,6 +36,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import json
 from typing import Optional
 
 
@@ -63,20 +64,32 @@ def _init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS turns (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id  TEXT    NOT NULL,
-                role        TEXT    NOT NULL,   -- "user" | "assistant"
-                content     TEXT    NOT NULL,
-                intent      TEXT,               -- nullable
-                ts          REAL    NOT NULL
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id      TEXT    NOT NULL,
+                role            TEXT    NOT NULL,   -- "user" | "assistant"
+                content         TEXT    NOT NULL,
+                intent          TEXT,               -- nullable
+                ts              REAL    NOT NULL,
+                citation_status TEXT                -- nullable, "cited"|"partial"|"unverified"
             );
 
             CREATE INDEX IF NOT EXISTS idx_turns_session_id
                 ON turns (session_id, id);
+
+            CREATE TABLE IF NOT EXISTS session_summaries (
+                session_id       TEXT    NOT NULL,
+                summary_text     TEXT    NOT NULL,
+                created_at       REAL    NOT NULL,
+                turn_range_start INTEGER NOT NULL,
+                turn_range_end   INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_summaries_session_id
+                ON session_summaries (session_id, created_at);
         """)
         _conn.commit()
 
-        # Idempotent migration: add user_id column to sessions if not present
+        # Idempotent migrations: add columns if not present
         cols = [
             row["name"]
             for row in _conn.execute("PRAGMA table_info(sessions)").fetchall()
@@ -85,11 +98,21 @@ def _init_db() -> None:
             _conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
             _conn.commit()
 
+        # FIX: add citation_status column to turns if not present (existing DBs)
+        turn_cols = [
+            row["name"]
+            for row in _conn.execute("PRAGMA table_info(turns)").fetchall()
+        ]
+        if "citation_status" not in turn_cols:
+            _conn.execute("ALTER TABLE turns ADD COLUMN citation_status TEXT")
+            _conn.commit()
+
 
 _init_db()
 
 MAX_TURNS_STORED = 20   # hard cap per session (FIFO trim)
 MAX_TURNS_INJECT = 5    # last N turns injected into prompts
+GENERAL_INTENT_TURNS = 3  # reduced turn count for trivial/general queries
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -97,6 +120,17 @@ MAX_TURNS_INJECT = 5    # last N turns injected into prompts
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SessionMemory:
+
+    def __init__(self):
+        self.sessions = {}
+
+    def store_last_entities(self, session_id: str, entities: list[str]) -> None:
+        if session_id not in self.sessions:
+            self.sessions[session_id] = {}
+        self.sessions[session_id]["last_entities"] = entities
+
+    def get_last_scratchpad_entities(self, session_id: str) -> list[str]:
+        return self.sessions.get(session_id, {}).get("last_entities", [])
 
     # ── Session lifecycle ──────────────────────────────────────────────────────
 
@@ -193,10 +227,11 @@ class SessionMemory:
 
     def add_turn(
         self,
-        session_id: str,
-        role:       str,
-        content:    str,
-        intent:     Optional[str] = None,
+        session_id:      str,
+        role:            str,
+        content:         str,
+        intent:          Optional[str] = None,
+        citation_status: Optional[str] = None,  # FIX: new param
     ) -> None:
         """
         Append a turn.  Auto-creates session row if missing.
@@ -209,9 +244,9 @@ class SessionMemory:
                 (session_id, time.time()),
             )
             _conn.execute(
-                "INSERT INTO turns (session_id, role, content, intent, ts) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, intent, time.time()),
+                "INSERT INTO turns (session_id, role, content, intent, ts, citation_status) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, role, content, intent, time.time(), citation_status),
             )
             _conn.commit()
 
@@ -221,7 +256,7 @@ class SessionMemory:
         """Delete oldest turns that exceed MAX_TURNS_STORED."""
         rows = _conn.execute(
             """
-            SELECT id FROM turns
+            SELECT id, role, content FROM turns
             WHERE session_id = ?
             ORDER BY id DESC
             LIMIT -1 OFFSET ?
@@ -231,6 +266,19 @@ class SessionMemory:
 
         if rows:
             ids = [r["id"] for r in rows]
+            
+            # Summarize before deleting
+            turns_to_summarize = [
+                {"id": r["id"], "role": r["role"], "content": r["content"]} 
+                for r in reversed(rows)
+            ]
+            
+            threading.Thread(
+                target=self._summarize_turns, 
+                args=(session_id, turns_to_summarize),
+                daemon=True
+            ).start()
+
             placeholders = ",".join("?" * len(ids))
             with _lock:
                 _conn.execute(
@@ -238,16 +286,66 @@ class SessionMemory:
                 )
                 _conn.commit()
 
+    def _summarize_turns(self, session_id: str, turns: list[dict]) -> None:
+        """Background thread to summarize older turns via Groq LLM."""
+        from rag.llm import llm
+        
+        transcript = "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in turns)
+        
+        system_prompt = (
+            "You are an expert legal AI memory summarizer. "
+            "Summarize the following conversation into a single dense paragraph. "
+            "CRITICAL INSTRUCTIONS:\n"
+            "- Preserve all named legal acts (IPC, CrPC, BNS, etc.), section numbers, and document types.\n"
+            "- Preserve the user's stated jurisdiction, context, and intent.\n"
+            "- DO NOT omit specific factual details, case names, or entities."
+        )
+        
+        try:
+            summary = llm.generate(prompt=transcript, system_prompt=system_prompt, max_tokens=300)
+            
+            start_id = turns[0]['id']
+            end_id = turns[-1]['id']
+            
+            with _lock:
+                _conn.execute(
+                    """
+                    INSERT INTO session_summaries (session_id, summary_text, created_at, turn_range_start, turn_range_end)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (session_id, summary, time.time(), start_id, end_id)
+                )
+                _conn.commit()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"[SessionMemory] Failed to summarize turns: {e}")
+
+    def get_summary(self, session_id: str) -> str:
+        """Fetch all summaries for a session, concatenated chronologically."""
+        rows = _conn.execute(
+            """
+            SELECT summary_text FROM session_summaries
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            """,
+            (session_id,)
+        ).fetchall()
+        
+        if not rows:
+            return ""
+            
+        return "\n\n".join(r["summary_text"] for r in rows)
+
     def get_history(self, session_id: str) -> list[dict]:
         """
         Return FULL stored history as list of dicts (no 5-turn cap).
         Used by frontend to restore complete chat history when a user
         reopens an old session.
 
-        Each dict: { role, content, intent, ts }
+        Each dict: { role, content, intent, ts, citation_status }
         """
         rows = _conn.execute(
-            "SELECT role, content, intent, ts FROM turns "
+            "SELECT role, content, intent, ts, citation_status FROM turns "
             "WHERE session_id = ? ORDER BY id ASC",
             (session_id,),
         ).fetchall()
@@ -273,13 +371,79 @@ class SessionMemory:
         if not rows:
             return ""
 
-        # Reverse to get chronological order
         lines = ["[CONVERSATION HISTORY]"]
         for row in reversed(rows):
             label = "User" if row["role"] == "user" else "Assistant"
             lines.append(f"{label}: {row['content']}")
         lines.append("[END HISTORY]")
         return "\n".join(lines)
+
+    def get_relevant_context(
+        self,
+        session_id:    str,
+        current_query: str,
+        top_k:         int = 5,
+    ) -> str:
+        """
+        BM25-scored context retrieval.  Selects the top_k most relevant
+        past turns for `current_query`, re-sorted chronologically.
+
+        Fallback to get_context_block() when:
+          - fewer than top_k turns exist
+          - query tokenizes to <=2 tokens (trivial / greeting)
+          - any exception during BM25 scoring
+        """
+        try:
+            from rag.bm25_retriever import tokenize
+            from rank_bm25 import BM25Okapi
+
+            query_tokens = tokenize(current_query)
+            if len(query_tokens) <= 2:
+                rows = _conn.execute(
+                    "SELECT role, content FROM turns "
+                    "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                    (session_id, GENERAL_INTENT_TURNS),
+                ).fetchall()
+                if not rows:
+                    return ""
+                lines = ["[CONVERSATION HISTORY]"]
+                for row in reversed(rows):
+                    label = "User" if row["role"] == "user" else "Assistant"
+                    lines.append(f"{label}: {row['content']}")
+                lines.append("[END HISTORY]")
+                return "\n".join(lines)
+
+            rows = _conn.execute(
+                "SELECT id, role, content FROM turns "
+                "WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
+
+            if len(rows) < top_k:
+                return self.get_context_block(session_id)
+
+            turn_data = [{"id": r["id"], "role": r["role"], "content": r["content"]} for r in rows]
+            corpus_tokenized = [tokenize(t["content"]) for t in turn_data]
+            bm25 = BM25Okapi(corpus_tokenized)
+
+            scores = bm25.get_scores(query_tokens)
+
+            indexed_scores = list(enumerate(scores))
+            indexed_scores.sort(key=lambda x: x[1], reverse=True)
+            top_indices = [idx for idx, _ in indexed_scores[:top_k]]
+
+            top_indices.sort()
+
+            lines = ["[CONVERSATION HISTORY]"]
+            for idx in top_indices:
+                t = turn_data[idx]
+                label = "User" if t["role"] == "user" else "Assistant"
+                lines.append(f"{label}: {t['content']}")
+            lines.append("[END HISTORY]")
+            return "\n".join(lines)
+
+        except Exception:
+            return self.get_context_block(session_id)
 
     def turn_count(self, session_id: str) -> int:
         row = _conn.execute(
@@ -291,3 +455,105 @@ class SessionMemory:
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
 session_memory = SessionMemory()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# USER PROFILE MEMORY (Task 2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ProfileMemory:
+    def __init__(self):
+        with _lock:
+            _conn.executescript("""
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    session_id           TEXT PRIMARY KEY,
+                    preferred_domain     TEXT,
+                    jurisdiction         TEXT,
+                    frequent_acts        TEXT,
+                    frequent_doc_types   TEXT,
+                    act_frequencies      TEXT,
+                    doc_type_frequencies TEXT,
+                    last_updated         REAL
+                );
+            """)
+            _conn.commit()
+
+    def update_profile(self, session_id: str, intent: str, entities: dict):
+        row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
+        
+        if row:
+            profile = dict(row)
+            act_freq = json.loads(profile['act_frequencies'] or '{}')
+            doc_freq = json.loads(profile['doc_type_frequencies'] or '{}')
+            jurisdictions = set(json.loads(profile['jurisdiction'] or '[]'))
+            domains = set(json.loads(profile['preferred_domain'] or '[]'))
+        else:
+            act_freq = {}
+            doc_freq = {}
+            jurisdictions = set()
+            domains = set()
+
+        for loc in entities.get("locations", []):
+            jurisdictions.add(loc)
+            
+        for act in entities.get("acts", []):
+            act_freq[act] = act_freq.get(act, 0) + 1
+            
+        for doc in entities.get("doc_types", []):
+            doc_freq[doc] = doc_freq.get(doc, 0) + 1
+            
+        for dom in entities.get("domains", []):
+            domains.add(dom)
+
+        frequent_acts = [act for act, count in act_freq.items() if count >= 3]
+        frequent_doc_types = [dt for dt, count in doc_freq.items() if count >= 3]
+
+        with _lock:
+            _conn.execute("""
+                INSERT INTO user_profiles (
+                    session_id, preferred_domain, jurisdiction, frequent_acts, 
+                    frequent_doc_types, act_frequencies, doc_type_frequencies, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    preferred_domain=excluded.preferred_domain,
+                    jurisdiction=excluded.jurisdiction,
+                    frequent_acts=excluded.frequent_acts,
+                    frequent_doc_types=excluded.frequent_doc_types,
+                    act_frequencies=excluded.act_frequencies,
+                    doc_type_frequencies=excluded.doc_type_frequencies,
+                    last_updated=excluded.last_updated
+            """, (
+                session_id,
+                json.dumps(list(domains)),
+                json.dumps(list(jurisdictions)),
+                json.dumps(frequent_acts),
+                json.dumps(frequent_doc_types),
+                json.dumps(act_freq),
+                json.dumps(doc_freq),
+                time.time()
+            ))
+            _conn.commit()
+
+    def get_profile_block(self, session_id: str) -> str:
+        row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
+        if not row:
+            return ""
+            
+        domains = json.loads(row['preferred_domain'] or '[]')
+        jurisdictions = json.loads(row['jurisdiction'] or '[]')
+        acts = json.loads(row['frequent_acts'] or '[]')
+        docs = json.loads(row['frequent_doc_types'] or '[]')
+        
+        if not any([domains, jurisdictions, acts, docs]):
+            return ""
+            
+        lines = ["[USER PROFILE]"]
+        if domains: lines.append(f"Preferred Domains: {', '.join(domains)}")
+        if jurisdictions: lines.append(f"Jurisdiction: {', '.join(jurisdictions)}")
+        if acts: lines.append(f"Frequently Mentioned Acts: {', '.join(acts)}")
+        if docs: lines.append(f"Frequently Used Document Types: {', '.join(docs)}")
+        lines.append("[END PROFILE]")
+        
+        return "\n".join(lines)
+
+profile_memory = ProfileMemory()

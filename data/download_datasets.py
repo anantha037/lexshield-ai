@@ -64,7 +64,7 @@ def download_iltur_judgments():
         output_path = OUTPUT_DIR / "iltur_judgments.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(all_judgments, f, ensure_ascii=False, indent=2)
-        print(f"\nSaved {len(all_judgments)} total IL-TUR docs → {output_path}")
+        print(f"\nSaved {len(all_judgments)} total IL-TUR docs -> {output_path}")
     else:
         print("No IL-TUR data saved — sc_prechunked.json is sufficient, continuing.")
 

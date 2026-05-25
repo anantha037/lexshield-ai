@@ -9,15 +9,15 @@ Changes in this version:
 
 Everything else is unchanged from the Week 2 version.
 
-Takes one user query → generates 3 rewritten queries covering different
-legal angles → caller runs hybrid search on all 4 (original + 3 rewrites)
-→ deduplicated result pool goes to reranker.
+Takes one user query -> generates 3 rewritten queries covering different
+legal angles -> caller runs hybrid search on all 4 (original + 3 rewrites)
+-> deduplicated result pool goes to reranker.
 
 Design:
   • Uses Groq LLaMA 3.3 70B (same as answer generation — no extra API)
   • Prompts for angle diversity: statutory text / punishment / procedure
   • Low temperature (0.3) for consistent but varied outputs
-  • Strict JSON output → robust parser with line-by-line fallback
+  • Strict JSON output -> robust parser with line-by-line fallback
   • Whole step fails gracefully — returns [original_query] on any error
   • Adds legal context injection (IPC/BNS parallel queries auto-generated)
 """
@@ -217,7 +217,7 @@ class QueryRewriter:
     Usage:
         from rag.query_rewriter import query_rewriter
         all_queries = query_rewriter.rewrite(user_query)
-        # → [original, rewrite1, rewrite2, rewrite3, (optional statutory hint)]
+        # -> [original, rewrite1, rewrite2, rewrite3, (optional statutory hint)]
     """
 
     def __init__(self, temperature: float = 0.3, max_tokens: int = 200):

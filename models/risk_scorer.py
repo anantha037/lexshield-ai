@@ -388,7 +388,7 @@ def _score_to_level(score: float) -> str:
 
 
 def _extract_section_number(section_str: str) -> str:
-    """Extract normalized section number from NER output like 'Section 302' → '302'."""
+    """Extract normalized section number from NER output like 'Section 302' -> '302'."""
     m = re.search(r'(\d+[A-Z]?)', section_str.strip(), re.IGNORECASE)
     return m.group(1).upper() if m else ""
 

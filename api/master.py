@@ -68,6 +68,15 @@ class CitationInfo(BaseModel):
     relevance_score: Optional[float] = None
     era:             str             = ""
 
+class CaseLawItem(BaseModel):
+    title:    str = ""
+    court:    str = ""
+    date:     str = ""
+    citation: str = ""
+    headline: str = ""
+    url:      str = ""
+    summary:  str = ""
+
 class StructuredResponse(BaseModel):
     answer_text:       str
     summary:           str
@@ -85,6 +94,12 @@ class StructuredResponse(BaseModel):
     grounding_warning: str
     rewritten_queries: List[str]
     reranker_used:     bool
+    case_law_results:  List[CaseLawItem] = []
+    debug_scratchpad:  Optional[dict] = None
+    citation_status:   str = "unverified"
+    validation_status: str = "not_applicable"
+    scope_status:      str = "in_scope"
+    scope_message:     Optional[str] = None
 
 
 class SessionSummary(BaseModel):
@@ -164,8 +179,8 @@ def _extract_image(file_bytes: bytes) -> str:
 # RESPONSE BUILDER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _build_structured_response(resp) -> StructuredResponse:
-    """Map orchestrator LexShieldResponse → API StructuredResponse."""
+def _build_structured_response(resp, debug_scratchpad=None) -> StructuredResponse:
+    """Map orchestrator LexShieldResponse -> API StructuredResponse."""
     return StructuredResponse(
         answer_text       = resp.answer_text,
         summary           = resp.summary,
@@ -193,11 +208,19 @@ def _build_structured_response(resp) -> StructuredResponse:
         session_id        = resp.session_id,
         confidence        = resp.confidence,
         mode              = resp.mode,
+        citation_status   = getattr(resp, "citation_status", "unverified"),
+        validation_status = getattr(resp, "validation_status", "not_applicable"),
+        scope_status      = getattr(resp, "scope_status", "in_scope"),
+        scope_message     = getattr(resp, "scope_message", None),
         sources_consulted = resp.sources_consulted,
         synthesis_note    = resp.synthesis_note,
         grounding_warning = resp.grounding_warning,
         rewritten_queries = resp.rewritten_queries,
         reranker_used     = resp.reranker_used,
+        case_law_results  = [
+            CaseLawItem(**c) for c in (resp.case_law_results or [])
+        ],
+        debug_scratchpad  = debug_scratchpad,
     )
 
 
@@ -208,6 +231,7 @@ def _build_structured_response(resp) -> StructuredResponse:
 @router.post("/query", response_model=StructuredResponse)
 def master_query(
     request:      QueryRequest,
+    req:          Request = None,
     current_user: Optional[dict] = Depends(get_optional_user),
 ):
     """
@@ -220,7 +244,9 @@ def master_query(
 
     If a valid Bearer token is included, the session is linked to the user.
 
-    curl -s -X POST http://localhost:8000/api/v1/master/query \\
+    Append ?debug=true to include the agent scratchpad in the response.
+
+    curl -s -X POST http://localhost:8000/api/v1/master/query?debug=true \\
       -H "Content-Type: application/json" \\
       -d '{"query":"What is Section 138 NI Act?","session_id":null}' | python -m json.tool
     """
@@ -236,11 +262,14 @@ def master_query(
     if current_user:
         session_memory.link_session_to_user(resp.session_id, current_user["id"])
 
-    return _build_structured_response(resp)
+    debug = req.query_params.get("debug", "").lower() == "true" if req else False
+    scratchpad = resp.debug_scratchpad if debug else None
+    return _build_structured_response(resp, debug_scratchpad=scratchpad)
 
 
 @router.post("/document", response_model=StructuredResponse)
 async def master_document(
+    req:          Request,
     file:         UploadFile      = File(...),
     session_id:   Optional[str]   = Form(None),
     current_user: Optional[dict]  = Depends(get_optional_user),
@@ -250,7 +279,9 @@ async def master_document(
     Accepts: PDF, DOCX, TXT, JPG, PNG, TIFF, BMP  (max 10 MB)
     Form fields: file (required), session_id (optional)
 
-    curl -s -X POST http://localhost:8000/api/v1/master/document \\
+    Append ?debug=true to include the agent scratchpad in the response.
+
+    curl -s -X POST http://localhost:8000/api/v1/master/document?debug=true \\
       -F "file=@rental_agreement.pdf" \\
       -F "session_id=" | python -m json.tool
     """
@@ -286,7 +317,9 @@ async def master_document(
     if current_user:
         session_memory.link_session_to_user(resp.session_id, current_user["id"])
 
-    return _build_structured_response(resp)
+    debug = req.query_params.get("debug", "").lower() == "true"
+    scratchpad = resp.debug_scratchpad if debug else None
+    return _build_structured_response(resp, debug_scratchpad=scratchpad)
 
 
 @router.get("/session/{session_id}/history")

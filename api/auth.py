@@ -26,7 +26,7 @@ GET  /api/v1/auth/me       — Bearer token required
 
 Auth dependency
 ---------------
-get_current_user(token) → dict  — use as FastAPI Depends() in any endpoint.
+get_current_user(token) -> dict  — use as FastAPI Depends() in any endpoint.
 Returns {"id": ..., "email": ..., "full_name": ..., "created_at": ...}
 or raises HTTP 401 if token is missing / invalid / user not found.
 

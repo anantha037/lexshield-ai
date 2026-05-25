@@ -34,12 +34,12 @@ TABLE EXTRACTION:
 
 MULTILINGUAL OCR:
   Tesseract fallback uses source_language to select the correct language pack:
-    "ml" → "mal+eng"   (Malayalam + English)
-    "hi" → "hin+eng"   (Hindi + English)
-    "ta" → "tam+eng"   (Tamil + English)
-    "te" → "tel+eng"   (Telugu + English)
-    "kn" → "kan+eng"   (Kannada + English)
-    default → "eng"
+    "ml" -> "mal+eng"   (Malayalam + English)
+    "hi" -> "hin+eng"   (Hindi + English)
+    "ta" -> "tam+eng"   (Tamil + English)
+    "te" -> "tel+eng"   (Telugu + English)
+    "kn" -> "kan+eng"   (Kannada + English)
+    default -> "eng"
   docTR currently supports English only — Malayalam/Hindi pages that are
   scanned are routed to Tesseract automatically.
 
@@ -114,7 +114,7 @@ except ImportError:
 # TESSERACT LANGUAGE CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Maps ISO 639-1 language code → Tesseract language string
+# Maps ISO 639-1 language code -> Tesseract language string
 # Indian languages need "+eng" because legal documents mix scripts
 _TESSERACT_LANG_MAP: dict[str, str] = {
     "ml": "mal+eng",    # Malayalam — install tesseract-ocr-mal
@@ -297,7 +297,7 @@ def _extract_digital_pdf(pdf_path: str) -> Optional[str]:
 
         avg_chars = total_chars / max(len(pages_text), 1)
         if avg_chars < 50:
-            # Scanned PDF — very little extractable text → route to OCR
+            # Scanned PDF — very little extractable text -> route to OCR
             logger.info(
                 f"[CV] PyMuPDF: avg {avg_chars:.0f} chars/page — "
                 f"likely scanned, routing to OCR"
@@ -392,11 +392,11 @@ def _doctr_result_to_text(result) -> str:
     Convert docTR Document result object to plain text string.
 
     docTR result structure:
-      result.pages → list of Page
-        page.blocks → list of Block
-          block.lines → list of Line
-            line.words → list of Word
-              word.value → str
+      result.pages -> list of Page
+        page.blocks -> list of Block
+          block.lines -> list of Line
+            line.words -> list of Word
+              word.value -> str
     """
     pages_text = []
 
@@ -593,9 +593,9 @@ def extract_text_from_pdf_path(
     Extract text from a PDF file using the best available engine.
 
     Decision tree:
-      1. PyMuPDF → digital PDF? → return text + pdfplumber tables merged in
-      2. docTR   → scanned PDF (neural OCR, language-agnostic)
-      3. Tesseract → fallback (uses source_language for lang pack selection)
+      1. PyMuPDF -> digital PDF? -> return text + pdfplumber tables merged in
+      2. docTR   -> scanned PDF (neural OCR, language-agnostic)
+      3. Tesseract -> fallback (uses source_language for lang pack selection)
     """
     # ── Engine 1: PyMuPDF (digital PDF) ───────────────────────────────────────
     digital_text = _extract_digital_pdf(pdf_path)
@@ -666,8 +666,8 @@ def extract_text_from_image(
     Extract text from an image (OpenCV BGR numpy array).
 
     Decision tree:
-      1. docTR  → neural OCR (language-agnostic, better on low-quality scans)
-      2. Tesseract → multilingual fallback (uses source_language for lang pack)
+      1. docTR  -> neural OCR (language-agnostic, better on low-quality scans)
+      2. Tesseract -> multilingual fallback (uses source_language for lang pack)
 
     After extraction, detect_language() is called on result to set
     source_language if it wasn't already known.

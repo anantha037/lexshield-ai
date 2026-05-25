@@ -14,7 +14,7 @@ Ablation modes (--ablation flag):
   A: vector only, no rewrite, no rerank
   B: hybrid, no rewrite, no rerank
   C: hybrid + rewrite, no rerank
-  D: hybrid + rewrite + rerank   ← production pipeline
+  D: hybrid + rewrite + rerank   <- production pipeline
 
 Run:
   python tests/eval_rag.py                    # full eval, production pipeline
@@ -624,8 +624,8 @@ if __name__ == "__main__":
         print(f"  {i:02d}/{len(gold_set)}  {gold['query'][:60]}...")
         r = evaluate_query(gold, pipeline, use_judge=use_judge, verbose=args.verbose)
 
-        hit_mark  = "✓" if r.hit_at_5  else "✗"
-        grnd_mark = "✓" if r.grounded  else "⚠"
+        hit_mark  = "OK" if r.hit_at_5  else "FAIL"
+        grnd_mark = "OK" if r.grounded  else "⚠"
         judge_str = f"  judge={r.llm_judge_score:.0f}" if r.llm_judge_score else ""
         print(f"         hit={hit_mark}  grounded={grnd_mark}  kw={r.keyword_recall:.0%}{judge_str}")
         if r.grounding_warning:
@@ -677,7 +677,7 @@ if __name__ == "__main__":
         }
         with open(args.save, "w") as f:
             json.dump(payload, f, indent=2)
-        print(f"\n  Results saved → {args.save}")
+        print(f"\n  Results saved -> {args.save}")
 
     # ── Exit code ─────────────────────────────────────────────────────────────
     target_met = (
@@ -685,5 +685,5 @@ if __name__ == "__main__":
         metrics["grounding_rate"] >= 0.80 and
         (metrics["llm_judge_mean"] is None or metrics["llm_judge_mean"] >= 4.0)
     )
-    print(f"\n{'✓ RAG EVAL TARGETS MET' if target_met else '✗ TARGETS NOT MET'}")
+    print(f"\n{'OK RAG EVAL TARGETS MET' if target_met else 'FAIL TARGETS NOT MET'}")
     sys.exit(0 if target_met else 1)

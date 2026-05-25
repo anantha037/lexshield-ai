@@ -52,7 +52,7 @@ export async function sendQuery(query, session_id, language, signal) {
     signal,
   });
   if (!raw) return null; /* aborted */
-  if (!raw.answer_text && !raw.answer && !raw.draft && !raw.summary)
+  if (raw.scope_status !== 'out_of_scope' && !raw.answer_text && !raw.answer && !raw.draft && !raw.summary)
     throw new Error('Empty response from legal engine. Please try again.');
   return raw;
 }
@@ -85,6 +85,22 @@ export const checkHealth = () => request('/health');
 
 export function adaptQueryResponse(raw) {
   if (!raw) return null;
+
+  // Extract structured case law results from backend
+  const caseLawResults = (
+    raw.case_law_results ||
+    raw.case_law_result?.results ||
+    []
+  ).map(c => ({
+    title:    c.title    || '',
+    court:    c.court    || '',
+    date:     c.date     || '',
+    citation: c.citation || '',
+    headline: c.headline || '',
+    url:      c.url      || '',
+    summary:  c.summary  || '',
+  }));
+
   return {
     answer: raw.answer_text || raw.answer || '',
     summary: raw.summary || '',
@@ -103,6 +119,9 @@ export function adaptQueryResponse(raw) {
     sourcesConsulted: raw.sources_consulted || 0,
     synthesisNote: raw.synthesis_note || '',
     groundingWarning: raw.grounding_warning || '',
+    citationStatus: raw.citation_status || 'unverified',
+    scopeStatus: raw.scope_status || 'in_scope',
+    scopeMessage: raw.scope_message || '',
     rewrittenQueries: raw.rewritten_queries || [],
     rerankerUsed: raw.reranker_used || false,
     keyClauses: raw.key_clauses || [],
@@ -113,6 +132,7 @@ export function adaptQueryResponse(raw) {
     supportingDocuments: raw.supporting_documents || [],
     filingAuthority: raw.filing_authority || '',
     nextSteps: raw.next_steps || '',
+    caseLawResults,
   };
 }
 

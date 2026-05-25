@@ -63,7 +63,7 @@ class TestOrchestratorRouting:
             resp = orch.handle_query("What is Section 302 IPC?")
             assert resp.intent == "legal_query"
             assert "rag" in resp.mode.lower() or "legal" in resp.mode.lower()
-            print(f"\n✓ legal_query → {resp.mode}")
+            print(f"\nOK legal_query -> {resp.mode}")
 
     def test_risk_check_routes_to_risk_node(self):
         with patch("rag.pipeline.rag_pipeline") as mock_rag:
@@ -72,14 +72,14 @@ class TestOrchestratorRouting:
             resp = orch.handle_query("Am I liable if I breach a rental agreement?")
             assert resp.intent == "risk_check"
             assert "risk" in resp.mode.lower()
-            print(f"\n✓ risk_check → {resp.mode}")
+            print(f"\nOK risk_check -> {resp.mode}")
 
     def test_draft_request_routes_to_draft_node(self):
         orch = MasterOrchestrator()
         resp = orch.handle_query("Help me draft a rental agreement")
         assert resp.intent == "draft_request"
         assert "draft" in resp.mode.lower()
-        print(f"\n✓ draft_request → {resp.mode}")
+        print(f"\nOK draft_request -> {resp.mode}")
 
     def test_general_routes_to_llm(self):
         with patch("rag.llm.llm") as mock_llm:
@@ -88,7 +88,7 @@ class TestOrchestratorRouting:
             resp = orch.handle_query("Hello, what can you do?")
             assert resp.intent == "general"
             assert "general" in resp.mode.lower()
-            print(f"\n✓ general → {resp.mode}")
+            print(f"\nOK general -> {resp.mode}")
 
     def test_translation_request_intent(self):
         with patch("rag.pipeline.rag_pipeline") as mock_rag, \
@@ -98,7 +98,7 @@ class TestOrchestratorRouting:
             orch = MasterOrchestrator()
             resp = orch.handle_query("Explain Section 138 NI Act in Malayalam")
             assert resp.intent == "translation_request"
-            print(f"\n✓ translation_request → {resp.mode}")
+            print(f"\nOK translation_request -> {resp.mode}")
 
     def test_document_analysis_intent(self):
         with patch("rag.pipeline.rag_pipeline") as mock_rag:
@@ -106,7 +106,7 @@ class TestOrchestratorRouting:
             orch = MasterOrchestrator()
             resp = orch.handle_query("Analyze this rental agreement document")
             assert resp.intent == "document_analysis"
-            print(f"\n✓ document_analysis → {resp.mode}")
+            print(f"\nOK document_analysis -> {resp.mode}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -132,7 +132,7 @@ class TestStructuredOutput:
         d = resp.to_dict()
         for field in required:
             assert field in d, f"Missing field: {field}"
-        print(f"\n✓ All structured output fields present")
+        print(f"\nOK All structured output fields present")
 
     def test_summary_populated(self):
         with patch("rag.pipeline.rag_pipeline") as mock_rag:
@@ -145,7 +145,7 @@ class TestStructuredOutput:
 
         assert len(resp.summary) > 0
         assert len(resp.summary) <= len(resp.answer_text)
-        print(f"\n✓ Summary: {resp.summary[:60]}")
+        print(f"\nOK Summary: {resp.summary[:60]}")
 
     def test_risk_score_valid_range(self):
         with patch("rag.pipeline.rag_pipeline") as mock_rag:
@@ -155,7 +155,7 @@ class TestStructuredOutput:
 
         assert 0.0 <= resp.risk_score <= 1.0
         assert resp.risk_level in ("Low", "Medium", "High", "Critical")
-        print(f"\n✓ Risk: {resp.risk_score:.2f} ({resp.risk_level})")
+        print(f"\nOK Risk: {resp.risk_score:.2f} ({resp.risk_level})")
 
     def test_suggestions_non_empty(self):
         with patch("rag.pipeline.rag_pipeline") as mock_rag:
@@ -164,7 +164,7 @@ class TestStructuredOutput:
             resp = orch.handle_query("Is it legal to not pay employees on time?")
 
         assert len(resp.suggestions) > 0
-        print(f"\n✓ Suggestions: {resp.suggestions[0][:60]}")
+        print(f"\nOK Suggestions: {resp.suggestions[0][:60]}")
 
     def test_to_dict_json_serializable(self):
         import json
@@ -176,7 +176,7 @@ class TestStructuredOutput:
         d    = resp.to_dict()
         blob = json.dumps(d)  # must not raise
         assert len(blob) > 10
-        print(f"\n✓ to_dict() is JSON serializable ({len(blob)} chars)")
+        print(f"\nOK to_dict() is JSON serializable ({len(blob)} chars)")
 
     def test_handle_document_returns_structured(self):
         with patch("rag.pipeline.rag_pipeline") as mock_rag:
@@ -190,7 +190,7 @@ class TestStructuredOutput:
         assert resp.intent            == "document_analysis"
         assert len(resp.answer_text)  > 0
         assert len(resp.summary)      > 0
-        print(f"\n✓ handle_document returns structured output")
+        print(f"\nOK handle_document returns structured output")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -213,7 +213,7 @@ class TestDraftingAgentIntegration:
             r1 = orch.handle_query("Help me draft a written complaint to police for theft")
             assert r1.intent == "draft_request"
             assert fresh_agent.has_active_draft(r1.session_id)
-            print(f"\n✓ FIR Turn 1 — stage in progress, session={r1.session_id[:8]}")
+            print(f"\nOK FIR Turn 1 — stage in progress, session={r1.session_id[:8]}")
 
             # Turn 2
             r2 = orch.handle_query(
@@ -221,7 +221,7 @@ class TestDraftingAgentIntegration:
                 session_id=r1.session_id,
             )
             assert fresh_agent.has_active_draft(r1.session_id)
-            print(f"\n✓ FIR Turn 2 — still in progress")
+            print(f"\nOK FIR Turn 2 — still in progress")
 
             # Turn 3
             r3 = orch.handle_query(
@@ -230,7 +230,7 @@ class TestDraftingAgentIntegration:
             )
             assert not fresh_agent.has_active_draft(r1.session_id)
             assert "MOCK FIR DRAFT" in r3.answer_text or r3.draft == "MOCK FIR DRAFT"
-            print(f"\n✓ FIR Turn 3 — draft complete, session cleared")
+            print(f"\nOK FIR Turn 3 — draft complete, session cleared")
 
     def test_draft_intent_preserved_across_turns(self):
         """Session intent stays draft_request for all 3 turns."""
@@ -253,7 +253,7 @@ class TestDraftingAgentIntegration:
 
         assert r1.intent == "draft_request"
         assert r3.intent == "draft_request"
-        print(f"\n✓ Draft intent preserved across all 3 turns")
+        print(f"\nOK Draft intent preserved across all 3 turns")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -269,7 +269,7 @@ class TestKnowledgeGraphIntegration:
         assert stats["built"]  == True
         assert stats["nodes"]  >  200
         assert stats["edges"]  >  100
-        print(f"\n✓ KG built: {stats['nodes']} nodes, {stats['edges']} edges")
+        print(f"\nOK KG built: {stats['nodes']} nodes, {stats['edges']} edges")
 
     def test_kg_420_ipc_returns_related(self):
         from rag.knowledge_graph import get_kg
@@ -278,7 +278,7 @@ class TestKnowledgeGraphIntegration:
         assert len(related) > 0
         sections = {r["section"] for r in related if r["node_type"] == "section"}
         assert "415" in sections or "318" in sections
-        print(f"\n✓ KG Section 420 IPC → {len(related)} related nodes")
+        print(f"\nOK KG Section 420 IPC -> {len(related)} related nodes")
 
     def test_kg_context_format(self):
         from rag.knowledge_graph import get_kg
@@ -287,7 +287,7 @@ class TestKnowledgeGraphIntegration:
         ctx     = kg.format_context("302", "Indian Penal Code", related)
         assert "[Knowledge Graph]" in ctx
         assert "302" in ctx
-        print(f"\n✓ KG context format correct for Section 302 IPC")
+        print(f"\nOK KG context format correct for Section 302 IPC")
 
     def test_kg_injected_in_pipeline_for_section_query(self):
         """
@@ -298,7 +298,7 @@ class TestKnowledgeGraphIntegration:
         kg = get_kg()  # ensure built
         related = kg.query_related_sections("138", source_hint="Negotiable Instruments Act")
         assert len(related) > 0, "KG should have entries for Section 138 NI Act"
-        print(f"\n✓ KG has entries for Section 138 NI Act — pipeline injection ready")
+        print(f"\nOK KG has entries for Section 138 NI Act — pipeline injection ready")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -311,31 +311,31 @@ class TestTranslationAgent:
         r = detect_language("What is Section 302 IPC?")
         assert r.is_english      == True
         assert r.detected_script is None
-        print(f"\n✓ English detected correctly")
+        print(f"\nOK English detected correctly")
 
     def test_detect_malayalam_script(self):
         r = detect_language("വകുപ്പ് 302 ഐപിസി എന്താണ്?")
         assert r.is_english      == False
         assert r.detected_script == "Malayalam"
-        print(f"\n✓ Malayalam script detected")
+        print(f"\nOK Malayalam script detected")
 
     def test_detect_hindi_script(self):
         r = detect_language("धारा 302 आईपीसी क्या है?")
         assert r.is_english      == False
         assert r.detected_script == "Hindi"
-        print(f"\n✓ Hindi script detected")
+        print(f"\nOK Hindi script detected")
 
     def test_detect_translation_request(self):
         r = detect_language("Explain Section 138 NI Act in Malayalam")
         assert r.target_language == "Malayalam"
-        print(f"\n✓ Translation target detected: {r.target_language}")
+        print(f"\nOK Translation target detected: {r.target_language}")
 
     def test_strip_legal_content(self):
         query  = "Translate into Malayalam: What is Section 302 IPC?"
         result = _strip_legal_content(query, "Malayalam")
         assert "Section 302" in result
         assert "Translate" not in result
-        print(f"\n✓ Legal content stripped: {result!r}")
+        print(f"\nOK Legal content stripped: {result!r}")
 
     def test_translation_node_called_for_translation_intent(self):
         with patch("rag.pipeline.rag_pipeline") as mock_rag, \
@@ -348,7 +348,7 @@ class TestTranslationAgent:
 
         assert resp.intent == "translation_request"
         assert len(resp.answer_text) > 0
-        print(f"\n✓ Translation intent handled end-to-end")
+        print(f"\nOK Translation intent handled end-to-end")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -365,7 +365,7 @@ class TestSessionMemory:
 
         assert resp.session_id != ""
         assert len(resp.session_id) > 8
-        print(f"\n✓ Session created: {resp.session_id[:8]}...")
+        print(f"\nOK Session created: {resp.session_id[:8]}...")
 
     def test_session_persists_across_turns(self):
         mem = SessionMemory()
@@ -378,7 +378,7 @@ class TestSessionMemory:
         assert len(history) == 3
         assert history[0]["role"]    == "user"
         assert history[1]["role"]    == "assistant"
-        print(f"\n✓ Session memory stores {len(history)} turns correctly")
+        print(f"\nOK Session memory stores {len(history)} turns correctly")
 
     def test_context_block_format(self):
         mem = SessionMemory()
@@ -390,7 +390,7 @@ class TestSessionMemory:
         assert "[CONVERSATION HISTORY]" in ctx
         assert "[END HISTORY]"          in ctx
         assert "Section 302"            in ctx
-        print(f"\n✓ Context block formatted correctly")
+        print(f"\nOK Context block formatted correctly")
 
     def test_session_delete(self):
         mem = SessionMemory()
@@ -400,7 +400,7 @@ class TestSessionMemory:
 
         mem.delete_session(sid)
         assert not mem.session_exists(sid)
-        print(f"\n✓ Session delete works correctly")
+        print(f"\nOK Session delete works correctly")
 
     def test_max_turns_stored(self):
         from agents.memory import MAX_TURNS_STORED
@@ -410,7 +410,7 @@ class TestSessionMemory:
             mem.add_turn(sid, "user", f"message {i}", None)
 
         assert mem.turn_count(sid) == MAX_TURNS_STORED
-        print(f"\n✓ Max turns FIFO trim works: {MAX_TURNS_STORED} max")
+        print(f"\nOK Max turns FIFO trim works: {MAX_TURNS_STORED} max")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -435,7 +435,7 @@ class TestLegacyEndpoint:
         assert "intent"      in d
         assert "summary"     in d
         assert d["intent"]   == "legal_query"
-        print(f"\n✓ Legacy endpoint compatible — to_dict() has all keys")
+        print(f"\nOK Legacy endpoint compatible — to_dict() has all keys")
 
     def test_all_six_intents_return_structured(self):
         """Every intent must return a LexShieldResponse with consistent structure."""
@@ -461,4 +461,4 @@ class TestLegacyEndpoint:
             assert "answer_text"         in d
             assert "risk"                in d
             assert isinstance(d["risk"], dict)
-            print(f"\n✓ {expected_intent:25} → structured output OK")
+            print(f"\nOK {expected_intent:25} -> structured output OK")
