@@ -67,6 +67,16 @@ class MasterOrchestrator:
         # Record user turn BEFORE invoking (so context includes prior turns)
         session_memory.add_turn(session_id, role="user", content=query, intent=None)
 
+        def _is_vague_followup(q: str) -> bool:
+            words = q.lower().split()
+            pronouns = {"that", "it", "this", "those", "its", "them", "same"}
+            return len(words) < 10 and any(p in words for p in pronouns)
+
+        if _is_vague_followup(query):
+            last_sections = session_memory.get_last_scratchpad_entities(session_id)
+            if last_sections:
+                query = f"{query} {' '.join(last_sections)}"
+
         # Build initial state — nodes update their own fields
         initial_state: AgentState = {
             "query":           query,
@@ -123,7 +133,6 @@ class MasterOrchestrator:
                 })
 
         # Derive citation_status from raw pipeline output fields
-        # Derive citation_status
         _rag = final_state.get("rag_result", {})
         _grounding = _rag.get("grounding_warning", "") or ""
         _sources = _rag.get("sources_consulted", 0)
@@ -169,9 +178,13 @@ class MasterOrchestrator:
         
         profile_memory.update_profile(session_id, intent, entities_for_profile)
 
-        # Record assistant turn
+        # FIX: save citation_status to DB so get_history() returns it correctly
         session_memory.add_turn(
-            session_id, role="assistant", content=answer, intent=intent
+            session_id,
+            role="assistant",
+            content=answer,
+            intent=intent,
+            citation_status=citation_status,
         )
 
         # Attach metadata to LangSmith trace
@@ -190,7 +203,6 @@ class MasterOrchestrator:
         try:
             os.makedirs("logs", exist_ok=True)
             
-            # Extract crag_score directly from rag_result
             crag_score = rag_result.get("crag_score", 0)
             if not crag_score:
                 note = rag_result.get("synthesis_note", "")
@@ -200,9 +212,6 @@ class MasterOrchestrator:
                     if m:
                         crag_score = int(m.group(1))
                 elif "complexity=simple" in note:
-                    # Simple complexity queries bypass CRAG scoring and proceed directly
-                    # to synthesis. We default to 4 (good retrieval) as simple queries
-                    # use the section fast-path which has high precision by design.
                     crag_score = 4
 
             metric = {
@@ -222,6 +231,20 @@ class MasterOrchestrator:
                 f.write(json.dumps(metric) + "\n")
         except Exception as e:
             logger.warning(f"[Orchestrator] Failed to write local metric log: {e}")
+
+        import re
+        extracted_entities = []
+        final_query = final_state.get("query", query)
+        sec_matches = re.findall(r"Section \d+", final_query, re.IGNORECASE)
+        if sec_matches:
+            extracted_entities.extend(sec_matches)
+        
+        for act in ["IPC", "BNS", "CrPC", "BNSS", "IEA", "CPC"]:
+            if re.search(rf"\b{act}\b", final_query, re.IGNORECASE):
+                extracted_entities.append(act)
+                
+        if extracted_entities:
+            session_memory.store_last_entities(session_id, extracted_entities)
 
         return build_structured_response(
             answer_text       = answer,
@@ -255,7 +278,6 @@ class MasterOrchestrator:
     ) -> LexShieldResponse:
         session_id = session_memory.ensure_session(session_id)
 
-        # Use BM25-scored context if extracted text is meaningful (≥20 chars)
         doc_snippet = extracted_text[:500].strip()
         if len(doc_snippet) >= 20:
             context_block = session_memory.get_relevant_context(session_id, doc_snippet)
@@ -288,7 +310,7 @@ class MasterOrchestrator:
         initial_state: AgentState = {
             "query":           query,
             "session_id":      session_id,
-            "intent":          "document_analysis",   # pre-set — skip classifier
+            "intent":          "document_analysis",
             "confidence":      1.0,
             "rag_result":      {"context_block": context_block},
             "ner_result":      {},
@@ -340,8 +362,13 @@ class MasterOrchestrator:
         
         profile_memory.update_profile(session_id, "document_analysis", entities_for_profile)
 
+        # Document analysis always unverified — saved consistently for history
         session_memory.add_turn(
-            session_id, role="assistant", content=answer, intent="document_analysis"
+            session_id,
+            role="assistant",
+            content=answer,
+            intent="document_analysis",
+            citation_status="unverified",
         )
 
         return build_structured_response(
