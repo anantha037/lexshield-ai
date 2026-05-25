@@ -130,7 +130,15 @@ export default function Sidebar() {
       const data = await getSessionHistory(sid);
       const hist = data?.history || data;
       if (Array.isArray(hist)) {
-        setChatMessages(hist.map(h => ({ role: h.role, content: h.content, intent: h.intent, ts: h.ts })));
+        setChatMessages(hist.map(h => ({ 
+          role: h.role, 
+          content: h.content, 
+          intent: h.intent, 
+          ts: h.ts,
+          citationStatus: h.citation_status || h.citationStatus || 'unverified',
+          scopeStatus: h.scope_status || h.scopeStatus || 'in_scope',
+          scopeMessage: h.scope_message || h.scopeMessage || ''
+        })));
       }
       setActiveSession(sid);
       setActiveView('chat');
