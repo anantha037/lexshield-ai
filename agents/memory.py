@@ -8,7 +8,7 @@ in-memory version so orchestrator.py needs no changes.
 Tables
 ------
 sessions (session_id PK, created_ts, user_id TEXT nullable)
-turns    (id PK, session_id FK, role, content, intent, ts)
+turns    (id PK, session_id FK, role, content, intent, ts, citation_status)
 
 Uses the SAME data/sessions.db file as the LangGraph SqliteSaver
 checkpointer — the table names do not overlap (LangGraph uses
@@ -20,7 +20,7 @@ session_memory.ensure_session(sid)              -> str
 session_memory.session_exists(sid)              -> bool
 session_memory.create_session()                 -> str
 session_memory.delete_session(sid)              -> bool
-session_memory.add_turn(sid, role, content, intent=None)
+session_memory.add_turn(sid, role, content, intent=None, citation_status=None)
 session_memory.get_history(sid)                 -> list[dict]  (ALL turns)
 session_memory.get_context_block(sid)           -> str
 session_memory.turn_count(sid)                  -> int
@@ -64,12 +64,13 @@ def _init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS turns (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id  TEXT    NOT NULL,
-                role        TEXT    NOT NULL,   -- "user" | "assistant"
-                content     TEXT    NOT NULL,
-                intent      TEXT,               -- nullable
-                ts          REAL    NOT NULL
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id      TEXT    NOT NULL,
+                role            TEXT    NOT NULL,   -- "user" | "assistant"
+                content         TEXT    NOT NULL,
+                intent          TEXT,               -- nullable
+                ts              REAL    NOT NULL,
+                citation_status TEXT                -- nullable, "cited"|"partial"|"unverified"
             );
 
             CREATE INDEX IF NOT EXISTS idx_turns_session_id
@@ -88,13 +89,22 @@ def _init_db() -> None:
         """)
         _conn.commit()
 
-        # Idempotent migration: add user_id column to sessions if not present
+        # Idempotent migrations: add columns if not present
         cols = [
             row["name"]
             for row in _conn.execute("PRAGMA table_info(sessions)").fetchall()
         ]
         if "user_id" not in cols:
             _conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
+            _conn.commit()
+
+        # FIX: add citation_status column to turns if not present (existing DBs)
+        turn_cols = [
+            row["name"]
+            for row in _conn.execute("PRAGMA table_info(turns)").fetchall()
+        ]
+        if "citation_status" not in turn_cols:
+            _conn.execute("ALTER TABLE turns ADD COLUMN citation_status TEXT")
             _conn.commit()
 
 
@@ -110,6 +120,17 @@ GENERAL_INTENT_TURNS = 3  # reduced turn count for trivial/general queries
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SessionMemory:
+
+    def __init__(self):
+        self.sessions = {}
+
+    def store_last_entities(self, session_id: str, entities: list[str]) -> None:
+        if session_id not in self.sessions:
+            self.sessions[session_id] = {}
+        self.sessions[session_id]["last_entities"] = entities
+
+    def get_last_scratchpad_entities(self, session_id: str) -> list[str]:
+        return self.sessions.get(session_id, {}).get("last_entities", [])
 
     # ── Session lifecycle ──────────────────────────────────────────────────────
 
@@ -206,10 +227,11 @@ class SessionMemory:
 
     def add_turn(
         self,
-        session_id: str,
-        role:       str,
-        content:    str,
-        intent:     Optional[str] = None,
+        session_id:      str,
+        role:            str,
+        content:         str,
+        intent:          Optional[str] = None,
+        citation_status: Optional[str] = None,  # FIX: new param
     ) -> None:
         """
         Append a turn.  Auto-creates session row if missing.
@@ -222,9 +244,9 @@ class SessionMemory:
                 (session_id, time.time()),
             )
             _conn.execute(
-                "INSERT INTO turns (session_id, role, content, intent, ts) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, intent, time.time()),
+                "INSERT INTO turns (session_id, role, content, intent, ts, citation_status) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, role, content, intent, time.time(), citation_status),
             )
             _conn.commit()
 
@@ -246,7 +268,6 @@ class SessionMemory:
             ids = [r["id"] for r in rows]
             
             # Summarize before deleting
-            # Reverse to get chronological order for the summary
             turns_to_summarize = [
                 {"id": r["id"], "role": r["role"], "content": r["content"]} 
                 for r in reversed(rows)
@@ -321,10 +342,10 @@ class SessionMemory:
         Used by frontend to restore complete chat history when a user
         reopens an old session.
 
-        Each dict: { role, content, intent, ts }
+        Each dict: { role, content, intent, ts, citation_status }
         """
         rows = _conn.execute(
-            "SELECT role, content, intent, ts FROM turns "
+            "SELECT role, content, intent, ts, citation_status FROM turns "
             "WHERE session_id = ? ORDER BY id ASC",
             (session_id,),
         ).fetchall()
@@ -350,7 +371,6 @@ class SessionMemory:
         if not rows:
             return ""
 
-        # Reverse to get chronological order
         lines = ["[CONVERSATION HISTORY]"]
         for row in reversed(rows):
             label = "User" if row["role"] == "user" else "Assistant"
@@ -370,14 +390,13 @@ class SessionMemory:
 
         Fallback to get_context_block() when:
           - fewer than top_k turns exist
-          - query tokenizes to ≤2 tokens (trivial / greeting)
+          - query tokenizes to <=2 tokens (trivial / greeting)
           - any exception during BM25 scoring
         """
         try:
             from rag.bm25_retriever import tokenize
             from rank_bm25 import BM25Okapi
 
-            # Trivial query detection — skip BM25 overhead
             query_tokens = tokenize(current_query)
             if len(query_tokens) <= 2:
                 rows = _conn.execute(
@@ -394,7 +413,6 @@ class SessionMemory:
                 lines.append("[END HISTORY]")
                 return "\n".join(lines)
 
-            # Fetch all stored turns for the session
             rows = _conn.execute(
                 "SELECT id, role, content FROM turns "
                 "WHERE session_id = ? ORDER BY id ASC",
@@ -404,23 +422,18 @@ class SessionMemory:
             if len(rows) < top_k:
                 return self.get_context_block(session_id)
 
-            # Build ephemeral BM25 index from turn contents
             turn_data = [{"id": r["id"], "role": r["role"], "content": r["content"]} for r in rows]
             corpus_tokenized = [tokenize(t["content"]) for t in turn_data]
             bm25 = BM25Okapi(corpus_tokenized)
 
-            # Score all turns against the current query
             scores = bm25.get_scores(query_tokens)
 
-            # Select top_k by descending BM25 score
             indexed_scores = list(enumerate(scores))
             indexed_scores.sort(key=lambda x: x[1], reverse=True)
             top_indices = [idx for idx, _ in indexed_scores[:top_k]]
 
-            # Re-sort by original position (chronological order)
             top_indices.sort()
 
-            # Format identically to get_context_block()
             lines = ["[CONVERSATION HISTORY]"]
             for idx in top_indices:
                 t = turn_data[idx]
@@ -430,7 +443,6 @@ class SessionMemory:
             return "\n".join(lines)
 
         except Exception:
-            # Silent fallback — never propagate to orchestrator
             return self.get_context_block(session_id)
 
     def turn_count(self, session_id: str) -> int:
