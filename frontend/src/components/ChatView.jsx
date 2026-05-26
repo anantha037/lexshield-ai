@@ -118,6 +118,14 @@ function UnverifiedBanner() {
   );
 }
 
+function LLMBadge() {
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(139, 92, 246, 0.1)', color: '#8B5CF6', padding: '2px 8px', borderRadius: 99, fontSize: 11, fontWeight: 600, border: '1px solid rgba(139, 92, 246, 0.2)', marginBottom: 8 }} title="This response was generated directly by the AI model, not retrieved from the legal corpus.">
+      <IconScale size={12} /> LLM Generated — Not from legal corpus
+    </div>
+  );
+}
+
 /* ── Case Law Cards Component ─────────────────────────────────────────────── */
 
 function CaseLawCards({ cases }) {
@@ -278,6 +286,7 @@ export default function ChatView() {
         citationStatus: r.citationStatus || 'unverified', // ← FIX: was missing, always showed "Unverified"
         scopeStatus: r.scopeStatus || 'in_scope',
         scopeMessage: r.scopeMessage || '',
+        source: raw.source || 'default',
         ts: Date.now() / 1000,
       }]);
       setLastResponse(r);
@@ -398,8 +407,9 @@ export default function ChatView() {
               <div style={{ position: 'relative', background: 'var(--c-surface)', border: `1px solid ${isCaseLaw ? 'rgba(6,182,212,0.15)' : 'var(--c-border)'}`, borderRadius: '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }} className="msg-bubble-wrap">
                 <style>{`.msg-bubble-wrap:hover .copy-btn { opacity: 1 !important; }`}</style>
 
-                {isLegalIntent && cStatus === 'unverified' && <UnverifiedBanner />}
-                {isLegalIntent && cStatus !== 'unverified' && <TrustBadge status={cStatus} />}
+                {isLegalIntent && cStatus === 'unverified' && m.source !== 'llm_only' && <UnverifiedBanner />}
+                {isLegalIntent && cStatus !== 'unverified' && m.source !== 'llm_only' && <TrustBadge status={cStatus} />}
+                {m.source === 'llm_only' && <LLMBadge />}
 
                 {isCaseLaw ? (
                   <CaseLawCards cases={m.caseLawResults} />
