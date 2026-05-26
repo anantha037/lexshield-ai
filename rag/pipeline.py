@@ -230,9 +230,16 @@ def _hybrid_search_multi(
     n_results: int,
     category_filter: Optional[str],
     act_hint: Optional[str] = None,
+    category_confidence: Optional[float] = None,
 ) -> list[dict]:
     return deduplicate_chunks([
-        hybrid_searcher.search(q, n_results=n_results, category_filter=category_filter, act_hint=act_hint)
+        hybrid_searcher.search(
+            q,
+            n_results=n_results,
+            category_filter=category_filter,
+            act_hint=act_hint,
+            category_confidence=category_confidence,
+        )
         for q in queries
     ])
 
@@ -247,13 +254,18 @@ def _retrieve_for_subquery(
     category_filter: Optional[str],
     label: str,
     act_hint: Optional[str] = None,
+    category_confidence: Optional[float] = None,
 ) -> list[dict]:
     """
     Run hybrid search for a single sub-query and tag each chunk with its
     sub-query label so the synthesizer can present labeled context blocks.
     """
     chunks = hybrid_searcher.search(
-        sub_query, n_results=n_results, category_filter=category_filter, act_hint=act_hint
+        sub_query,
+        n_results=n_results,
+        category_filter=category_filter,
+        act_hint=act_hint,
+        category_confidence=category_confidence,
     )
     for c in chunks:
         c["subquery_label"] = label
@@ -470,7 +482,9 @@ class RAGPipeline:
                 for i, sq in enumerate(sub_queries, 1):
                     label  = f"Sub-query {i}"
                     chunks = _retrieve_for_subquery(
-                        sq, self.n_retrieve, effective_filter, label, act_hint=original_act_hint
+                        sq, self.n_retrieve, effective_filter, label,
+                        act_hint=original_act_hint,
+                        category_confidence=auto_confidence if effective_filter else None,
                     )
                     subquery_pools.append((label, chunks))
                     decomposed_chunks.extend(chunks)
@@ -492,14 +506,28 @@ class RAGPipeline:
         # STEP 3: Hybrid retrieval
         # ═══════════════════════════════════════════════════════════════════════
         if effective_filter:
-            merged_free = _hybrid_search_multi(all_queries, self.n_retrieve, effective_filter, act_hint=original_act_hint)
+            merged_free = _hybrid_search_multi(
+                all_queries, self.n_retrieve, effective_filter,
+                act_hint=original_act_hint,
+                category_confidence=auto_confidence,
+            )
         elif auto_category and auto_confidence >= CONFIDENCE_MED:
-            filtered = _hybrid_search_multi(all_queries, self.n_retrieve, auto_category, act_hint=original_act_hint)
-            global_r = _hybrid_search_multi(all_queries, self.n_retrieve, None, act_hint=original_act_hint)
+            filtered = _hybrid_search_multi(
+                all_queries, self.n_retrieve, auto_category,
+                act_hint=original_act_hint,
+                category_confidence=auto_confidence,
+            )
+            global_r = _hybrid_search_multi(
+                all_queries, self.n_retrieve, None,
+                act_hint=original_act_hint,
+            )
             fids     = {r["chunk_id"] for r in filtered}
             merged_free = filtered + [r for r in global_r if r["chunk_id"] not in fids]
         else:
-            merged_free = _hybrid_search_multi(all_queries, self.n_retrieve, None, act_hint=original_act_hint)
+            merged_free = _hybrid_search_multi(
+                all_queries, self.n_retrieve, None,
+                act_hint=original_act_hint,
+            )
 
         # Merge decomposed chunks into free pool
         if decomposed_chunks:
@@ -582,7 +610,8 @@ class RAGPipeline:
                 extra_queries  = [q for q in extra_rewrites if q not in all_queries]
                 if extra_queries:
                     extra_chunks = _hybrid_search_multi(
-                        extra_queries, self.n_retrieve, effective_filter
+                        extra_queries, self.n_retrieve, effective_filter,
+                        category_confidence=auto_confidence,
                     )
                     existing_ids = {c["chunk_id"] for c in merged}
                     new_chunks   = [c for c in extra_chunks if c["chunk_id"] not in existing_ids]
