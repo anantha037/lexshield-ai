@@ -52,6 +52,11 @@ class FactExtractionResult(BaseModel):
 
 class DraftStage(str, Enum):
     INIT               = "INIT"
+    # ── New explicit stages (graph-aware) ─────────────────────────────────────
+    MENU_SHOWN         = "MENU_SHOWN"          # menu presented, waiting for selection
+    COLLECTING_FIELDS  = "COLLECTING_FIELDS"   # complaint type set, collecting fields
+    AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"  # all fields done, confirm/cancel
+    # ── Legacy internal stages (kept for backward-compat) ─────────────────────
     CLARIFY            = "CLARIFY"
     RETRIEVE_SECTIONS  = "RETRIEVE_SECTIONS"
     IDENTIFY_AUTHORITY = "IDENTIFY_AUTHORITY"
@@ -1331,6 +1336,17 @@ class DraftingAgent:
         """
         Main dispatch entry point called by draft_node in graph.py.
         Routes to the appropriate stage handler based on DB state.
+
+        Stage dispatch order:
+          None              -> _start_draft  (detects category or shows menu)
+          MENU_SHOWN        -> _handle_menu_shown  (parse selection, advance to COLLECTING_FIELDS)
+          COLLECTING_FIELDS -> _process_answer     (collect field values, advance to AWAITING_CONFIRMATION)
+          AWAITING_CONFIRMATION -> _generate_draft (only reached on confirmed intent from graph.py)
+          CLARIFY           -> _process_answer     (legacy fallback path)
+          RETRIEVE_SECTIONS -> _retrieve_sections
+          IDENTIFY_AUTHORITY-> _identify_authority
+          CONFIRM           -> _handle_confirm      (legacy — kept for back-compat)
+          GENERATE          -> _generate_draft
         """
         row = self._load(session_id)
 
@@ -1339,6 +1355,18 @@ class DraftingAgent:
 
         stage = row["stage"]
 
+        # ── New explicit stages ────────────────────────────────────────────────
+        if stage == DraftStage.MENU_SHOWN:
+            return self._handle_menu_shown(session_id, query, row)
+
+        if stage == DraftStage.COLLECTING_FIELDS:
+            return self._process_answer(session_id, query, row)
+
+        if stage == DraftStage.AWAITING_CONFIRMATION:
+            # graph.py only routes here on confirmed intent — generate immediately
+            return self._generate_draft(session_id, row)
+
+        # ── Legacy internal stages (backward-compat) ───────────────────────────
         if stage == DraftStage.CLARIFY:
             return self._process_answer(session_id, query, row)
 
@@ -1497,10 +1525,109 @@ class DraftingAgent:
         pretty_cat = category.replace('_', ' ').title()
         return f"Please provide the {pretty} for your {pretty_cat} document."
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE: MENU_SHOWN handler
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Map of digit / word / partial name -> category key
+    _MENU_MAP: dict = {
+        "1": "wage_theft",          "one": "wage_theft",
+        "2": "illegal_eviction",     "two": "illegal_eviction",
+        "3": "cheque_bounce",        "three": "cheque_bounce",
+        "4": "consumer_complaint",   "four": "consumer_complaint",
+        "5": "fir_complaint",        "five": "fir_complaint",
+        "6": "domestic_violence",    "six": "domestic_violence",
+        "7": "employment_termination", "seven": "employment_termination",
+        "8": "loan_default",         "eight": "loan_default",
+        # partial name aliases
+        "wage": "wage_theft", "salary": "wage_theft", "unpaid": "wage_theft",
+        "eviction": "illegal_eviction", "evict": "illegal_eviction",
+        "cheque": "cheque_bounce", "bounce": "cheque_bounce", "ni act": "cheque_bounce",
+        "consumer": "consumer_complaint",
+        "fir": "fir_complaint", "police": "fir_complaint",
+        "domestic": "domestic_violence", "violence": "domestic_violence", "dv": "domestic_violence",
+        "termination": "employment_termination", "wrongful": "employment_termination", "employment": "employment_termination",
+        "loan": "loan_default", "bank": "loan_default", "emi": "loan_default",
+    }
+
+    def _handle_menu_shown(self, session_id: str, query: str, row: dict) -> dict:
+        """
+        MENU_SHOWN stage: parse user's complaint-type selection.
+        Accepts: digit ("8"), number word ("eight"), or partial name ("loan", "cheque bounce").
+        On match  -> save COLLECTING_FIELDS, start field collection.
+        On no match -> re-display menu.
+        """
+        q = query.strip().lower()
+
+        # Try exact digit / word first
+        category = self._MENU_MAP.get(q)
+
+        # Try partial match anywhere in the query
+        if category is None:
+            for key, cat in self._MENU_MAP.items():
+                if key in q:
+                    category = cat
+                    break
+
+        if category is None:
+            # Could not parse — re-prompt
+            return {
+                "answer": (
+                    "Sorry, I didn't catch that. Please reply with the number (1–8) "
+                    "or name of the complaint type you need:\n\n"
+                    "1. **Unpaid Wages / Salary**\n"
+                    "2. **Illegal Eviction**\n"
+                    "3. **Cheque Bounce** (Section 138 NI Act)\n"
+                    "4. **Consumer Complaint**\n"
+                    "5. **FIR / Police Complaint**\n"
+                    "6. **Domestic Violence**\n"
+                    "7. **Wrongful Termination**\n"
+                    "8. **Loan / Bank Harassment**"
+                ),
+                "stage":    DraftStage.MENU_SHOWN,
+                "doc_type": "",
+                "complete": False,
+                "draft":    "",
+            }
+
+        print(f"[DraftingAgent] Menu selection -> category={category!r}")
+
+        # Build initial draft_data and immediately start field collection
+        # Treat the selection query as an empty description (no facts to extract)
+        label     = _CATEGORY_LABELS[category]
+        questions = _CLARIFYING_QUESTIONS[category]
+        required  = REQUIRED_FIELDS.get(category, [])
+
+        draft_data = {
+            "answers":          {},
+            "current_q_index":  0,
+            "missing_fields":   list(required),
+            "use_dynamic":      True,
+            "applicable_sections_text": "",
+            "authority":        "",
+        }
+        self._save(session_id, DraftStage.COLLECTING_FIELDS, category, draft_data)
+
+        first_field = required[0] if required else None
+        first_q = _field_question(first_field, category) if first_field else questions[0]
+        return {
+            "answer": (
+                f"I will help you draft a **{label}**.\n\n"
+                f"I need a few details. Please answer the following questions one at a time.\n\n"
+                f"**Question 1 of {len(required)}:**\n{first_q}"
+            ),
+            "stage":    DraftStage.COLLECTING_FIELDS,
+            "doc_type": category,
+            "complete": False,
+            "draft":    "",
+        }
+
     def _start_draft(self, session_id: str, description: str) -> dict:
         category = _detect_category(description)
 
         if category is None:
+            # ── Persist MENU_SHOWN so the next reply is routed to draft_node ──
+            self._save(session_id, DraftStage.MENU_SHOWN, "__menu__", {})
             return {
                 "answer": (
                     "I can help you draft complaints and legal documents for the following situations:\n\n"
@@ -1512,12 +1639,10 @@ class DraftingAgent:
                     "6. **Domestic Violence** — application under DV Act to Magistrate\n"
                     "7. **Wrongful Termination** — complaint to Labour Court\n"
                     "8. **Loan / Bank Harassment** — complaint to RBI Ombudsman / DRT\n\n"
-                    "Please describe your situation and I will identify the right complaint type. "
-                    "For example: *'My employer has not paid my salary for 3 months'* or "
-                    "*'My landlord has illegally locked me out of my rented flat'*"
+                    "Please reply with the number (1–8) or describe your situation and I will "
+                    "identify the right complaint type."
                 ),
-                "answer_text": None,  # signal: no draft started
-                "stage":    0,
+                "stage":    DraftStage.MENU_SHOWN,
                 "doc_type": "",
                 "complete": False,
                 "draft":    "",
@@ -1525,12 +1650,12 @@ class DraftingAgent:
 
         label      = _CATEGORY_LABELS[category]
         questions  = _CLARIFYING_QUESTIONS[category]
+        required   = REQUIRED_FIELDS.get(category, [])
 
         # ── Attempt dynamic fact extraction ────────────────────────────────────
         extraction = self._extract_facts(description, category)
 
         if extraction.confidence >= 0.5 and extraction.extracted_facts:
-            # Dynamic path — store extracted facts and ask only for missing
             n_extracted = len(extraction.extracted_facts)
             n_missing   = len(extraction.missing_fields)
             print(
@@ -1548,16 +1673,16 @@ class DraftingAgent:
             }
 
             if not extraction.missing_fields:
-                # All facts present — skip CLARIFY entirely
+                # All facts extracted — advance straight to AWAITING_CONFIRMATION
                 self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
                 return self._retrieve_sections(
                     session_id, {"category": category, "draft_data": draft_data}
                 )
 
-            # Some fields missing — ask the first one
+            # Some fields missing — persist COLLECTING_FIELDS, ask the first one
             first_field = extraction.missing_fields[0]
             first_q     = _field_question(first_field, category)
-            self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+            self._save(session_id, DraftStage.COLLECTING_FIELDS, category, draft_data)
 
             return {
                 "answer": (
@@ -1565,101 +1690,107 @@ class DraftingAgent:
                     f"I've noted the details you provided. I just need a few more:\n\n"
                     f"**Question 1 of {n_missing}:**\n{first_q}"
                 ),
-                "stage":    DraftStage.CLARIFY,
+                "stage":    DraftStage.COLLECTING_FIELDS,
                 "doc_type": category,
                 "complete": False,
                 "draft":    "",
             }
 
-        # ── Fallback path — full sequential questioning ────────────────────────
+        # ── Fallback: no extraction — sequential questioning ───────────────────
         print(
             f"[DraftingAgent] Extracted 0 facts, "
-            f"{len(REQUIRED_FIELDS.get(category, []))} fields missing for {category}"
+            f"{len(required)} fields missing for {category}"
         )
 
         first_q    = questions[0]
         draft_data = {
-            "answers":          {},    # q_index (str) -> answer
+            "answers":          {},
             "current_q_index":  0,
-            "use_dynamic":      False,
+            "missing_fields":   list(required),
+            "use_dynamic":      True,   # use field-based loop for consistency
             "applicable_sections_text": "",
             "authority":        "",
         }
 
-        self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+        self._save(session_id, DraftStage.COLLECTING_FIELDS, category, draft_data)
 
         return {
             "answer": (
                 f"I will help you draft a **{label}**.\n\n"
                 f"I need to gather some details first. Please answer the following questions "
                 f"one at a time.\n\n"
-                f"**Question 1 of {len(questions)}:**\n{first_q}"
+                f"**Question 1 of {len(required)}:**\n{first_q}"
             ),
-            "stage":    DraftStage.CLARIFY,
+            "stage":    DraftStage.COLLECTING_FIELDS,
             "doc_type": category,
             "complete": False,
             "draft":    "",
         }
 
-    # ── STAGE: CLARIFY (collect answers one turn at a time) ────────────────────
+    # ── STAGE: COLLECTING_FIELDS / CLARIFY (collect answers one turn at a time) ─
 
     def _process_answer(self, session_id: str, answer: str, row: dict) -> dict:
-        category   = row["category"]
-        draft_data = row["draft_data"]
+        """
+        Handles both COLLECTING_FIELDS (new) and CLARIFY (legacy) stages.
+        Always uses the dynamic missing_fields loop when use_dynamic=True.
+        Advances to RETRIEVE_SECTIONS (-> IDENTIFY_AUTHORITY -> AWAITING_CONFIRMATION)
+        when all fields are collected.
+        """
+        category    = row["category"]
+        draft_data  = row["draft_data"]
         use_dynamic = draft_data.get("use_dynamic", False)
+        cur_stage   = row["stage"]  # COLLECTING_FIELDS or CLARIFY
 
         if use_dynamic:
-            # ── Dynamic path — iterate over missing_fields ─────────────────────
             missing = draft_data.get("missing_fields", [])
             idx     = draft_data["current_q_index"]
-            field   = missing[idx]
-            draft_data["answers"][field] = answer.strip()
+
+            if idx < len(missing):
+                field = missing[idx]
+                draft_data["answers"][field] = answer.strip()
 
             next_idx = idx + 1
             if next_idx < len(missing):
                 draft_data["current_q_index"] = next_idx
                 next_field = missing[next_idx]
                 next_q     = _field_question(next_field, category)
-                self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+                # Stay in same stage (COLLECTING_FIELDS or CLARIFY)
+                self._save(session_id, cur_stage, category, draft_data)
                 return {
                     "answer": (
                         f"**Question {next_idx + 1} of {len(missing)}:**\n"
                         f"{next_q}"
                     ),
-                    "stage":    DraftStage.CLARIFY,
+                    "stage":    cur_stage,
                     "doc_type": category,
                     "complete": False,
                     "draft":    "",
                 }
 
-            # All missing fields answered -> RETRIEVE_SECTIONS
+            # All fields collected -> pipeline advances to AWAITING_CONFIRMATION
             self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
             return self._retrieve_sections(session_id, {"category": category, "draft_data": draft_data})
 
-        # ── Fallback path — original sequential loop ───────────────────────────
+        # ── Legacy fallback: sequential index-based loop ───────────────────────
         questions = _CLARIFYING_QUESTIONS[category]
-
-        idx = draft_data["current_q_index"]
+        idx       = draft_data["current_q_index"]
         draft_data["answers"][str(idx)] = answer.strip()
+        next_idx  = idx + 1
 
-        next_idx = idx + 1
-
-        # More questions remaining
         if next_idx < len(questions):
             draft_data["current_q_index"] = next_idx
-            self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+            self._save(session_id, cur_stage, category, draft_data)
             return {
                 "answer": (
                     f"**Question {next_idx + 1} of {len(questions)}:**\n"
                     f"{questions[next_idx]}"
                 ),
-                "stage":    DraftStage.CLARIFY,
+                "stage":    cur_stage,
                 "doc_type": category,
                 "complete": False,
                 "draft":    "",
             }
 
-        # All questions answered — move to RETRIEVE_SECTIONS
         self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
         return self._retrieve_sections(session_id, {"category": category, "draft_data": draft_data})
 
@@ -1694,7 +1825,7 @@ class DraftingAgent:
         authority = _FILING_AUTHORITY.get(category, "Competent Authority as per applicable law")
         draft_data["authority"] = authority
 
-        self._save(session_id, DraftStage.CONFIRM, category, draft_data)
+        self._save(session_id, DraftStage.AWAITING_CONFIRMATION, category, draft_data)
         return self._confirm_draft(session_id, {"category": category, "draft_data": draft_data})
 
     # ── STAGE: CONFIRM ─────────────────────────────────────────────────────────
