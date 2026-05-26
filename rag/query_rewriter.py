@@ -273,17 +273,60 @@ class QueryRewriter:
             if m and session_id:
                 session_memory.set_last_act(session_id, m.group(0))
         else:
-            # No act in the current query — try to inherit from session.
-            if session_id:
+            # No act in the current query — check whether this is a genuine
+            # contextual follow-up before inheriting last_act from the session.
+            #
+            # ── Two-signal follow-up guard ────────────────────────────────────
+            # Score three binary signals; inject only when score >= 2.
+            # Signal 1: query is short (< 10 words)
+            # Signal 2: contains a pronoun or demonstrative reference
+            # Signal 3: bare section reference with no act name in the query
+            #
+            # When score < 2 the query is treated as a topic shift — last_act
+            # is cleared so it does not persist into subsequent turns either.
+
+            _words = query.split()
+
+            # Signal 1: short query
+            _sig_short = len(_words) < 10
+
+            # Signal 2: pronoun / demonstrative reference
+            _FOLLOWUP_REF_RE = re.compile(
+                r'\b(it|its|this|that|these|those|the\s+same|such|thereof|therein)\b',
+                re.IGNORECASE,
+            )
+            _sig_ref = bool(_FOLLOWUP_REF_RE.search(query))
+
+            # Signal 3: bare section reference — digits/letters after section
+            # markers with no act name anywhere in the query.
+            # Matches: "section 8", "s.8", "s 8", "u/s 8", "sec. 12A"
+            _BARE_SECTION_RE = re.compile(
+                r'\b(?:section|sec\.?|u/s|u\.s\.)\s*\.?\s*\d{1,4}[A-Za-z]?\b',
+                re.IGNORECASE,
+            )
+            _sig_bare_section = bool(_BARE_SECTION_RE.search(query))
+
+            _followup_score = int(_sig_short) + int(_sig_ref) + int(_sig_bare_section)
+
+            if _followup_score >= 2 and session_id:
                 last_act, last_section = session_memory.get_last_act(session_id)
                 if last_act:
                     injected = f"{query} under {last_act}"
                     print(
-                        f"[QueryRewriter] act-context injection: "
+                        f"[QueryRewriter] act-context injection (score={_followup_score}/3): "
                         f"session={session_id[:8]}… last_act={last_act!r} "
                         f"-> query augmented"
                     )
                     query = injected   # rewriter + hint logic operate on augmented query
+            else:
+                # Topic shift detected — clear last_act so it does not bleed
+                # into this turn or any subsequent turn.
+                if session_id:
+                    session_memory.clear_last_act(session_id)
+                    print(
+                        f"[QueryRewriter] topic-shift detected (score={_followup_score}/3): "
+                        f"session={session_id[:8]}… last_act cleared, no injection"
+                    )
 
         all_queries: list[str] = [query]
         hint = _get_statutory_hint(query)
