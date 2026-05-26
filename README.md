@@ -1,16 +1,33 @@
-# LexShield AI
-> Agentic Indian Legal Intelligence Platform
+# LexShield AI 🏛️
+### Agentic Indian Legal Intelligence Platform
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![React](https://img.shields.io/badge/react-18-blue)
-![License](https://img.shields.io/badge/license-Unknown-lightgrey)
+<p align="center">
+  <img src="https://img.shields.io/badge/Status-Complete-green" />
+  <img src="https://img.shields.io/badge/LLM-LLaMA%203.3%2070B-blue" />
+  <img src="https://img.shields.io/badge/Vector%20DB-ChromaDB-orange" />
+  <img src="https://img.shields.io/badge/Backend-FastAPI-teal" />
+  <img src="https://img.shields.io/badge/OCR-Tesseract-red" />
+  <img src="https://img.shields.io/badge/Frontend-React%2018-purple" />
+</p>
+
+---
+
+## The Problem
+
+India has **50+ million pending court cases**. Most citizens cannot afford a lawyer. Legal documents are written in language ordinary people do not understand. When someone's landlord illegally withholds their deposit, their employer steals their wages, or they face a false case — they have nowhere to turn.
+
+Existing tools fail in every way that matters:
+- Search engines return PDFs no one can read
+- Generic AI chatbots hallucinate section numbers and punishments
+- No tool understands scanned Indian legal documents
+- No tool is aware of jurisdiction-specific state laws
+- No multilingual support for regional languages
 
 ---
 
 ## Table of Contents
 
+- [The Problem](#the-problem)
 - [Overview](#overview)
 - [Features](#features)
 - [Architecture](#architecture)
