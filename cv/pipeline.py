@@ -94,17 +94,8 @@ except ImportError:
     logger.warning("[CV] pdfplumber not installed. pip install pdfplumber")
 
 try:
-    from surya.ocr import run_ocr as _surya_run_ocr
-    from surya.model.detection.model import (
-        load_model      as _surya_load_det_model,
-        load_processor  as _surya_load_det_processor,
-    )
-    from surya.model.recognition.model import (
-        load_model      as _surya_load_rec_model,
-    )
-    from surya.model.recognition.processor import (
-        load_processor  as _surya_load_rec_processor,
-    )
+    from surya.detection import DetectionPredictor as _SuryaDetectionPredictor
+    from surya.recognition import RecognitionPredictor as _SuryaRecognitionPredictor
     _SURYA_AVAILABLE = True
     logger.info("[CV] Surya OCR available — multilingual neural OCR engine ready")
 except ImportError:
@@ -169,45 +160,29 @@ _PAGE_BATCH_SIZE    = 1     # process one page at a time for RAM safety
 # SURYA MODEL SINGLETONS  (lazy load — avoids cost on every import)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_surya_det_model     = None
-_surya_det_processor = None
-_surya_rec_model     = None
-_surya_rec_processor = None
+_surya_det_predictor: "_SuryaDetectionPredictor | None" = None
+_surya_rec_predictor: "_SuryaRecognitionPredictor | None" = None
 
 
-def _get_surya_models():
-    """
-    Lazy-load Surya detection + recognition models on first OCR call.
-    Models are cached as module-level singletons after first load.
-    Download: ~1.5 GB on first run (cached to ~/.cache/huggingface).
-    CPU inference: 8–15 seconds per page on i5-8250U (acceptable for legal docs).
-    """
-    global _surya_det_model, _surya_det_processor
-    global _surya_rec_model, _surya_rec_processor
+def _get_surya_predictors():
+    global _surya_det_predictor, _surya_rec_predictor
 
     if not _SURYA_AVAILABLE:
-        return None, None, None, None
+        return None, None
 
-    if _surya_det_model is None:
+    if _surya_det_predictor is None:
         try:
-            logger.info("[CV] Loading Surya detection model (CPU)…")
-            _surya_det_model     = _surya_load_det_model()
-            _surya_det_processor = _surya_load_det_processor()
-            logger.info("[CV] Loading Surya recognition model (CPU)…")
-            _surya_rec_model     = _surya_load_rec_model()
-            _surya_rec_processor = _surya_load_rec_processor()
-            logger.info("[CV] Surya models loaded successfully.")
+            logger.info("[CV] Loading Surya DetectionPredictor (CPU)…")
+            _surya_det_predictor = _SuryaDetectionPredictor()
+            logger.info("[CV] Loading Surya RecognitionPredictor (CPU)…")
+            _surya_rec_predictor = _SuryaRecognitionPredictor()
+            logger.info("[CV] Surya predictors loaded successfully.")
         except Exception as e:
-            logger.error(f"[CV] Surya model load failed: {e}")
-            _surya_det_model = None
-            return None, None, None, None
+            logger.error(f"[CV] Surya predictor load failed: {e}")
+            _surya_det_predictor = None
+            return None, None
 
-    return (
-        _surya_det_model,
-        _surya_det_processor,
-        _surya_rec_model,
-        _surya_rec_processor,
-    )
+    return _surya_det_predictor, _surya_rec_predictor
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -345,45 +320,32 @@ def _extract_digital_pdf_bytes(pdf_bytes: bytes) -> Optional[str]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _surya_ocr_image(
-    image:        np.ndarray,
-    lang_code:    str = "en",
+    image:     np.ndarray,
+    lang_code: str = "en",
 ) -> tuple[str, float]:
     """
     Run Surya OCR on a single numpy image (BGR).
-
-    Returns:
-        (text, confidence)
-        confidence: 0.0-1.0 aggregate across all lines.
-                    If below _MIN_OCR_CONFIDENCE, caller should reject output.
+    surya-ocr 0.14+ API: rec_predictor(images, [langs]) returns OCRResult list.
     """
-    det_model, det_processor, rec_model, rec_processor = _get_surya_models()
-    if det_model is None:
+    det_predictor, rec_predictor = _get_surya_predictors()
+    if det_predictor is None:
         return "", 0.0
 
     try:
-        # Surya expects RGB PIL images
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_image)
+        lang      = lang_code if lang_code in _SURYA_SUPPORTED_LANGS else "en"
 
-        # Validate language code — fall back to "en" if unsupported
-        lang = lang_code if lang_code in _SURYA_SUPPORTED_LANGS else "en"
+        # New API: pass images list + langs list-of-lists to recognition predictor
+        # Detection runs internally; no need to call det_predictor separately
+        results = rec_predictor([pil_image], task_names=[lang], det_predictor=det_predictor)
 
-        predictions = _surya_run_ocr(
-            [pil_image],
-            [[lang]],
-            det_model,
-            det_processor,
-            rec_model,
-            rec_processor,
-        )
-
-        if not predictions or not predictions[0].text_lines:
+        if not results or not results[0].text_lines:
             return "", 0.0
 
-        lines       = predictions[0].text_lines
+        lines       = results[0].text_lines
         text_lines  = []
         confidences = []
-
         for line in lines:
             if line.text.strip():
                 text_lines.append(line.text.strip())
@@ -393,9 +355,7 @@ def _surya_ocr_image(
             return "", 0.0
 
         avg_confidence = sum(confidences) / len(confidences)
-        text           = "\n".join(text_lines)
-
-        return text, round(avg_confidence, 3)
+        return "\n".join(text_lines), round(avg_confidence, 3)
 
     except Exception as e:
         logger.warning(f"[CV] Surya OCR error: {e}")
@@ -403,31 +363,27 @@ def _surya_ocr_image(
 
 
 def _surya_ocr_pdf(
-    pdf_bytes:    bytes,
-    lang_code:    str = "en",
+    pdf_bytes: bytes,
+    lang_code: str = "en",
 ) -> tuple[str, float]:
     """
-    Run Surya OCR on a scanned PDF — processes one page at a time.
-
-    RAM safety: converts single pages to PIL images, runs OCR, then
-    gc.collect() between pages. Never loads full PDF into memory at once.
-
-    Returns:
-        (text, avg_confidence)
+    Run Surya OCR on a scanned PDF — one page at a time for RAM safety.
+    surya-ocr 0.14+ API: same rec_predictor call as _surya_ocr_image.
     """
     if not _PYMUPDF_AVAILABLE:
         logger.warning("[CV] PyMuPDF needed for PDF-to-image conversion")
         return "", 0.0
 
-    det_model, det_processor, rec_model, rec_processor = _get_surya_models()
-    if det_model is None:
+    det_predictor, rec_predictor = _get_surya_predictors()
+    if det_predictor is None:
         return "", 0.0
 
     try:
-        doc          = _fitz.open(stream=pdf_bytes, filetype="pdf")
-        page_count   = len(doc)
-        all_pages    = []
-        all_confs    = []
+        doc        = _fitz.open(stream=pdf_bytes, filetype="pdf")
+        page_count = len(doc)
+        all_pages  = []
+        all_confs  = []
+        lang       = lang_code if lang_code in _SURYA_SUPPORTED_LANGS else "en"
 
         if page_count > _MAX_PAGES_PER_CALL:
             logger.warning(
@@ -435,35 +391,22 @@ def _surya_ocr_pdf(
                 f"Processing first {_MAX_PAGES_PER_CALL} pages."
             )
 
-        lang = lang_code if lang_code in _SURYA_SUPPORTED_LANGS else "en"
-
         for page_num in range(min(page_count, _MAX_PAGES_PER_CALL)):
             page = doc[page_num]
-
-            # Render at 200 DPI — safe balance of quality vs RAM
             mat  = _fitz.Matrix(200 / 72, 200 / 72)
             pix  = page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
             img  = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
             try:
-                predictions = _surya_run_ocr(
-                    [img],
-                    [[lang]],
-                    det_model,
-                    det_processor,
-                    rec_model,
-                    rec_processor,
-                )
+                results = rec_predictor([img], task_names=[lang], det_predictor=det_predictor)
 
-                if predictions and predictions[0].text_lines:
-                    lines      = predictions[0].text_lines
+                if results and results[0].text_lines:
                     page_lines = []
                     page_confs = []
-                    for line in lines:
+                    for line in results[0].text_lines:
                         if line.text.strip():
                             page_lines.append(line.text.strip())
                             page_confs.append(line.confidence)
-
                     if page_lines:
                         all_pages.append(
                             f"--- Page {page_num + 1} ---\n" + "\n".join(page_lines)
@@ -473,7 +416,6 @@ def _surya_ocr_pdf(
             except Exception as e:
                 logger.warning(f"[CV] Surya: page {page_num + 1} failed: {e}")
             finally:
-                # Free page image from RAM before next page
                 del img, pix
                 gc.collect()
 
@@ -484,7 +426,6 @@ def _surya_ocr_pdf(
 
         avg_confidence = sum(all_confs) / len(all_confs) if all_confs else 0.0
         text           = "\n\n".join(all_pages)
-
         logger.info(
             f"[CV] Surya PDF: {len(all_pages)} page(s), "
             f"{len(text)} chars, confidence={avg_confidence:.2f}"
