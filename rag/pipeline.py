@@ -551,6 +551,7 @@ class RAGPipeline:
         # ═══════════════════════════════════════════════════════════════════════
         rag_grade      = "good"
         crag_triggered = False
+        crag_fallback  = False   # set True when CRAG scores insufficient
 
         if complexity in ("moderate", "complex"):
             eval_chunks = [
@@ -559,23 +560,19 @@ class RAGPipeline:
             ]
             crag_result = evaluate_retrieval(latest_expanded, eval_chunks)
             rag_grade   = "good" if crag_result["score"] >= 4 else "poor"
+            crag_fallback = crag_result.get("fallback", False)
 
             if crag_result["action"] == "insufficient":
-                # Retrieval completely failed — return grounded low-confidence response
-                print("[Pipeline] CRAG: insufficient — returning low-confidence response")
-                return LegalAnswer(
-                    answer_text=(
-                        "I was unable to retrieve sufficiently relevant legal information "
-                        f"for your query. {crag_result['reason']} "
-                        "Please consult a qualified legal professional or try rephrasing "
-                        "your query with the specific section number and act name."
-                    ),
-                    sources_consulted=0,
-                    synthesis_note=f"CRAG: insufficient (score={crag_result['score']})",
-                    grounding_warning=crag_result["reason"],
-                    rewritten_queries=all_queries,
-                    reranker_used=False,
+                # Retrieval quality is insufficient, but we still synthesize
+                # using available chunks — the hard-failure decision belongs to
+                # the pipeline caller, not CRAG.  We mark the answer with
+                # confidence="low" and fallback=True so the frontend can label
+                # it without any synthesizer changes.
+                print(
+                    "[Pipeline] CRAG: insufficient — continuing with fallback synthesis "
+                    f"(score={crag_result['score']}, reason={crag_result['reason'][:80]!r})"
                 )
+                # Do NOT return early; fall through to reranker + synthesizer.
 
             elif crag_result["action"] == "rewrite" and not crag_triggered:
                 # Marginal retrieval — rewrite and re-retrieve once
@@ -594,6 +591,7 @@ class RAGPipeline:
                     all_queries  = all_queries + extra_queries
 
             # else: action == "proceed" — continue normally
+
 
         # ═══════════════════════════════════════════════════════════════════════
         # STEP 5: Rerank free pool
@@ -664,10 +662,18 @@ class RAGPipeline:
             query=user_query, chunks=final_chunks, llm_answer=raw_answer,
             rewritten_queries=all_queries, reranker_used=reranker_used,
         )
+
+        # Stamp fallback flags when CRAG scored retrieval as insufficient.
+        # The synthesizer is not changed — we set these fields after the fact.
+        if crag_fallback:
+            answer.confidence = "low"
+            answer.fallback   = True
+
         # Attach rag_grade so graph.py node can store it in AgentState
         answer.synthesis_note = (
             f"[complexity={complexity} rag_grade={rag_grade}"
             + (f" crag_rewrite=True" if crag_triggered else "")
+            + (f" crag_fallback=True" if crag_fallback else "")
             + "] "
             + (answer.synthesis_note or "")
         )
@@ -675,13 +681,15 @@ class RAGPipeline:
         rt = get_current_run_tree()
         if rt:
             rt.add_metadata({
-                "retrieval_mode": complexity,
-                "crag_score": crag_result["score"] if crag_triggered or (complexity in ("moderate", "complex") and 'crag_result' in locals()) else (4 if complexity == "simple" else 0),
-                "chunks_retrieved": len(merged) if 'merged' in locals() else len(final_chunks),
-                "query_complexity": complexity
+                "retrieval_mode":  complexity,
+                "crag_score":      crag_result["score"] if complexity in ("moderate", "complex") else (4 if complexity == "simple" else 0),
+                "crag_fallback":   crag_fallback,
+                "chunks_retrieved": len(merged) if "merged" in locals() else len(final_chunks),
+                "query_complexity": complexity,
             })
 
         return answer
+
 
     # ── KG injection helper ────────────────────────────────────────────────────
 
