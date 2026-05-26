@@ -22,9 +22,10 @@ from typing import Literal, Optional
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
-from rag.vectorstore    import vectorstore, SOURCE_KEYWORDS
-from rag.bm25_retriever import bm25_retriever
-from rag.act_resolver   import act_resolver
+from rag.vectorstore      import vectorstore, SOURCE_KEYWORDS
+from rag.bm25_retriever   import bm25_retriever
+from rag.act_resolver     import act_resolver
+from rag.category_detector import CONFIDENCE_MED as _CATEGORY_CONF_THRESHOLD
 
 RRF_K = 60
 
@@ -259,14 +260,27 @@ class HybridSearcher:
 
     def search(
         self,
-        query:            str,
-        n_results:        int           = 8,
-        min_vector_score: float         = 0.05,
-        filter_toc:       bool          = True,
-        category_filter:  Optional[str] = None,
-        act_hint:         Optional[str] = None,
+        query:               str,
+        n_results:           int           = 8,
+        min_vector_score:    float         = 0.05,
+        filter_toc:          bool          = True,
+        category_filter:     Optional[str] = None,
+        act_hint:            Optional[str] = None,
+        category_confidence: Optional[float] = None,
     ) -> list[dict]:
         fetch_k = n_results * self.fetch_multiplier
+
+        # ── Category-filter confidence guard ─────────────────────────────────
+        # If the detector returned a low-confidence category the filter must not
+        # be applied — it would poison the chunk pool before CRAG/reranker can
+        # correct it.  Drop the filter and fall through to full-corpus search.
+        if category_filter is not None and category_confidence is not None:
+            if category_confidence < _CATEGORY_CONF_THRESHOLD:
+                print(
+                    f"[HybridSearch] category_filter={category_filter!r} suppressed "
+                    f"(confidence={category_confidence:.3f} < threshold={_CATEGORY_CONF_THRESHOLD})"
+                )
+                category_filter = None
 
         # Section fast path — uses act_resolver via extract_sections_and_sources
         section_hits: list[dict] = []
