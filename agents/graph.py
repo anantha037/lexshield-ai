@@ -1043,6 +1043,8 @@ def general_node(state: AgentState) -> dict:
                 "synthesis_note": "pre-set response", "grounding_warning": "",
                 "rewritten_queries": [], "reranker_used": False, "mode": "general_node",
             },
+            "source": "llm_only",
+            "sourced": False,
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error": "",
         }
@@ -1071,6 +1073,8 @@ def general_node(state: AgentState) -> dict:
                 "synthesis_note": "", "grounding_warning": "",
                 "rewritten_queries": [], "reranker_used": False, "mode": "general_node",
             },
+            "source": "llm_only",
+            "sourced": False,
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error": "",
         }
@@ -1079,6 +1083,8 @@ def general_node(state: AgentState) -> dict:
         return {
             "response":   "Hello! I'm LexShield AI, your Indian legal assistant. How can I help you today?",
             "rag_result": {},
+            "source":     "llm_only",
+            "sourced":    False,
             "error":      str(exc),
         }
 
