@@ -387,6 +387,34 @@ def _score_to_level(score: float) -> str:
     return "Low"
 
 
+def _to_0_100(raw: float) -> int:
+    """
+    Normalize any raw risk score to an integer in [0, 100].
+
+    Range detection is automatic:
+      - raw in [0.0, 1.0]   → scale ×100  (standard probability / fraction)
+      - raw in (1, 100]     → treat as already percentage-scaled, use as-is
+      - raw > 100           → normalize against a fixed ceiling of 10_000
+                              (observed scores up to ~5500; ceiling gives headroom)
+                              e.g. 5500 → 55, 3500 → 35, 10000 → 100
+
+    The result is always clamped to [0, 100] and cast to int.
+    """
+    _MAX_RAW = 10_000.0
+    if raw <= 0.0:
+        return 0
+    if raw <= 1.0:
+        # [0, 1] float range — standard scorer output
+        normalized = raw * 100.0
+    elif raw <= 100.0:
+        # (1, 100] — already percentage-scaled
+        normalized = raw
+    else:
+        # > 100 — normalize proportionally against fixed ceiling
+        normalized = (raw / _MAX_RAW) * 100.0
+    return int(min(max(round(normalized), 0), 100))
+
+
 def _extract_section_number(section_str: str) -> str:
     """Extract normalized section number from NER output like 'Section 302' -> '302'."""
     m = re.search(r'(\d+[A-Z]?)', section_str.strip(), re.IGNORECASE)
@@ -544,8 +572,8 @@ class RiskScorer:
                 rule_score = 0.60 * rule_score + 0.40 * llm_risk
                 method     = "rule_llm_hybrid"
 
-        final_score = round(min(rule_score, 1.0), 3)
-        level       = _score_to_level(final_score)
+        final_score = _to_0_100(min(rule_score, 1.0))
+        level       = _score_to_level(final_score / 100.0)
 
         if not factors:
             factors.append("No specific high-risk signals detected in document")
@@ -844,8 +872,8 @@ class RiskScorer:
                 rule_score = 0.60 * rule_score + 0.40 * llm_risk
                 method     = "rule_llm_hybrid"
 
-        final_score = round(min(rule_score, 1.0), 3)
-        level       = _score_to_level(final_score)
+        final_score = _to_0_100(min(rule_score, 1.0))
+        level       = _score_to_level(final_score / 100.0)
 
         if not factors:
             factors.append("No specific high-risk signals detected in document")
