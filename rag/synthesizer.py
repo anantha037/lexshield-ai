@@ -56,6 +56,10 @@ class LegalAnswer:
     grounding_warning: Optional[str]  = None
     rewritten_queries: list[str]      = field(default_factory=list)
     reranker_used:     bool           = False
+    # Set by pipeline when CRAG scores insufficient — frontend uses these
+    # to label the response appropriately without changing synthesizer logic.
+    confidence:        str            = "normal"  # "normal" | "low"
+    fallback:          bool           = False      # True when CRAG: insufficient path taken
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
