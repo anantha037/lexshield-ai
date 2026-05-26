@@ -37,7 +37,14 @@ import threading
 import time
 import uuid
 import json
+from contextvars import ContextVar
 from typing import Optional
+
+# ── Per-request session context carrier ───────────────────────────────────────
+# Set by legal_rag_node before entering the RAG chain so that query_rewriter.py
+# can read the active session_id without receiving it as a parameter.
+# ContextVar is safe across asyncio tasks and native threads.
+_active_session_id: ContextVar[str] = ContextVar("active_session_id", default="")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -119,10 +126,85 @@ GENERAL_INTENT_TURNS = 3  # reduced turn count for trivial/general queries
 # SESSION MEMORY MANAGER
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# One turn = one user→assistant round-trip.  last_act expires after this many.
+_LAST_ACT_TTL_TURNS = 10
+
+
 class SessionMemory:
 
     def __init__(self):
         self.sessions = {}
+
+    # ── Per-request context carrier (for query_rewriter) ──────────────────────
+
+    def set_session_context(self, session_id: str) -> None:
+        """
+        Bind session_id to the current execution context (ContextVar).
+        Call this at the start of every legal_rag_node invocation before the
+        RAG chain runs.  query_rewriter.py reads it via get_session_context().
+        """
+        _active_session_id.set(session_id)
+
+    def get_session_context(self) -> str:
+        """Return the session_id bound to the current execution context."""
+        return _active_session_id.get()
+
+    # ── Last-act / last-section persistence (in-memory, TTL-capped) ───────────
+
+    def set_last_act(
+        self,
+        session_id: str,
+        act:        str,
+        section:    str = "",
+    ) -> None:
+        """
+        Persist the most-recently resolved act (and optionally section) for a
+        session.  Called by legal_rag_node after a successful RAG response.
+
+        The entry expires automatically after _LAST_ACT_TTL_TURNS turns so
+        stale context from an old topic does not bleed into unrelated follow-ups.
+        The turn counter is reset whenever the caller explicitly provides a new
+        act (i.e. call set_last_act again with the new act name).
+        """
+        if not session_id or not act:
+            return
+        if session_id not in self.sessions:
+            self.sessions[session_id] = {}
+        self.sessions[session_id]["last_act"]          = act.strip()
+        self.sessions[session_id]["last_section"]      = section.strip()
+        self.sessions[session_id]["last_act_ttl"]      = _LAST_ACT_TTL_TURNS
+        print(f"[Memory] set_last_act session={session_id[:8]}… act={act!r} section={section!r}")
+
+    def get_last_act(self, session_id: str) -> tuple[str, str]:
+        """
+        Return (last_act, last_section) for the session, decrementing the TTL
+        counter on each read.  Returns ('', '') when expired or absent.
+        """
+        if not session_id:
+            return "", ""
+        sess = self.sessions.get(session_id, {})
+        act  = sess.get("last_act", "")
+        if not act:
+            return "", ""
+        ttl = sess.get("last_act_ttl", 0)
+        if ttl <= 0:
+            # Expired — purge
+            sess.pop("last_act",     None)
+            sess.pop("last_section", None)
+            sess.pop("last_act_ttl", None)
+            return "", ""
+        # Decrement TTL on each read (each retrieval attempt = one turn usage)
+        self.sessions[session_id]["last_act_ttl"] = ttl - 1
+        return act, sess.get("last_section", "")
+
+    def clear_last_act(self, session_id: str) -> None:
+        """Explicitly clear last_act — called when the user switches topics."""
+        sess = self.sessions.get(session_id, {})
+        sess.pop("last_act",     None)
+        sess.pop("last_section", None)
+        sess.pop("last_act_ttl", None)
+
+    # ── Entity scratchpad (pre-existing) ───────────────────────────────────────
 
     def store_last_entities(self, session_id: str, entities: list[str]) -> None:
         if session_id not in self.sessions:
