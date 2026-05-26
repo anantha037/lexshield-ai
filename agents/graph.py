@@ -334,11 +334,18 @@ def legal_rag_node(state: AgentState) -> dict:
         enrich_rag_response_with_case_law,
         ENABLE_CASE_LAW_ENRICHMENT,
     )
+    from agents.memory import session_memory
 
     query         = state.get("query", "")
+    session_id    = state.get("session_id", "")
     context_block = state.get("rag_result", {}).get("context_block", "")
-    
-    # ── Scratchpad reader: jurisdiction hint ────────────────────────────────
+
+    # ── Bind session_id into ContextVar so query_rewriter can read it ─────────
+    # Must run before any RAG/rewriter call.  Safe when session_id is empty.
+    if session_id:
+        session_memory.set_session_context(session_id)
+
+    # ── Scratchpad reader: jurisdiction hint ───────────────────────────────────
     scratchpad = dict(state.get("scratchpad", {}))
     jurisdiction = scratchpad.get(SCRATCH_JURISDICTION, "")
     if jurisdiction and context_block:
@@ -347,6 +354,7 @@ def legal_rag_node(state: AgentState) -> dict:
         context_block = f"[JURISDICTION CONTEXT: {jurisdiction}]"
 
     print("[Graph] legal_rag_node -> NER + KG + RAG")
+
 
     # NER
     ner_out: dict        = {"entities": []}
@@ -411,6 +419,28 @@ def legal_rag_node(state: AgentState) -> dict:
             scope_message = "No relevant Indian legal provisions could be found for this query."
             rag_answer_text = ""
             ner_sections = []
+            # Clear stale act context — no valid retrieval means no act to persist.
+            if session_id:
+                session_memory.clear_last_act(session_id)
+        else:
+            # ── Persist last_act + last_section for follow-up queries ────────
+            # Prefer the scratchpad act (LLM/regex extracted from the current
+            # query) over the NER act.  Use first section from scratchpad too.
+            detected_acts     = scratchpad.get(SCRATCH_DETECTED_ACTS, [])
+            detected_sections = scratchpad.get(SCRATCH_DETECTED_SECTIONS, [])
+            resolved_act = detected_acts[0] if detected_acts else ""
+
+            # Fallback: pull act name from NER entity labels if scratchpad empty
+            if not resolved_act:
+                for ent in ner_out.get("entities", []):
+                    if ent.get("label") in ("ACT", "LEGISLATION"):
+                        resolved_act = ent.get("text", "").strip()
+                        if resolved_act:
+                            break
+
+            if resolved_act and session_id:
+                resolved_section = detected_sections[0] if detected_sections else ""
+                session_memory.set_last_act(session_id, resolved_act, resolved_section)
 
         return {
             "rag_result": {
