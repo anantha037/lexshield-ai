@@ -190,18 +190,74 @@ def classify_intent_node(state: AgentState) -> dict:
             "pipeline_depth":  1,
         }
 
-    # ── Priority 0: active draft session short-circuit ────────────────────────
-    # If this session has an in-progress draft (any stage except DONE),
-    # bypass LLM classification entirely. Returning intent="draft_request" here
-    # ensures route_by_intent's Priority 1 check also fires correctly.
+    # ── Priority 0: active draft session — four-stage-aware short-circuit ──────
     _session_id_early = state.get("session_id", "")
     if _session_id_early:
         try:
             from agents.drafting_agent import drafting_agent as _da
             if _da.has_active_draft(_session_id_early):
+                _row = _da._load(_session_id_early)
+                _draft_stage = _row["stage"] if _row else ""
+
+                # ── AWAITING_CONFIRMATION: detect cancel / confirm / ambiguous ─
+                if _draft_stage in ("AWAITING_CONFIRMATION", "CONFIRM"):
+                    _CANCEL_RE = re.compile(
+                        r'\b(cancel|don\'t\s+confirm|do\s+not\s+confirm|'
+                        r'stop|abort|discard|never\s*mind|forget\s*it|'
+                        r'don\'t\s+draft|do\s+not\s+draft|'
+                        r'don\'t\s+generate|do\s+not\s+generate)\b',
+                        re.IGNORECASE,
+                    )
+                    _CONFIRM_RE = re.compile(
+                        r'\b(confirm|yes|proceed|generate|draft\s+it|'
+                        r'go\s+ahead|yes\s+please|approved?|do\s+it|make\s+it)\b',
+                        re.IGNORECASE,
+                    )
+                    _q = query.lower().strip()
+
+                    if _CANCEL_RE.search(_q):
+                        _da.cancel_draft(_session_id_early)
+                        print("[Graph] AWAITING_CONFIRMATION -> cancel -> clearing draft")
+                        return {
+                            "intent":          "_draft_handled",
+                            "confidence":      1.0,
+                            "source_language": "en",
+                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+                            "scratchpad":      dict(state.get("scratchpad", {})),
+                            "response": (
+                                "✅ Draft cancelled. Your draft session has been cleared.\n\n"
+                                "Feel free to start a new draft or ask me anything else."
+                            ),
+                        }
+                    elif _CONFIRM_RE.search(_q):
+                        print("[Graph] AWAITING_CONFIRMATION -> confirmed -> draft_node")
+                        return {
+                            "intent":          "draft_request",
+                            "confidence":      1.0,
+                            "source_language": "en",
+                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+                            "scratchpad":      dict(state.get("scratchpad", {})),
+                        }
+                    else:
+                        # Ambiguous — re-prompt without clearing state
+                        print("[Graph] AWAITING_CONFIRMATION -> ambiguous -> re-prompt")
+                        return {
+                            "intent":          "_draft_handled",
+                            "confidence":      1.0,
+                            "source_language": "en",
+                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+                            "scratchpad":      dict(state.get("scratchpad", {})),
+                            "response": (
+                                "I need a clear confirmation to proceed.\n\n"
+                                "Reply **'confirm'** to generate your legal draft, "
+                                "or **'cancel'** to discard it."
+                            ),
+                        }
+
+                # ── MENU_SHOWN / COLLECTING_FIELDS: always route to draft_node ─
                 print(
-                    f"[Graph] classify_intent_node -> active draft detected "
-                    f"for session {_session_id_early[:8]}… -> short-circuit to draft_request"
+                    f"[Graph] classify_intent_node -> draft stage={_draft_stage} "
+                    f"session={_session_id_early[:8]}… -> short-circuit to draft_request"
                 )
                 return {
                     "intent":          "draft_request",
@@ -285,6 +341,11 @@ def route_by_intent(state: AgentState) -> str:
     session_id      = state.get("session_id", "")
     source_language = state.get("source_language", "en")
     intent          = state.get("intent", "general")
+
+    # Priority 0: response already handled (cancellation / re-prompt)
+    if intent == "_draft_handled":
+        print("[Graph] route -> _draft_handled -> general_node (response pre-set)")
+        return "general_node"
 
     # Priority 1: active draft
     if session_id and drafting_agent.has_active_draft(session_id):
@@ -971,6 +1032,21 @@ def _detect_rights_category(query_lower: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def general_node(state: AgentState) -> dict:
+    # ── Early return if response was pre-set (draft cancel / re-prompt) ───────
+    existing_response = state.get("response", "")
+    if existing_response:
+        print("[Graph] general_node -> returning pre-set response")
+        return {
+            "response": existing_response,
+            "rag_result": {
+                "answer": existing_response, "sources_consulted": 0,
+                "synthesis_note": "pre-set response", "grounding_warning": "",
+                "rewritten_queries": [], "reranker_used": False, "mode": "general_node",
+            },
+            "pipeline_depth": state.get("pipeline_depth", 1) + 1,
+            "error": "",
+        }
+
     from rag.llm import llm
 
     query         = state.get("query", "")
