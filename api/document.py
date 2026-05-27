@@ -585,15 +585,23 @@ async def analyze_document(
     )
 
     # ── Step 4: Risk scoring ──────────────────────────────────────────────────
-    from models.risk_scorer import risk_scorer
+    from models.risk_scorer import risk_scorer, _to_0_100
     doc_risk   = risk_scorer.score_document(text, doc_type=doc_type)
     risk_model = RiskModel(
-        overall_score   = doc_risk.overall_score,
+        overall_score   = _to_0_100(doc_risk.overall_score),
         risk_level      = doc_risk.risk_level,
         high_risk_count = doc_risk.high_risk_count,
         summary         = doc_risk.summary,
         clause_risks    = [
-            ClauseRiskModel(**cr.to_dict())
+            ClauseRiskModel(
+                clause_number = cr.clause_number,
+                clause_text   = cr.clause_text,
+                score         = _to_0_100(cr.score),
+                risk_level    = cr.risk_level,
+                flags         = cr.flags,
+                legal_refs    = cr.legal_refs,
+                explanation   = cr.explanation,
+            )
             for cr in doc_risk.clause_risks
             if cr.score > 0
         ],
@@ -813,7 +821,7 @@ def document_save_session(req: DocSaveSessionRequest):
         f"[DOCUMENT ANALYSIS]\n"
         f"File: {req.filename}\n"
         f"Type: {req.doc_type.replace('_', ' ').title()}\n"
-        f"Risk Level: {req.risk_level.upper()} ({req.risk_score}/100)\n"
+        f"Risk Level: {req.risk_level.upper()} ({min(req.risk_score, 100)}/100)\n"
         f"Confidence: {round(req.confidence * 100)}%\n\n"
         f"{req.summary}"
     )
