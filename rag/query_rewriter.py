@@ -225,7 +225,27 @@ def decompose_query(query: str) -> list[str]:
 # QUERY REWRITER  (unchanged from Week 2)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+def _get_statutory_hint(query: str) -> str:
+    """
+    Extract a statutory hint from the query by matching against BNS_IPC_PAIRS.
+
+    Scans the query for known legal concept keywords (murder, cheating, bail, etc.)
+    and returns the corresponding pre-built statutory search string that covers
+    both legacy (IPC/CrPC) and current (BNS/BNSS) act references.
+
+    Returns an empty string when no keyword matches — the caller treats this as
+    falsy and skips hint injection.
+    """
+    q_lower = query.lower()
+    for keyword, statutory_query in BNS_IPC_PAIRS.items():
+        if keyword in q_lower:
+            return statutory_query
+    return ""
+
+
 class QueryRewriter:
+
     """
     LLM-based query rewriter for legal retrieval.
 
@@ -330,6 +350,7 @@ class QueryRewriter:
 
         all_queries: list[str] = [query]
         hint = _get_statutory_hint(query)
+
 
         try:
             prompt = REWRITER_USER_TEMPLATE.format(query=query)
