@@ -183,7 +183,22 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
         "compensatory afforestation CAMPA net present value "
         "carbon credits renewable energy solar wind power green energy "
         "climate change adaptation mitigation Paris Agreement "
-        "river water dispute inter-state water dispute tribunal"
+        "river water dispute inter-state water dispute tribunal "
+        "tree felling felling of trees timber timber transit permit transit pass "
+        "forest permission forest clearance forest diversion reserved forest "
+        "protected forest government forest deemed forest state forest "
+        "Indian Forest Act forest offence forest officer range officer "
+        "divisional forest officer conservator of forests chief conservator "
+        "forest produce minor forest produce non-timber forest produce "
+        "cattle trespass forest grazing forest fire slash and burn jhum cultivation "
+        "sawmill wood depot illicit felling smuggling of timber sandalwood teak "
+        "elephant corridor wildlife corridor tiger conservation "
+        "Schedule I Schedule II Schedule III Schedule IV endangered species "
+        "hunting trapping snaring trophy animal article captive breeding "
+        "zoo wildlife sanctuary biosphere reserve community reserve "
+        "conservation reserve wetland Ramsar mangrove coral reef "
+        "forest dwelling community forest management joint forest management "
+        "van panchayat forest village forest settlement"
     ),
     "technology": (
         "cyber cybercrime hacking unauthorised access computer data breach data privacy "
@@ -858,18 +873,72 @@ _KEYWORDS: dict[str, tuple[str, int]] = {
     "waste disposal":               ("environment", 2),
     "solid waste":                  ("environment", 2),
     "e-waste":                      ("environment", 2),
-    "forest":                       ("environment", 1),
+    "forest":                       ("environment", 2),
     "deforestation":                ("environment", 2),
     "forest land":                  ("environment", 2),
     "tree cutting":                 ("environment", 2),
+    "tree felling":                 ("environment", 2),
+    "felling of trees":             ("environment", 2),
+    "felling":                      ("environment", 2),
+    "timber":                       ("environment", 2),
+    "timber transit":               ("environment", 2),
+    "transit pass":                 ("environment", 2),
+    "transit permit":               ("environment", 2),
+    "forest permission":            ("environment", 2),
+    "forest clearance":             ("environment", 2),
+    "forest diversion":             ("environment", 2),
+    "reserved forest":              ("environment", 2),
+    "protected forest":             ("environment", 2),
+    "government forest":            ("environment", 2),
+    "deemed forest":                ("environment", 2),
+    "state forest":                 ("environment", 2),
+    "indian forest act":            ("environment", 2),
+    "forest act":                   ("environment", 2),
+    "forest conservation act":      ("environment", 2),
+    "forest offence":               ("environment", 2),
+    "forest officer":               ("environment", 2),
+    "range officer":                ("environment", 2),
+    "divisional forest officer":    ("environment", 2),
+    "conservator of forests":       ("environment", 2),
+    "forest produce":               ("environment", 2),
+    "minor forest produce":         ("environment", 2),
+    "non-timber forest produce":    ("environment", 2),
+    "cattle trespass":              ("environment", 2),
+    "illicit felling":              ("environment", 2),
+    "smuggling of timber":          ("environment", 2),
+    "sandalwood":                   ("environment", 2),
+    "teak":                         ("environment", 2),
+    "sawmill":                      ("environment", 2),
+    "wood depot":                   ("environment", 2),
     "wildlife":                     ("environment", 2),
+    "wildlife protection act":      ("environment", 2),
     "wild animal":                  ("environment", 2),
     "poaching":                     ("environment", 2),
+    "hunting":                      ("environment", 2),
+    "trapping":                     ("environment", 2),
+    "endangered species":           ("environment", 2),
+    "schedule i":                   ("environment", 1),
+    "schedule ii":                  ("environment", 1),
     "biodiversity":                 ("environment", 2),
     "national park":                ("environment", 2),
     "sanctuary":                    ("environment", 2),
     "protected area":               ("environment", 2),
     "tiger reserve":                ("environment", 2),
+    "tiger conservation":           ("environment", 2),
+    "elephant corridor":            ("environment", 2),
+    "wildlife corridor":            ("environment", 2),
+    "biosphere reserve":            ("environment", 2),
+    "community reserve":            ("environment", 2),
+    "conservation reserve":         ("environment", 2),
+    "van panchayat":                ("environment", 2),
+    "forest village":               ("environment", 2),
+    "joint forest management":      ("environment", 2),
+    "forest rights":                ("environment", 2),
+    "forest dwellers":              ("environment", 2),
+    "compensatory afforestation":   ("environment", 2),
+    "campa":                        ("environment", 2),
+    "ngt":                          ("environment", 2),
+    "national green tribunal":      ("environment", 2),
     "mining":                       ("environment", 1),
     "quarrying":                    ("environment", 2),
     "eia":                          ("environment", 2),
