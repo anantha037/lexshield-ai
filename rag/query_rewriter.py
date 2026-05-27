@@ -324,7 +324,14 @@ class QueryRewriter:
                 r'\b(?:section|sec\.?|u/s|u\.s\.)\s*\.?\s*\d{1,4}[A-Za-z]?\b',
                 re.IGNORECASE,
             )
-            _sig_bare_section = bool(_BARE_SECTION_RE.search(query))
+            # Also catch standalone numbers in very short queries where users
+            # drop the "section" keyword entirely: "how about 54", "and 54?"
+            _STANDALONE_NUM_RE = re.compile(
+                r'(?<!\d)\b\d{1,4}[A-Za-z]?\b(?!\d)',
+            )
+            _sig_bare_section = bool(_BARE_SECTION_RE.search(query)) or (
+                _sig_short and len(_words) <= 6 and bool(_STANDALONE_NUM_RE.search(query))
+            )
 
             _followup_score = int(_sig_short) + int(_sig_ref) + int(_sig_bare_section)
 
