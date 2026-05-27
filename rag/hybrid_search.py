@@ -249,6 +249,15 @@ def weighted_scores(vector_results: list[dict], bm25_results: list[dict], alpha:
     return scores
 
 
+# ── Alpha weight presets by query complexity ─────────────────────────────────
+
+_ALPHA_PRESETS: dict[str, tuple[float, float]] = {
+    "simple":   (0.70, 0.30),   # statutory lookup  → favour BM25
+    "moderate": (0.50, 0.50),   # balanced default
+    "complex":  (0.30, 0.70),   # conceptual query  → favour semantic
+}
+
+
 # ── Hybrid searcher ───────────────────────────────────────────────────────────
 
 class HybridSearcher:
@@ -267,8 +276,19 @@ class HybridSearcher:
         category_filter:     Optional[str] = None,
         act_hint:            Optional[str] = None,
         category_confidence: Optional[float] = None,
+        query_complexity:    Optional[str] = None,
     ) -> list[dict]:
         fetch_k = n_results * self.fetch_multiplier
+
+        # ── Dynamic alpha from query complexity ──────────────────────────────
+        effective_complexity = query_complexity or "moderate"
+        bm25_weight, sem_weight = _ALPHA_PRESETS.get(
+            effective_complexity, _ALPHA_PRESETS["moderate"]
+        )
+        print(
+            f"[HybridSearch] alpha=BM25:{bm25_weight}/semantic:{sem_weight} "
+            f"complexity={effective_complexity}"
+        )
 
         # ── Category-filter confidence guard ─────────────────────────────────
         # If the detector returned a low-confidence category the filter must not
@@ -335,7 +355,7 @@ class HybridSearcher:
         if self.fusion == "rrf":
             fused = rrf_scores(vector_hits, bm25_hits)
         else:
-            fused = weighted_scores(vector_hits, bm25_hits, self.alpha)
+            fused = weighted_scores(vector_hits, bm25_hits, sem_weight)
 
         text_results = []
         for cid, chunk in lookup.items():
