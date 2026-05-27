@@ -453,6 +453,19 @@ class RiskScorer:
         use_llm:  Optional[bool] = None,
     ) -> RiskResult:
 
+        # ── Non-legal early exit ──────────────────────────────────────────
+        if doc_type == "non_legal":
+            return RiskResult(
+                score               = 0,
+                level               = "Low",
+                factors             = ["This does not appear to be a legal document"],
+                recommended_actions = [],
+                doc_type_risk       = 0.0,
+                entity_risk         = 0.0,
+                llm_risk            = None,
+                method              = "rejected",
+            )
+
         should_use_llm = use_llm if use_llm is not None else self.use_llm
         entities       = entities or {}
         factors        = []
@@ -758,6 +771,19 @@ class RiskScorer:
         use_llm:  Optional[bool] = None,
     ) -> RiskResult:
 
+        # ── Non-legal early exit ──────────────────────────────────────────
+        if doc_type == "non_legal":
+            return RiskResult(
+                score               = 0,
+                level               = "Low",
+                factors             = ["This does not appear to be a legal document"],
+                recommended_actions = [],
+                doc_type_risk       = 0.0,
+                entity_risk         = 0.0,
+                llm_risk            = None,
+                method              = "rejected",
+            )
+
         should_use_llm = use_llm if use_llm is not None else self.use_llm
         entities       = entities or {}
         factors        = []
@@ -899,6 +925,16 @@ class RiskScorer:
         Splits text into clauses, scores each with rule-based patterns,
         returns a DocumentRisk with overall_score, risk_level, clause_risks.
         """
+        # ── Non-legal early exit ──────────────────────────────────────────
+        if doc_type == "non_legal":
+            return DocumentRisk(
+                overall_score   = 0,
+                risk_level      = "Low",
+                high_risk_count = 0,
+                summary         = "This does not appear to be a legal document",
+                clause_risks    = [],
+            )
+
         # Split into clauses (numbered clauses or double-newline paragraphs)
         clause_split = re.split(
             r'\n{2,}|\d+\.\s+(?=[A-Z])|(?:CLAUSE|ARTICLE|SECTION)\s+\d+\.',
