@@ -38,7 +38,7 @@ CATEGORIES: dict[int, str] = {
     14: "police_complaint",
 }
 
-CONFIDENCE_THRESHOLD = 0.15
+CLASSIFICATION_THRESHOLD = 0.75
 FINETUNED_DIR        = Path("models/saved/inlegalbert_finetuned")
 PRETRAINED_MODEL     = "law-ai/InLegalBERT"
 SAMPLES_DIR          = Path("data/classifier_samples")
@@ -191,29 +191,43 @@ class DocumentClassifier:
 
             label      = int(np.argmax(proba))
             confidence = float(proba[label])
-            uncertain  = confidence < CONFIDENCE_THRESHOLD
 
-            # Always return the top predicted label — don't hide it as "uncertain"
-            # uncertain flag still set so callers can decide how to handle
+            # ── Non-legal rejection gate ──────────────────────────────────
+            # If the classifier's best guess is below the threshold, the
+            # input is unlikely to be a legal document at all.  Return a
+            # dedicated "non_legal" result so downstream components
+            # (risk_scorer, etc.) can short-circuit cleanly.
+            if confidence < CLASSIFICATION_THRESHOLD:
+                return {
+                    "label":      -1,
+                    "label_name": "non_legal",
+                    "confidence": round(confidence, 4),
+                    "uncertain":  True,
+                    "all_scores": {
+                        CATEGORIES[i]: round(float(proba[i]), 4)
+                        for i in range(len(CATEGORIES))
+                    },
+                    "mode": self._mode,
+                    "warning": (
+                        f"Max confidence ({confidence:.2f}) is below "
+                        f"threshold ({CLASSIFICATION_THRESHOLD}). "
+                        f"Input does not appear to be a legal document."
+                    ),
+                }
+
             label_name = CATEGORIES[label]
 
-            out = {
+            return {
                 "label":      label,
                 "label_name": label_name,
                 "confidence": round(confidence, 4),
-                "uncertain":  uncertain,
+                "uncertain":  False,
                 "all_scores": {
                     CATEGORIES[i]: round(float(proba[i]), 4)
                     for i in range(len(CATEGORIES))
                 },
                 "mode": self._mode,
             }
-            if uncertain:
-                out["warning"] = (
-                    f"Low confidence ({confidence:.2f}). "
-                    f"Prediction may be unreliable."
-                )
-            return out
 
         except Exception as e:
             logger.error("predict() error: %s", e)
