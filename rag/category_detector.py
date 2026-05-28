@@ -198,7 +198,11 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
         "zoo wildlife sanctuary biosphere reserve community reserve "
         "conservation reserve wetland Ramsar mangrove coral reef "
         "forest dwelling community forest management joint forest management "
-        "van panchayat forest village forest settlement"
+        "van panchayat forest village forest settlement "
+        "cutting trees without permission felling trees without permission "
+        "government permission for forest activities illegal logging and timber "
+        "environmental damage penalties wildlife harm hunting without license "
+        "forest land encroachment"
     ),
     "technology": (
         "cyber cybercrime hacking unauthorised access computer data breach data privacy "
