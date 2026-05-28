@@ -222,22 +222,32 @@ export default function DocumentView() {
               </div>
             </div>
 
-            {/* Step 2 */}
-            <div style={{ marginBottom: 24, animation: 'fadeIn 300ms ease forwards 150ms', opacity: 0 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--c-gold)', marginBottom: 4 }}>AI RISK ASSESSMENT</div>
-              <div style={{ fontSize: 52, fontWeight: 700, color: `var(--c-${doc.riskLevel === 'medium' ? 'medium' : doc.riskLevel === 'high' || doc.riskLevel === 'critical' ? 'high' : 'low'})` }}>
-                {Math.round(doc.riskScore * 100)}
+            {doc.docType === 'non_legal' ? (
+              <div style={{ marginBottom: 24, animation: 'fadeIn 300ms ease forwards 150ms', opacity: 0 }}>
+                <div style={{ padding: '16px 20px', background: 'var(--c-surface)', borderLeft: '3px solid var(--c-gold)', borderRadius: '0 var(--r-sm) var(--r-sm) 0' }}>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--c-text)', marginBottom: 4 }}>Not a Legal Document</div>
+                  <div style={{ fontSize: 13, color: 'var(--c-text2)', lineHeight: 1.5 }}>
+                    The AI did not detect any legal terminology in this document. Risk assessment and legal extraction have been bypassed.
+                  </div>
+                </div>
               </div>
-              <div style={{ fontSize: 14, color: 'var(--c-text2)', textTransform: 'capitalize' }}>
-                / 100 — {doc.riskLevel} Risk
+            ) : (
+              <div style={{ marginBottom: 24, animation: 'fadeIn 300ms ease forwards 150ms', opacity: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--c-gold)', marginBottom: 4 }}>AI RISK ASSESSMENT</div>
+                <div style={{ fontSize: 52, fontWeight: 700, color: `var(--c-${doc.riskLevel === 'medium' ? 'medium' : doc.riskLevel === 'high' || doc.riskLevel === 'critical' ? 'high' : 'low'})` }}>
+                  {Math.round(doc.riskScore)}
+                </div>
+                <div style={{ fontSize: 14, color: 'var(--c-text2)', textTransform: 'capitalize' }}>
+                  / 100 — {doc.riskLevel} Risk
+                </div>
+                <div style={{ height: 8, borderRadius: 99, background: 'var(--c-border)', marginTop: 8, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: `var(--c-${doc.riskLevel === 'medium' ? 'medium' : doc.riskLevel === 'high' || doc.riskLevel === 'critical' ? 'high' : 'low'})`, width: `${Math.round(doc.riskScore)}%`, animation: 'slideRight 800ms ease-out forwards' }} />
+                </div>
               </div>
-              <div style={{ height: 8, borderRadius: 99, background: 'var(--c-border)', marginTop: 8, overflow: 'hidden' }}>
-                <div style={{ height: '100%', background: `var(--c-${doc.riskLevel === 'medium' ? 'medium' : doc.riskLevel === 'high' || doc.riskLevel === 'critical' ? 'high' : 'low'})`, width: `${doc.riskScore * 100}%`, animation: 'slideRight 800ms ease-out forwards' }} />
-              </div>
-            </div>
+            )}
 
             {/* Step 3 */}
-            {doc.riskSummary && (
+            {doc.riskSummary && doc.docType !== 'non_legal' && (
               <div style={{ marginBottom: 24, animation: 'fadeIn 300ms ease forwards 300ms', opacity: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--c-text3)', marginBottom: 8 }}>DOCUMENT SUMMARY</div>
                 <div style={{ background: 'var(--c-surface)', padding: '12px 16px', borderRadius: 'var(--r-sm)', fontSize: 13, color: 'var(--c-text2)', lineHeight: 1.6 }}>
