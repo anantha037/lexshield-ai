@@ -74,6 +74,7 @@ test_scratchpad.py
 scratch1_out.txt
 scratch1_out2.txt
 scratch1_out3.txt
+test_*.py
 
 debug_graph.txt
 debug_output.txt
