@@ -38,7 +38,7 @@ CATEGORIES: dict[int, str] = {
     14: "police_complaint",
 }
 
-CLASSIFICATION_THRESHOLD = 0.75
+CLASSIFICATION_THRESHOLD = 0.10
 FINETUNED_DIR        = Path("models/saved/inlegalbert_finetuned")
 PRETRAINED_MODEL     = "law-ai/InLegalBERT"
 SAMPLES_DIR          = Path("data/classifier_samples")
