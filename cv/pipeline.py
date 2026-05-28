@@ -418,6 +418,11 @@ def _surya_ocr_image(
     On any Surya exception, returns ("", 0.0) so callers fall through
     to the Tesseract fallback path.
     """
+    if isinstance(lang_code, list):
+        lang_code = lang_code[0] if lang_code else "en"
+    if isinstance(metadata_hint, list):
+        metadata_hint = metadata_hint[0] if metadata_hint else None
+
     det_predictor, rec_predictor = _get_surya_predictors()
     if det_predictor is None:
         return "", 0.0
@@ -474,6 +479,11 @@ def _surya_ocr_pdf(
     On any Surya exception, returns ("", 0.0) so callers fall through
     to the Tesseract fallback path.
     """
+    if isinstance(lang_code, list):
+        lang_code = lang_code[0] if lang_code else "en"
+    if isinstance(metadata_hint, list):
+        metadata_hint = metadata_hint[0] if metadata_hint else None
+
     if not _PYMUPDF_AVAILABLE:
         logger.warning("[CV] PyMuPDF needed for PDF-to-image conversion")
         return "", 0.0
@@ -613,6 +623,9 @@ def _tesseract_ocr_image(image: np.ndarray, lang_code: str = "en") -> str:
     FIXED: path now resolved via shutil.which() — works on Windows + Linux/Docker.
     Returns a missing-pack message if the required language data is not installed.
     """
+    if isinstance(lang_code, list):
+        lang_code = lang_code[0] if lang_code else "en"
+
     if not _TESSERACT_AVAILABLE:
         return ""
 
