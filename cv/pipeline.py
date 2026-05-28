@@ -441,8 +441,9 @@ def _surya_ocr_image(
         if lang not in _SURYA_SUPPORTED_LANGS:
             lang = "en"
 
-        # Surya 0.14.7: positional call — (images, langs_per_image, det_predictor)
-        predictions = rec_predictor([pil_image], [[lang]], det_predictor)
+        # Surya 0.14.7: langs was removed. 2nd positional is task_names.
+        # Passing [[lang]] to task_names causes unhashable type: 'list'
+        predictions = rec_predictor([pil_image], None, det_predictor)
 
         if not predictions or not predictions[0].text_lines:
             return "", 0.0
@@ -534,8 +535,9 @@ def _surya_ocr_pdf(
                     pass
 
             try:
-                # Surya 0.14.7: positional call — (images, langs_per_image, det_predictor)
-                predictions = rec_predictor([img], [[lang]], det_predictor)
+                # Surya 0.14.7: langs was removed. 2nd positional is task_names.
+                # Passing [[lang]] to task_names causes unhashable type: 'list'
+                predictions = rec_predictor([img], None, det_predictor)
 
                 if predictions and predictions[0].text_lines:
                     page_lines = []
