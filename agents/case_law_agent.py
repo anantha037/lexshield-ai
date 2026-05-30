@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_IK_API_KEY          = os.getenv("INDIANKANOON_API_KEY", "")
+_IK_API_KEY          = os.getenv("IK_API_TOKEN", "")
 _IK_BASE_URL         = "https://api.indiankanoon.org"
 _REQUEST_TIMEOUT     = 10      # seconds — hard cap per API call
 _GROQ_DELAY_SECONDS  = 0.3     # rate-limit buffer between Groq summarise calls
