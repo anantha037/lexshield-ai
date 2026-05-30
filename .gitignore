@@ -23,6 +23,7 @@ secrets.json
 # =========================
 # GitHub blocks pushes over 100MB, so never commit raw datasets
 data/raw/
+data/real/
 data/processed/
 data/chroma_db/
 data/classifier_samples
