@@ -262,11 +262,83 @@ _CLARIFYING_QUESTIONS: dict[str, list[str]] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FIELD -> QUESTION MAPPING  (used by dynamic clarification path)
+# FIELD -> QUESTION MAPPING  (direct per-category lookup — Bug 1 fix)
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# The old keyword-scan approach caused multiple fields (complainant_name,
+# accused_name, cheque_number, cheque_amount) to all resolve to the same
+# "cheque details" question — so Q1 was repeated 4 times in a row.
+# This direct map gives every field its own unique question string.
 
-# Explicit question overrides for always-ask fields.
-# Keys must match ALWAYS_ASK_FIELDS values exactly.
+_FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
+    "wage_theft": {
+        "jurisdiction":       "In which State and District is your employer located? (This determines the correct Labour Commissioner's jurisdiction.)",
+        "complainant_name":   "What is your full name? (as it should appear on the complaint)",
+        "employer_name":      "Please provide the full name of your employer / company.",
+        "employer_address":   "Please provide the complete address of your employer / company.",
+        "unpaid_amount":      "What is the total amount of unpaid wages/salary? (e.g., ₹45,000)",
+        "unpaid_period":      "For which period are the wages unpaid? (e.g., April–June 2024)",
+        "documentary_proof":  "Do you have any documentary proof? (e.g., appointment letter, salary slips, bank statement showing last salary credited, Form 16, or any written communication from employer)",
+    },
+    "illegal_eviction": {
+        "jurisdiction":       "In which State and District is the property located?",
+        "complainant_name":   "What is your full name? (as it should appear on the complaint)",
+        "landlord_name":      "What is the full name of your landlord / property owner?",
+        "property_address":   "Is the property residential or commercial? Please provide its full address.",
+        "monthly_rent":       "What is the monthly rent amount and how was it paid? (cash / bank transfer / cheque — and do you have receipts?)",
+        "eviction_date":      "Did the landlord give any written notice before eviction? If yes, what reason was stated and on what date?",
+    },
+    "cheque_bounce": {
+        "complainant_name":   "What is your full name? (the payee — person/company to whom the cheque was issued)",
+        "accused_name":       "What is the full name of the cheque issuer (drawer/accused)?",
+        "cheque_number":      "Please provide the cheque number and the name of the bank and branch it was drawn on.",
+        "cheque_amount":      "What is the cheque amount (₹) and the date written on the cheque?",
+        "dishonour_date":     "On what date was the cheque dishonoured (returned by the bank)?",
+        "dishonour_reason":   "What reason did the bank give for dishonour? (e.g., 'funds insufficient', 'account closed', 'signature mismatch')",
+    },
+    "consumer_complaint": {
+        "complainant_name":   "What is your full name? (as it should appear on the complaint)",
+        "respondent_name":    "What is the name of the company / seller / service provider you are complaining against?",
+        "product_service":    "What is the name of the product or service involved?",
+        "defect_description": "Describe the specific defect in the product or deficiency in the service clearly.",
+        "relief_sought":      "Have you already lodged a complaint with the company? If yes, on what date and what was their response?",
+        "jurisdiction":       "In which State and District did you purchase the product / receive the service?",
+    },
+    "fir_complaint": {
+        "complainant_name":          "What is your full name and contact address?",
+        "incident_location":         "In which State and Police Station jurisdiction did the incident occur? (Provide district and nearest police station name.)",
+        "incident_description":      "What is the nature of the offence? (e.g., theft, assault, cheating/fraud, extortion, criminal intimidation)",
+        "incident_date":             "What was the date, time, and exact location of the incident?",
+        "accused_name_or_description": "Please provide the names and addresses of the accused, if known. (Write 'Not identified' if unknown.)",
+        "sections_applicable":       "Do you know which IPC/BNS sections apply? (Leave blank if unsure — we will identify them for you.)",
+    },
+    "domestic_violence": {
+        "complainant_name":  "What is your full name? (as it should appear on the application)",
+        "jurisdiction":      "In which State and District do you currently reside?",
+        "respondent_name":   "What is the full name of the respondent (perpetrator)?",
+        "relationship":      "What is your relationship with the respondent? (e.g., husband, father-in-law, mother-in-law, brother-in-law)",
+        "violence_type":     "What type of violence have you experienced? (physical / emotional / verbal / economic / sexual — you may specify more than one)",
+        "supporting_evidence": "Do you have any supporting evidence? (e.g., medical reports, photographs of injuries, witness names, police diary entries, written communications)",
+    },
+    "employment_termination": {
+        "complainant_name":    "What is your full name? (as it should appear on the complaint)",
+        "employer_name":       "What is the full name of your employer / company?",
+        "jurisdiction":        "In which State and District is your employer located?",
+        "termination_reason":  "What reason, if any, was given for your termination? Was it communicated orally or in writing?",
+        "service_period":      "What was your total period of service and your designation?",
+        "last_salary":         "What was your last drawn monthly salary (₹)?",
+    },
+    "loan_default": {
+        "complainant_name":    "What is your full name? (as it should appear on the complaint)",
+        "lender_name":         "What is the full name of the lender? (Bank / NBFC / private individual — include branch name if applicable.)",
+        "loan_amount":         "What was the total loan amount (₹) sanctioned?",
+        "loan_type":           "What type of loan is it? (home / personal / business / vehicle / gold / other)",
+        "defaulted_emis":      "How many EMIs have been defaulted, and from which month?",
+        "outstanding_amount":  "What is the total outstanding amount as of today (₹)?",
+    },
+}
+
+# Explicit overrides for always-ask fields (shared across categories)
 _FIELD_QUESTION_OVERRIDES: dict[str, str] = {
     "documentary_proof": (
         "Do you have any documentary proof? "
@@ -280,68 +352,27 @@ _FIELD_QUESTION_OVERRIDES: dict[str, str] = {
     ),
 }
 
-# keyword fragments used to match field names to existing _CLARIFYING_QUESTIONS text
-_FIELD_KEYWORDS: dict[str, list[str]] = {
-    "complainant_name":            ["your name", "your full name"],
-    "employer_name":               ["name and complete address of your employer"],
-    "employer_address":            ["name and complete address of your employer", "employer"],
-    "unpaid_amount":               ["total amount of unpaid wages", "amount of unpaid"],
-    "unpaid_period":               ["total amount of unpaid wages", "period"],
-    "jurisdiction":                ["state and district", "state and police station"],
-    "landlord_name":               ["landlord", "owner"],
-    "property_address":            ["residential or commercial", "full address"],
-    "monthly_rent":                ["monthly rent", "rent amount"],
-    "eviction_date":               ["written notice before eviction", "landlord give any"],
-    "accused_name":                ["cheque details", "names and addresses of the accused"],
-    "cheque_number":               ["cheque details", "cheque number"],
-    "cheque_amount":               ["cheque details", "amount"],
-    "dishonour_date":              ["cheque dishonoured", "date was the cheque dishonoured"],
-    "dishonour_reason":            ["reason did the bank give", "dishonoured"],
-    "respondent_name":             ["name of the company", "service provider"],
-    "product_service":             ["name of the product or service"],
-    "defect_description":          ["defect in the product", "deficiency in the service"],
-    "relief_sought":               ["lodged a complaint with the company"],
-    "accused_name_or_description": ["names and addresses of the accused"],
-    "incident_description":        ["nature of the offence"],
-    "incident_date":               ["date, time, and exact location"],
-    "incident_location":           ["state and police station", "police station jurisdiction"],
-    "sections_applicable":         ["nature of the offence"],
-    "relationship":                ["relationship with the respondent"],
-    "violence_type":               ["type of violence"],
-    "termination_reason":          ["reason, if any, was given for your termination"],
-    "service_period":              ["total period of service, designation"],
-    "last_salary":                 ["total period of service, designation", "salary"],
-    "lender_name":                 ["full name of the lender"],
-    "loan_amount":                 ["total loan amount"],
-    "loan_type":                   ["type of loan"],
-    "defaulted_emis":              ["how many emis have been defaulted"],
-    "outstanding_amount":          ["total outstanding amount"],
-}
-
 
 def _field_question(field: str, category: str) -> str:
     """
     Return a human-readable question for a given REQUIRED_FIELDS field name.
 
     Resolution order:
-      1. _FIELD_QUESTION_OVERRIDES — explicit string (used for always-ask fields).
-      2. Keyword scan of _CLARIFYING_QUESTIONS[category] — returns the best-matching
-         existing question so users see the same high-quality prompts.
+      1. Per-category direct lookup in _FIELD_QUESTION_MAP — unique question per field.
+      2. _FIELD_QUESTION_OVERRIDES — shared overrides for always-ask fields.
       3. Generic prettified fallback.
     """
+    # 1. Direct per-category lookup (primary path — prevents question repetition)
+    cat_map = _FIELD_QUESTION_MAP.get(category, {})
+    if field in cat_map:
+        return cat_map[field]
+
+    # 2. Shared always-ask overrides
     override = _FIELD_QUESTION_OVERRIDES.get(field)
     if override:
         return override
 
-    questions = _CLARIFYING_QUESTIONS.get(category, [])
-    keywords  = _FIELD_KEYWORDS.get(field, [field.replace("_", " ")])
-
-    for q in questions:
-        q_lower = q.lower()
-        if any(kw.lower() in q_lower for kw in keywords):
-            return q
-
-    # Generic fallback
+    # 3. Generic fallback
     pretty = field.replace("_", " ").title()
     return f"Please provide the {pretty} for your {category.replace('_', ' ')} document."
 
@@ -1497,33 +1528,9 @@ class DraftingAgent:
 
 
     def _field_question(self, field: str, category: str) -> str:
-        """Map a REQUIRED_FIELDS field name to a human-readable question.
-
-        Strategy:
-        1. Check _FIELD_QUESTION_OVERRIDES if it exists.
-        2. Scan _CLARIFYING_QUESTIONS[category] for keyword match.
-        3. Fall back to a generic prettified question.
-        """
-        # Check overrides first
-        overrides = getattr(self, '_FIELD_QUESTION_OVERRIDES', {})
-        key = f"{category}.{field}"
-        if key in overrides:
-            return overrides[key]
-        if field in overrides:
-            return overrides[field]
-
-        # Scan existing clarifying questions for keyword match
-        questions = _CLARIFYING_QUESTIONS.get(category, [])
-        field_keywords = field.replace('_', ' ').lower().split()
-        for q in questions:
-            q_lower = q.lower()
-            if any(kw in q_lower for kw in field_keywords):
-                return q
-
-        # Generic fallback
-        pretty = field.replace('_', ' ').title()
-        pretty_cat = category.replace('_', ' ').title()
-        return f"Please provide the {pretty} for your {pretty_cat} document."
+        """Delegates to the module-level _field_question() which uses
+        _FIELD_QUESTION_MAP for a unique per-field question (Bug 1 fix)."""
+        return _field_question(field, category)
 
     # ─────────────────────────────────────────────────────────────────────────
     # STAGE: MENU_SHOWN handler
@@ -1702,7 +1709,9 @@ class DraftingAgent:
             f"{len(required)} fields missing for {category}"
         )
 
-        first_q    = questions[0]
+        # BUG1 fix: use _field_question so the shown question matches required[0],
+        # not just the first clarifying question (which may be for a different field).
+        first_q    = _field_question(required[0], category) if required else questions[0]
         draft_data = {
             "answers":          {},
             "current_q_index":  0,
