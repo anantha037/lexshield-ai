@@ -184,10 +184,27 @@ class LegalVectorStore:
 
     def __init__(self, persist_dir: str = "data/chroma_db"):
         self.persist_dir = persist_dir
-        self.client = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=Settings(anonymized_telemetry=False),
-        )
+        mode = os.environ.get("CHROMA_MODE", "local").strip().lower()
+
+        if mode == "cloud":
+            api_key  = os.environ["CHROMA_API_KEY"]
+            tenant   = os.environ["CHROMA_TENANT"]
+            database = os.environ["CHROMA_DATABASE"]
+            self.client = chromadb.HttpClient(
+                ssl=True,
+                headers={"x-chroma-token": api_key},
+                tenant=tenant,
+                database=database,
+                settings=Settings(anonymized_telemetry=False),
+            )
+            print(f"[VectorStore] Mode=cloud  tenant={tenant!r}  db={database!r}")
+        else:
+            self.client = chromadb.PersistentClient(
+                path=persist_dir,
+                settings=Settings(anonymized_telemetry=False),
+            )
+            print(f"[VectorStore] Mode=local  persist_dir={persist_dir!r}")
+
         self.collection = self.client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
