@@ -1,4 +1,6 @@
 import { useState, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { UploadCloud } from 'lucide-react';
 import { useStore } from '../store';
 import { analyzeDocument, queryDocument, saveDocumentSession, adaptDocAnalysis, getToken } from '../api';
 import { IconDocument, IconUpload, IconSend, IconCopy, IconCheck, IconScale } from '../icons';
@@ -150,6 +152,12 @@ export default function DocumentView() {
     <div className="view-enter" style={{ display: 'flex', height: '100%' }}>
       {/* LEFT PANEL */}
       <div style={{ borderRight: '1px solid var(--c-border2)', overflowY: 'auto', padding: '32px 28px', minWidth: 320, maxWidth: 400 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
+          <span style={{ fontFamily: 'var(--f-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '0.2em', color: 'var(--c-gold)', textTransform: 'uppercase' }}>
+            LexShield · Legal Intelligence
+          </span>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
           <IconDocument color="var(--c-gold)" size={28} />
           <h2 style={{ fontFamily: 'var(--f-head)', fontSize: 22, color: 'var(--c-text)', margin: 0 }}>Document Analysis</h2>
@@ -175,7 +183,13 @@ export default function DocumentView() {
               onDragLeave={() => setDragOver(false)}
               onDrop={handleDrop}
             >
-              <IconUpload color={dragOver ? 'var(--c-gold)' : 'var(--c-text3)'} size={32} />
+              <motion.div
+                animate={{ y: [0, -5, 0] }}
+                transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+                style={{ color: 'var(--c-gold)' }}
+              >
+                <UploadCloud size={32} strokeWidth={1.4} />
+              </motion.div>
               <div style={{ fontFamily: 'var(--f-head)', fontSize: 18, color: 'var(--c-text2)', marginTop: 12 }}>Upload Legal Document</div>
               <div style={{ fontSize: 12, color: 'var(--c-text3)', marginTop: 6 }}>PDF, JPG, PNG — max 10MB</div>
               <button className="btn-ghost" style={{ marginTop: 16 }}>Browse Files</button>
@@ -184,17 +198,33 @@ export default function DocumentView() {
           </>
         )}
 
-        {file && !doc && (
-          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--c-surface)', padding: '12px 16px', borderRadius: 'var(--r-md)', border: '1px solid var(--c-border)' }}>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--c-text)' }}>{file.name}</div>
-              <div style={{ fontSize: 12, color: 'var(--c-text2)', marginTop: 2 }}>{(file.size / 1024).toFixed(0)} KB</div>
-            </div>
-            <button className="btn-gold" onClick={handleAnalyze} disabled={analyzing} style={{ padding: '6px 12px', fontSize: 13 }}>
-              {analyzing ? 'Analysing…' : 'Analyse'}
-            </button>
-          </div>
-        )}
+        <AnimatePresence>
+          {file && !doc && (
+            <motion.div
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              style={{
+                marginTop: 16,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                background: 'var(--c-surface)',
+                padding: '12px 16px',
+                borderRadius: 'var(--r-md)',
+                border: '1px solid var(--c-border)',
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--c-text)' }}>{file.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--c-text2)', marginTop: 2 }}>{(file.size / 1024).toFixed(0)} KB</div>
+              </div>
+              <button className="btn-gold" onClick={handleAnalyze} disabled={analyzing} style={{ padding: '6px 12px', fontSize: 13 }}>
+                {analyzing ? 'Analysing…' : 'Analyse'}
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {progress > 0 && progress < 100 && (
           <div style={{ marginTop: 12, height: 4, background: 'var(--c-border)', borderRadius: 99, overflow: 'hidden' }}>
@@ -303,89 +333,131 @@ export default function DocumentView() {
 
       {/* RIGHT PANEL */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--c-bg)' }}>
-        <div style={{ borderBottom: '1px solid var(--c-border2)', display: 'flex' }}>
-          <div style={{ padding: '12px 24px', fontSize: 13, fontWeight: 600, color: tab === 'text' ? 'var(--c-gold)' : 'var(--c-text3)', borderBottom: `2px solid ${tab === 'text' ? 'var(--c-gold)' : 'transparent'}`, cursor: 'pointer', transition: 'all 150ms' }} onClick={() => setTab('text')}>
-            Extracted Text
-          </div>
-          <div style={{ padding: '12px 24px', fontSize: 13, fontWeight: 600, color: tab === 'qa' ? 'var(--c-gold)' : 'var(--c-text3)', borderBottom: `2px solid ${tab === 'qa' ? 'var(--c-gold)' : 'transparent'}`, cursor: 'pointer', transition: 'all 150ms' }} onClick={() => setTab('qa')}>
-            Ask Questions
-          </div>
+        <div style={{ borderBottom: '1px solid var(--c-border2)', display: 'flex', position: 'relative', padding: '0 10px' }}>
+          {[
+            { key: 'text', label: 'Extracted Text' },
+            { key: 'qa',   label: 'Ask Questions'  }
+          ].map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              style={{
+                padding: '14px 24px',
+                fontSize: 13,
+                fontWeight: 600,
+                color: tab === t.key ? 'var(--c-text)' : 'var(--c-text3)',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                position: 'relative',
+                transition: 'color 150ms',
+              }}
+            >
+              {t.label}
+              {tab === t.key && (
+                <motion.span
+                  layoutId="doc-tab-indicator"
+                  style={{
+                    position: 'absolute',
+                    bottom: -1,
+                    left: 0,
+                    right: 0,
+                    height: 2,
+                    background: 'var(--c-gold)',
+                    borderRadius: 1,
+                  }}
+                  transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+                />
+              )}
+            </button>
+          ))}
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', height: '100%' }}>
-          {tab === 'text' && (
-            <div style={{ padding: 24, overflowY: 'auto', flex: 1 }}>
-              {doc?.text || extractedText ? (
-                <div style={{ position: 'relative' }}>
-                  <CopyBtn text={doc?.text || extractedText} />
-                  <pre style={{ fontFamily: 'var(--f-mono)', fontSize: 13, color: 'var(--c-text2)', lineHeight: 1.6, background: 'var(--c-elevated)', padding: 16, borderRadius: 'var(--r-md)', overflowX: 'auto', whiteSpace: 'pre-wrap' }}>
-                    {doc?.text || extractedText}
-                  </pre>
-                </div>
-              ) : (
-                <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-                  <div style={{ opacity: 0.15 }}><IconDocument color="var(--c-gold)" size={48} /></div>
-                  <div style={{ fontFamily: 'var(--f-head)', fontSize: 18, fontWeight: 600, color: 'var(--c-text)' }}>No text extracted</div>
-                  <div style={{ fontSize: 14, color: 'var(--c-text2)' }}>Upload and analyse a document to see its contents here.</div>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={tab}
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              transition={{ duration: 0.22 }}
+              style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}
+            >
+              {tab === 'text' && (
+                <div style={{ padding: 24, overflowY: 'auto', flex: 1 }}>
+                  {doc?.text || extractedText ? (
+                    <div style={{ position: 'relative' }}>
+                      <CopyBtn text={doc?.text || extractedText} />
+                      <pre style={{ fontFamily: 'var(--f-mono)', fontSize: 13, color: 'var(--c-text2)', lineHeight: 1.6, background: 'var(--c-elevated)', padding: 16, borderRadius: 'var(--r-md)', overflowX: 'auto', whiteSpace: 'pre-wrap' }}>
+                        {doc?.text || extractedText}
+                      </pre>
+                    </div>
+                  ) : (
+                    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+                      <div style={{ opacity: 0.15 }}><IconDocument color="var(--c-gold)" size={48} /></div>
+                      <div style={{ fontFamily: 'var(--f-head)', fontSize: 18, fontWeight: 600, color: 'var(--c-text)' }}>No text extracted</div>
+                      <div style={{ fontSize: 14, color: 'var(--c-text2)' }}>Upload and analyse a document to see its contents here.</div>
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
-          )}
 
-          {tab === 'qa' && (
-            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <div style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-                {!extractedText && (
-                  <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-                    <div style={{ opacity: 0.15 }}><IconDocument color="var(--c-gold)" size={48} /></div>
-                    <div style={{ fontFamily: 'var(--f-head)', fontSize: 18, fontWeight: 600, color: 'var(--c-text)' }}>No document loaded</div>
-                    <div style={{ fontSize: 14, color: 'var(--c-text2)' }}>Analyse a document first to ask questions about it.</div>
-                  </div>
-                )}
-                {docChat.map((m, i) => (
-                  <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: m.role === 'user' ? '65%' : '82%' }}>
-                    {m.role === 'assistant' && (
-                      <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <IconScale size={16} />
+              {tab === 'qa' && (
+                <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                  <div style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+                    {!extractedText && (
+                      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+                        <div style={{ opacity: 0.15 }}><IconDocument color="var(--c-gold)" size={48} /></div>
+                        <div style={{ fontFamily: 'var(--f-head)', fontSize: 18, fontWeight: 600, color: 'var(--c-text)' }}>No document loaded</div>
+                        <div style={{ fontSize: 14, color: 'var(--c-text2)' }}>Analyse a document first to ask questions about it.</div>
                       </div>
                     )}
-                    <div style={{ position: 'relative', background: m.role === 'user' ? 'var(--c-gold-dim)' : 'var(--c-surface)', border: `1px solid ${m.role === 'user' ? 'rgba(196,149,42,0.18)' : 'var(--c-border)'}`, borderRadius: m.role === 'user' ? '16px 16px 4px 16px' : '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }} className="msg-bubble-wrap">
-                      <style>{`.msg-bubble-wrap:hover .copy-btn { opacity: 1 !important; }`}</style>
-                      <div style={{ fontSize: 14, color: m.role === 'user' ? 'var(--c-text)' : 'var(--c-text2)', lineHeight: 1.75 }}>
-                        {m.role === 'assistant' ? parseText(m.content) : m.content}
+                    {docChat.map((m, i) => (
+                      <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: m.role === 'user' ? '65%' : '82%' }}>
+                        {m.role === 'assistant' && (
+                          <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <IconScale size={16} />
+                          </div>
+                        )}
+                        <div style={{ position: 'relative', background: m.role === 'user' ? 'var(--c-gold-dim)' : 'var(--c-surface)', border: `1px solid ${m.role === 'user' ? 'rgba(196,149,42,0.18)' : 'var(--c-border)'}`, borderRadius: m.role === 'user' ? '16px 16px 4px 16px' : '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }} className="msg-bubble-wrap">
+                          <style>{`.msg-bubble-wrap:hover .copy-btn { opacity: 1 !important; }`}</style>
+                          <div style={{ fontSize: 14, color: m.role === 'user' ? 'var(--c-text)' : 'var(--c-text2)', lineHeight: 1.75 }}>
+                            {m.role === 'assistant' ? parseText(m.content) : m.content}
+                          </div>
+                          {m.role === 'assistant' && <CopyBtn text={m.content} />}
+                        </div>
                       </div>
-                      {m.role === 'assistant' && <CopyBtn text={m.content} />}
-                    </div>
+                    ))}
+                    {docLoading && (
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start' }}>
+                        <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <IconScale size={16} />
+                        </div>
+                        <div className="typing" style={{ display: 'flex', gap: 5, padding: '16px 20px', alignSelf: 'flex-start' }}>
+                          <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite' }} />
+                          <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite 0.2s' }} />
+                          <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite 0.4s' }} />
+                        </div>
+                      </div>
+                    )}
                   </div>
-                ))}
-                {docLoading && (
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start' }}>
-                    <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <IconScale size={16} />
+                  
+                  {extractedText && (
+                    <div style={{ padding: '16px 40px 20px', borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+                        <textarea className="textarea" value={docQ} onChange={e => { setDocQ(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(Math.max(e.target.scrollHeight, 44), 140) + 'px'; }}
+                          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDocQuery(); } }}
+                          placeholder="Ask anything about this document..." style={{ flex: 1, minHeight: 44, maxHeight: 140, resize: 'none' }} rows={1} />
+                        <button className="btn-send" onClick={handleDocQuery} disabled={docLoading || !docQ.trim()}>
+                          <IconSend color="#0A0B0F" size={16} />
+                        </button>
+                      </div>
                     </div>
-                    <div className="typing" style={{ display: 'flex', gap: 5, padding: '16px 20px', alignSelf: 'flex-start' }}>
-                      <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite' }} />
-                      <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite 0.2s' }} />
-                      <span className="typing-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--c-gold)', animation: 'typePulse 1.2s ease-in-out infinite 0.4s' }} />
-                    </div>
-                  </div>
-                )}
-              </div>
-              
-              {extractedText && (
-                <div style={{ padding: '16px 40px 20px', borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-                    <textarea className="textarea" value={docQ} onChange={e => { setDocQ(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(Math.max(e.target.scrollHeight, 44), 140) + 'px'; }}
-                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDocQuery(); } }}
-                      placeholder="Ask anything about this document..." style={{ flex: 1, minHeight: 44, maxHeight: 140, resize: 'none' }} rows={1} />
-                    <button className="btn-send" onClick={handleDocQuery} disabled={docLoading || !docQ.trim()}>
-                      <IconSend color="#0A0B0F" size={16} />
-                    </button>
-                  </div>
+                  )}
                 </div>
               )}
-            </div>
-          )}
+            </motion.div>
+          </AnimatePresence>
         </div>
       </div>
       <style>{`

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { motion, LayoutGroup } from 'framer-motion';
 import { useStore } from '../store';
 import { deleteSession, getSessionHistory } from '../api';
 import { IconChat, IconDocument, IconDraft, IconShield, IconScale, IconPlus, IconTrash, IconLogout, IconGavel } from '../icons';
@@ -196,20 +197,6 @@ export default function Sidebar() {
           </div>
         </div>
         
-        {user && (
-          <div className="sidebar-user">
-            <div className="sidebar-avatar">{initials}</div>
-            <div style={{ minWidth: 0, overflow: 'hidden' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--c-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {user.full_name}
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--c-text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {user.email}
-              </div>
-            </div>
-          </div>
-        )}
-
         <div style={{ marginTop: 16 }}>
           <button className="btn-gold" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={handleNewChat}>
             <IconPlus /> New Chat
@@ -218,16 +205,39 @@ export default function Sidebar() {
       </div>
 
       <div className="sidebar-nav">
-        {NAV.map(({ id, Icon, label }) => (
-          <div 
-            key={id} 
-            className={`nav-item ${activeView === id ? 'active' : ''} ${id === 'caselaw' && caseLawMode && activeView === 'chat' ? 'active' : ''}`}
-            onClick={() => handleNavClick(id)}
-          >
-            <Icon />
-            {label}
-          </div>
-        ))}
+        <LayoutGroup>
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+            {NAV.map(({ id, Icon, label }) => {
+              const isActive = activeView === id || (id === 'caselaw' && caseLawMode && activeView === 'chat');
+              return (
+                <li key={id}>
+                  <div 
+                    className={`nav-item ${isActive ? 'active' : ''}`}
+                    onClick={() => handleNavClick(id)}
+                  >
+                    {isActive && (
+                      <motion.span
+                        layoutId="sidebar-active-bar"
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          width: 3,
+                          height: 20,
+                          borderRadius: '0 2px 2px 0',
+                          background: 'var(--c-gold)',
+                        }}
+                      />
+                    )}
+                    <Icon />
+                    {label}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </LayoutGroup>
         
         <hr className="nav-divider" />
         
@@ -240,13 +250,39 @@ export default function Sidebar() {
         />
       </div>
 
-      {user && (
-        <div className="sidebar-bottom">
-          <button className="signout-btn" onClick={logout}>
-            <IconLogout /> Sign Out
+      <div className="sidebar-bottom">
+        {user ? (
+          <>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              paddingBottom: 12, marginBottom: 12,
+              borderBottom: '1px solid var(--c-border2)'
+            }}>
+              <div className="sidebar-avatar">{initials}</div>
+              <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--c-text)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {user.full_name}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--c-text3)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {user.email}
+                </div>
+              </div>
+            </div>
+            <button className="signout-btn" onClick={logout}>
+              <IconLogout /> Sign Out
+            </button>
+          </>
+        ) : (
+          <button className="signout-btn" onClick={() => {
+            sessionStorage.removeItem('lexshield_anon');
+            window.location.reload();
+          }}>
+            <IconLogout /> Sign In / Register
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

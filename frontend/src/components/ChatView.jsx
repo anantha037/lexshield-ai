@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ArrowUpRight } from 'lucide-react';
 import { useStore } from '../store';
 import { sendQuery, adaptQueryResponse } from '../api';
 import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown, IconGavel, IconExternalLink, IconCheckCircle, IconWarning, IconXCircle } from '../icons';
@@ -203,6 +205,27 @@ function CaseLawCards({ cases }) {
   );
 }
 
+function TypewriterText({ content = '', isNew }) {
+  const safeContent = content || '';
+  const [displayed, setDisplayed] = useState(isNew ? '' : safeContent);
+  const [done, setDone] = useState(!isNew);
+
+  useEffect(() => {
+    if (!isNew || done) return;
+    if (displayed.length >= safeContent.length) { setDone(true); return; }
+    const timeout = setTimeout(() => {
+      setDisplayed(safeContent.slice(0, displayed.length + 2));
+    }, 8);
+    return () => clearTimeout(timeout);
+  }, [displayed, safeContent, isNew, done]);
+
+  return (
+    <div style={{ fontSize: 14, color: 'var(--c-text2)', lineHeight: 1.75 }}>
+      {parseText(done ? safeContent : displayed)}
+    </div>
+  );
+}
+
 /* ── Main ChatView ────────────────────────────────────────────────────────── */
 
 export default function ChatView() {
@@ -288,6 +311,7 @@ export default function ChatView() {
         scopeMessage: r.scopeMessage || '',
         source: raw.source || 'default',
         ts: Date.now() / 1000,
+        isNew: true,
       }]);
       setLastResponse(r);
     } catch (err) {
@@ -314,36 +338,79 @@ export default function ChatView() {
     : 'Grounded in Indian statutes, case law, and constitutional provisions.';
   const EmptyIcon = caseLawMode ? IconGavel : IconScale;
 
+  const latestAssistantIdx = (chatMessages || []).reduce((acc, m, i) =>
+    m.role === 'assistant' ? i : acc, -1);
+
   return (
     <div className="chat-container view-enter" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--c-bg)', position: 'relative' }}>
-      <div className="view-header" style={{ padding: '32px 40px 24px', borderBottom: '1px solid var(--c-border2)', flexShrink: 0 }}>
-        <h1 style={{ fontFamily: 'var(--f-head)', fontSize: 32, fontWeight: 700, color: 'var(--c-text)', letterSpacing: '-0.01em', margin: 0 }}>
+      <div className="view-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
+          <span style={{ fontFamily: 'var(--f-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '0.2em', color: 'var(--c-gold)', textTransform: 'uppercase' }}>
+            LexShield · Legal Intelligence
+          </span>
+        </div>
+        <h1 style={{ fontFamily: 'var(--f-head)', fontSize: 36, fontWeight: 700, color: 'var(--c-text)', letterSpacing: '-0.01em', margin: 0 }}>
           {caseLawMode ? 'Case Law Search' : 'Legal Q&A'}
         </h1>
-        <p style={{ fontSize: 14, color: 'var(--c-text2)', marginTop: 6, margin: 0 }}>
+        <p style={{ fontSize: 15, color: 'var(--c-text2)', marginTop: 8, margin: 0 }}>
           {caseLawMode ? 'Search Indian Kanoon for court judgments and precedents' : 'Ask any question grounded in Indian law'}
         </p>
       </div>
 
-      <div className="messages-area" ref={areaRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: 20, scrollBehavior: 'smooth' }}>
-        {chatMessages.length === 0 && !loading && (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 40 }}>
+      <div className="messages-area" ref={areaRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', scrollBehavior: 'smooth' }}>
+        {(!chatMessages || chatMessages.length === 0) && !loading && (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '0 40px', minHeight: 0 }}>
             <EmptyIcon size={48} color="var(--c-gold-dim)" />
             <h2 style={{ fontFamily: 'var(--f-head)', fontSize: 28, fontWeight: 600, color: 'var(--c-text)', margin: 0 }}>{emptyTitle}</h2>
             <p style={{ fontSize: 14, color: 'var(--c-text2)', textAlign: 'center', maxWidth: 400, margin: 0 }}>
               {emptySubtitle}
             </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 8, maxWidth: 520 }}>
+            <motion.div
+              initial="hidden"
+              animate="visible"
+              variants={{ visible: { transition: { staggerChildren: 0.08 } } }}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: 16,
+                marginTop: 8,
+                maxWidth: 600,
+                width: '100%',
+              }}
+            >
               {quickPrompts.map((q, i) => (
-                <div key={i} className="card-hover" onClick={() => handleSend(q.q)} style={{ padding: '16px 20px', background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)', fontSize: 13, color: 'var(--c-text2)', cursor: 'pointer', textAlign: 'left', animation: `fadeIn 200ms ease forwards ${i * 60}ms`, opacity: 0 }}>
-                  {q.q}
-                </div>
+                <motion.div
+                  key={i}
+                  variants={{
+                    hidden: { opacity: 0, y: 14 },
+                    visible: { opacity: 1, y: 0 }
+                  }}
+                  whileHover={{ y: -3 }}
+                  transition={{ duration: 0.25 }}
+                  onClick={() => handleSend(q.q)}
+                  className="quick-prompt-card"
+                  onHoverStart={(_, info) => {}}
+                  onHoverEnd={(_, info) => {}}
+                  data-card="true"
+                >
+                  <span>{q.q}</span>
+                  <ArrowUpRight
+                    size={16}
+                    style={{
+                      flexShrink: 0,
+                      marginTop: 2,
+                      color: 'var(--c-text3)',
+                      transition: 'color 200ms',
+                    }}
+                  />
+                </motion.div>
               ))}
-            </div>
+            </motion.div>
           </div>
         )}
 
-        {chatMessages.map((m, i) => {
+        {(chatMessages || []).map((m, i) => {
           if (m.redirect) return (
             <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '82%' }}>
               <div style={{ background: 'var(--c-gold-dim)', border: '1px solid var(--c-gold)', color: 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -414,9 +481,10 @@ export default function ChatView() {
                 {isCaseLaw ? (
                   <CaseLawCards cases={m.caseLawResults} />
                 ) : (
-                  <div style={{ fontSize: 14, color: 'var(--c-text2)', lineHeight: 1.75 }}>
-                    {parseText(m.content)}
-                  </div>
+                  <TypewriterText
+                    content={m.content}
+                    isNew={m.isNew && !isCaseLaw}
+                  />
                 )}
 
                 <div style={{ fontSize: 11, color: 'var(--c-text3)', textAlign: 'right', marginTop: 6 }}>{timeAgo(m.ts)}</div>
@@ -450,7 +518,7 @@ export default function ChatView() {
         </button>
       )}
 
-      <div className="chat-input-area" style={{ padding: '16px 40px 20px', borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
+      <div className="chat-input-area">
         <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
           {LANGS.map(l => (
             <button key={l.code}
@@ -466,9 +534,15 @@ export default function ChatView() {
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
           <textarea ref={inputRef} className="textarea" value={input} onChange={onInput} onKeyDown={onKey}
             placeholder={caseLawMode ? 'Search for case law, judgments, or precedents...' : 'Ask a legal question...'} style={{ flex: 1, minHeight: 44, maxHeight: 140, resize: 'none' }} rows={1} />
-          <button className="btn-send" onClick={() => handleSend()} disabled={loading || !input.trim()}>
+          <motion.button
+            className="btn-send"
+            whileHover={{ scale: 1.06 }}
+            whileTap={{ scale: 0.92 }}
+            onClick={() => handleSend()}
+            disabled={loading || !input.trim()}
+          >
             <IconSend />
-          </button>
+          </motion.button>
         </div>
       </div>
     </div>
