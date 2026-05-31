@@ -231,10 +231,11 @@ class SessionMemory:
         """True if the session row exists in SQLite."""
         if not session_id:
             return False
-        row = _conn.execute(
-            "SELECT 1 FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
+        with _lock:
+            row = _conn.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
         return row is not None
 
     def ensure_session(self, session_id: Optional[str]) -> str:
@@ -280,29 +281,30 @@ class SessionMemory:
         first_message — first user turn content truncated to 60 chars.
         last_active   — timestamp of the most recent turn (or session creation).
         """
-        rows = _conn.execute(
-            """
-            SELECT
-                s.session_id,
-                s.created_ts                                            AS created_at,
-                COALESCE(MAX(t.ts), s.created_ts)                      AS last_active,
-                COUNT(t.id)                                             AS turn_count,
-                (
-                    SELECT SUBSTR(t2.content, 1, 60)
-                    FROM   turns t2
-                    WHERE  t2.session_id = s.session_id
-                    AND    t2.role = 'user'
-                    ORDER  BY t2.id ASC
-                    LIMIT  1
-                )                                                       AS first_message
-            FROM   sessions s
-            LEFT JOIN turns t ON t.session_id = s.session_id
-            WHERE  s.user_id = ?
-            GROUP  BY s.session_id
-            ORDER  BY last_active DESC
-            """,
-            (user_id,),
-        ).fetchall()
+        with _lock:
+            rows = _conn.execute(
+                """
+                SELECT
+                    s.session_id,
+                    s.created_ts                                            AS created_at,
+                    COALESCE(MAX(t.ts), s.created_ts)                      AS last_active,
+                    COUNT(t.id)                                             AS turn_count,
+                    (
+                        SELECT SUBSTR(t2.content, 1, 60)
+                        FROM   turns t2
+                        WHERE  t2.session_id = s.session_id
+                        AND    t2.role = 'user'
+                        ORDER  BY t2.id ASC
+                        LIMIT  1
+                    )                                                       AS first_message
+                FROM   sessions s
+                LEFT JOIN turns t ON t.session_id = s.session_id
+                WHERE  s.user_id = ?
+                GROUP  BY s.session_id
+                ORDER  BY last_active DESC
+                """,
+                (user_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ── Turn operations ────────────────────────────────────────────────────────
@@ -336,15 +338,16 @@ class SessionMemory:
 
     def _trim(self, session_id: str) -> None:
         """Delete oldest turns that exceed MAX_TURNS_STORED."""
-        rows = _conn.execute(
-            """
-            SELECT id, role, content FROM turns
-            WHERE session_id = ?
-            ORDER BY id DESC
-            LIMIT -1 OFFSET ?
-            """,
-            (session_id, MAX_TURNS_STORED),
-        ).fetchall()
+        with _lock:
+            rows = _conn.execute(
+                """
+                SELECT id, role, content FROM turns
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT -1 OFFSET ?
+                """,
+                (session_id, MAX_TURNS_STORED),
+            ).fetchall()
 
         if rows:
             ids = [r["id"] for r in rows]
@@ -404,14 +407,15 @@ class SessionMemory:
 
     def get_summary(self, session_id: str) -> str:
         """Fetch all summaries for a session, concatenated chronologically."""
-        rows = _conn.execute(
-            """
-            SELECT summary_text FROM session_summaries
-            WHERE session_id = ?
-            ORDER BY created_at ASC
-            """,
-            (session_id,)
-        ).fetchall()
+        with _lock:
+            rows = _conn.execute(
+                """
+                SELECT summary_text FROM session_summaries
+                WHERE session_id = ?
+                ORDER BY created_at ASC
+                """,
+                (session_id,)
+            ).fetchall()
         
         if not rows:
             return ""
@@ -426,11 +430,12 @@ class SessionMemory:
 
         Each dict: { role, content, intent, ts, citation_status }
         """
-        rows = _conn.execute(
-            "SELECT role, content, intent, ts, citation_status FROM turns "
-            "WHERE session_id = ? ORDER BY id ASC",
-            (session_id,),
-        ).fetchall()
+        with _lock:
+            rows = _conn.execute(
+                "SELECT role, content, intent, ts, citation_status FROM turns "
+                "WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def get_context_block(self, session_id: str) -> str:
@@ -444,11 +449,12 @@ class SessionMemory:
           Assistant: ...
           [END HISTORY]
         """
-        rows = _conn.execute(
-            "SELECT role, content FROM turns "
-            "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-            (session_id, MAX_TURNS_INJECT),
-        ).fetchall()
+        with _lock:
+            rows = _conn.execute(
+                "SELECT role, content FROM turns "
+                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                (session_id, MAX_TURNS_INJECT),
+            ).fetchall()
 
         if not rows:
             return ""
@@ -481,11 +487,12 @@ class SessionMemory:
 
             query_tokens = tokenize(current_query)
             if len(query_tokens) <= 2:
-                rows = _conn.execute(
-                    "SELECT role, content FROM turns "
-                    "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-                    (session_id, GENERAL_INTENT_TURNS),
-                ).fetchall()
+                with _lock:
+                    rows = _conn.execute(
+                        "SELECT role, content FROM turns "
+                        "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                        (session_id, GENERAL_INTENT_TURNS),
+                    ).fetchall()
                 if not rows:
                     return ""
                 lines = ["[CONVERSATION HISTORY]"]
@@ -495,11 +502,12 @@ class SessionMemory:
                 lines.append("[END HISTORY]")
                 return "\n".join(lines)
 
-            rows = _conn.execute(
-                "SELECT id, role, content FROM turns "
-                "WHERE session_id = ? ORDER BY id ASC",
-                (session_id,),
-            ).fetchall()
+            with _lock:
+                rows = _conn.execute(
+                    "SELECT id, role, content FROM turns "
+                    "WHERE session_id = ? ORDER BY id ASC",
+                    (session_id,),
+                ).fetchall()
 
             if len(rows) < top_k:
                 return self.get_context_block(session_id)
@@ -528,10 +536,11 @@ class SessionMemory:
             return self.get_context_block(session_id)
 
     def turn_count(self, session_id: str) -> int:
-        row = _conn.execute(
-            "SELECT COUNT(*) AS c FROM turns WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
+        with _lock:
+            row = _conn.execute(
+                "SELECT COUNT(*) AS c FROM turns WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
         return int(row["c"]) if row else 0
 
 
@@ -561,7 +570,8 @@ class ProfileMemory:
             _conn.commit()
 
     def update_profile(self, session_id: str, intent: str, entities: dict):
-        row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
+        with _lock:
+            row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
         
         if row:
             profile = dict(row)
@@ -617,7 +627,8 @@ class ProfileMemory:
             _conn.commit()
 
     def get_profile_block(self, session_id: str) -> str:
-        row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
+        with _lock:
+            row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
         if not row:
             return ""
             
