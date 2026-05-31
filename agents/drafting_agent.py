@@ -1,7 +1,7 @@
 """
 LexShield AI — Drafting Agent (Session 3 — Full Implementation)
 ================================================================
-Multi-turn, SQLite-persisted, 6-stage workflow for generating
+Multi-turn, PostgreSQL-persisted, 6-stage workflow for generating
 professional Indian legal complaint drafts.
 
 Stage Flow:
@@ -12,8 +12,8 @@ Stage Flow:
   fir_complaint | domestic_violence | employment_termination | loan_default
 
 Architecture:
-  - All draft state is stored in data/sessions.db (drafts table).
-  - In-memory dict is NOT used — every read/write goes to SQLite.
+  - All draft state is stored in PostgreSQL (drafts table).
+  - In-memory dict is NOT used — every read/write goes to PostgreSQL.
   - This survives server restarts, unlike the previous in-memory approach.
   - graph.py calls has_active_draft() before intent routing.
   - draft_node calls handle() which dispatches by stage.
@@ -27,7 +27,6 @@ LLM:
 import json
 import os
 import re
-import sqlite3
 import time
 from enum import Enum
 from typing import Optional
@@ -66,29 +65,27 @@ class DraftStage(str, Enum):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DB PATH
+# DB SETUP
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DB_PATH      = os.path.join(_PROJECT_ROOT, "data", "sessions.db")
+from agents.pg_sessions import get_conn
 
 
-def _get_conn() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS drafts (
-            session_id  TEXT PRIMARY KEY,
-            stage       TEXT NOT NULL,
-            category    TEXT NOT NULL,
-            draft_data  TEXT NOT NULL,
-            created_at  REAL NOT NULL,
-            updated_at  REAL NOT NULL
-        )
-    """)
-    conn.commit()
-    return conn
+def _init_drafts_table() -> None:
+    with get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS drafts (
+                session_id  TEXT PRIMARY KEY,
+                stage       TEXT NOT NULL,
+                category    TEXT NOT NULL,
+                draft_data  TEXT NOT NULL,
+                created_at  DOUBLE PRECISION NOT NULL,
+                updated_at  DOUBLE PRECISION NOT NULL
+            )
+        """)
+
+
+_init_drafts_table()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1313,46 +1310,41 @@ LIST OF ENCLOSURES: [numbered]""",
 class DraftingAgent:
 
     def __init__(self):
-        self._conn: Optional[sqlite3.Connection] = None
-
-    def _db(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = _get_conn()
-        return self._conn
+        pass
 
     # ── DB helpers ─────────────────────────────────────────────────────────────
 
     def _load(self, session_id: str) -> Optional[dict]:
         """Load draft row from DB. Returns None if not found."""
-        cur = self._db().execute(
-            "SELECT stage, category, draft_data FROM drafts WHERE session_id = ?",
-            (session_id,)
-        )
-        row = cur.fetchone()
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT stage, category, draft_data FROM drafts WHERE session_id = %s",
+                (session_id,)
+            ).fetchone()
         if row is None:
             return None
         return {
-            "stage":      row[0],
-            "category":   row[1],
-            "draft_data": json.loads(row[2]),
+            "stage":      row["stage"],
+            "category":   row["category"],
+            "draft_data": json.loads(row["draft_data"]),
         }
 
     def _save(self, session_id: str, stage: str, category: str, draft_data: dict) -> None:
         now = time.time()
-        self._db().execute("""
-            INSERT INTO drafts (session_id, stage, category, draft_data, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                stage      = excluded.stage,
-                category   = excluded.category,
-                draft_data = excluded.draft_data,
-                updated_at = excluded.updated_at
-        """, (session_id, stage, category, json.dumps(draft_data), now, now))
-        self._db().commit()
+        with get_conn() as conn:
+            conn.execute("""
+                INSERT INTO drafts (session_id, stage, category, draft_data, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    stage      = excluded.stage,
+                    category   = excluded.category,
+                    draft_data = excluded.draft_data,
+                    updated_at = excluded.updated_at
+            """, (session_id, stage, category, json.dumps(draft_data), now, now))
 
     def _delete(self, session_id: str) -> None:
-        self._db().execute("DELETE FROM drafts WHERE session_id = ?", (session_id,))
-        self._db().commit()
+        with get_conn() as conn:
+            conn.execute("DELETE FROM drafts WHERE session_id = %s", (session_id,))
 
     # ── Public API ─────────────────────────────────────────────────────────────
 

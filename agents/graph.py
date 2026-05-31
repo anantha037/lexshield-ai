@@ -43,11 +43,10 @@ Priority order in route_by_intent:
 
 import os
 import re
-import sqlite3
 from typing import TypedDict, Optional
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -102,14 +101,13 @@ _JURISDICTION_RE = re.compile(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SQLITE CHECKPOINTER
+# POSTGRESQL CHECKPOINTER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_PROJECT_ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DB_PATH         = os.path.join(_PROJECT_ROOT, "data", "sessions.db")
+from agents.pg_sessions import pool as _pg_pool
 
-_checkpoint_conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-checkpointer     = SqliteSaver(_checkpoint_conn)
+checkpointer = PostgresSaver(_pg_pool)
+checkpointer.setup()  # Idempotent: creates checkpoint tables if missing
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

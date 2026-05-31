@@ -1,23 +1,47 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lexshield_postgres
+    environment:
+      POSTGRES_USER: lexshield
+      POSTGRES_PASSWORD: lexshield
+      POSTGRES_DB: lexshield_sessions
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lexshield -d lexshield_sessions"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   api:
     build: .
     container_name: lexshield_api
     ports:
       - "8000:8000"
     volumes:
-      - .:/app  # Maps local folder to the container so live-reload works
+      - .:/app
     environment:
+      - DATABASE_URL=postgresql://lexshield:lexshield@postgres:5432/lexshield_sessions
       - CHROMA_HOST=chromadb
       - CHROMA_PORT=8000
     depends_on:
-      - chromadb
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
 
   chromadb:
     image: chromadb/chroma:latest
     container_name: lexshield_chroma
     ports:
-      - "8001:8000" # Maps local port 8001 to Chroma's internal port 8000
+      - "8001:8000"
     volumes:
-      - ./data/chroma:/chroma/chroma # Saves vector data locally so it isn't lost on restart
+      - ./data/chroma:/chroma/chroma
+
+volumes:
+  pgdata:
