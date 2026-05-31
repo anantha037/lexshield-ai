@@ -50,15 +50,18 @@ export default function RightsView() {
   const [question, setQuestion] = useState('');
 
   const askAbout = async (questionText) => {
+    // BUG2 fix: get the new session_id BEFORE setting prefillInput so ChatView
+    // always sends the query under the correct (fresh) session, not the stale one.
+    let newSessionId = 'LX-' + Math.random().toString(36).substr(2,8).toUpperCase();
     try {
       const res = await fetch('http://localhost:8000/api/v1/master/session/new');
       const data = await res.json();
-      setActiveSession(data.session_id);
-    } catch (e) {
-      const fallbackId = 'LX-' + Math.random().toString(36).substr(2,8).toUpperCase();
-      setActiveSession(fallbackId);
-    }
+      newSessionId = data.session_id;
+    } catch (e) { /* keep fallback id */ }
+
+    // Clear messages and set session BEFORE navigating / setting prefill
     if (setChatMessages) setChatMessages([]);
+    setActiveSession(newSessionId);
     setPrefillInput(questionText);
     setActiveView('chat');
   };
