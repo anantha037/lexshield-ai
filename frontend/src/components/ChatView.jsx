@@ -241,9 +241,13 @@ export default function ChatView() {
   const sessionRef = useRef(activeSession);
   const langRef = useRef(language);
   const abortRef = useRef(null);
+  // BUG2 fix: always hold latest handleSend so prefillInput effect never uses a stale closure
+  const handleSendRef = useRef(null);
 
   useEffect(() => { sessionRef.current = activeSession; }, [activeSession]);
   useEffect(() => { langRef.current = language; }, [language]);
+  // BUG2 fix: keep ref in sync with latest handleSend so prefillInput effect is never stale
+  useEffect(() => { handleSendRef.current = handleSend; });
 
   const scrollToBottom = () => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -262,13 +266,19 @@ export default function ChatView() {
     setShowScrollBtn(scrollHeight - scrollTop - clientHeight > 200);
   };
 
+  // BUG2 fix: use the ref so the effect always calls the latest handleSend,
+  // preventing stale-closure double-message and "unable to process" failures.
   useEffect(() => {
     if (prefillInput) {
       const q = prefillInput;
       setPrefillInput('');
-      handleSend(q);
+      // Use ref to guarantee we call the up-to-date handleSend
+      if (handleSendRef.current) {
+        handleSendRef.current(q);
+      }
     }
-  }, [prefillInput, setPrefillInput]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillInput]);
 
   const handleSend = useCallback(async (textOverride, suppressRedirect = false) => {
     const q = (textOverride ?? inputValRef.current).trim();
