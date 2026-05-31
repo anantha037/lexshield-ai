@@ -14,7 +14,7 @@ __pycache__/
 # =========================
 # (This prevents another API token disaster!)
 .env
-.env.example
+# .env.example
 *.pem
 secrets.json
 
@@ -55,7 +55,6 @@ Thumbs.db
 # 6. Models
 # =========================
 models/saved/
-models/scratch.py
 *.db
 *.db-*
 DOCUMENTATION.md
@@ -81,3 +80,7 @@ debug_graph.txt
 debug_output.txt
 res_output.txt
 debug_sc.txt
+
+all_imports.txt
+missing_requirements.txt
+unused_requirements.txt
