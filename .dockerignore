@@ -3,10 +3,15 @@
 venv/
 .venv/
 __pycache__
-data/chroma_db/
 *.db
+*.db-shm
+*.db-wal
 frontend/node_modules
 frontend/.next
 tests/
 evals/
 *.pyc
+data/raw/
+data/processed/
+data/real/
+# NOT ignoring data/chroma_db — it must go into the image
