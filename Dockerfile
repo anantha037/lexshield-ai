@@ -31,7 +31,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; \
     SentenceTransformer('all-MiniLM-L6-v2')"
 
 # Legal NER (production — active only when USE_LEGAL_NER=true)
-RUN pip install https://huggingface.co/opennyaiorg/en_legal_ner_trf/resolve/main/en_legal_ner_trf-any-py3-none-any.whl
+# RUN pip install https://huggingface.co/opennyaiorg/en_legal_ner_trf/resolve/main/en_legal_ner_trf-any-py3-none-any.whl
 
 # Copy entire project including data/chroma_db and models/saved/
 COPY . .
