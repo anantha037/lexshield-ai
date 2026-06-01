@@ -37,6 +37,11 @@ services:
       - DATABASE_URL=postgresql://lexshield:lexshield@postgres:5432/lexshield_sessions
       - CHROMA_MODE=local
       - USE_LEGAL_NER=false
+      - GCS_BUCKET=lexshield-ai-data
+      - SKIP_GCS_DOWNLOAD=true
+    volumes:
+      - ./data:/app/data
+      - ./models/saved:/app/models/saved
     depends_on:
       postgres:
         condition: service_healthy

@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# Install gcloud CLI
+RUN curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts
+ENV PATH="/root/google-cloud-sdk/bin:${PATH}"
+
 # CPU-only torch first — prevents pip pulling 2GB CUDA wheel
 RUN pip install --no-cache-dir \
     torch==2.12.0+cpu \
@@ -30,10 +34,8 @@ RUN python -m spacy download en_core_web_lg
 RUN python -c "from sentence_transformers import SentenceTransformer; \
     SentenceTransformer('all-MiniLM-L6-v2')"
 
-# Legal NER (production — active only when USE_LEGAL_NER=true)
-# RUN pip install https://huggingface.co/opennyaiorg/en_legal_ner_trf/resolve/main/en_legal_ner_trf-any-py3-none-any.whl
-
-# Copy entire project including data/chroma_db and models/saved/
+# Copy project code
 COPY . .
+RUN chmod +x startup.sh
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["./startup.sh"]
