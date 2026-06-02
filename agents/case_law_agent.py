@@ -258,7 +258,7 @@ def search_cases(query: str, max_results: int = 3) -> list[dict]:
             "url":      url,
         })
 
-    print(f"[CaseLawAgent] {len(results)} case(s) found for: {query[:55]!r}")
+    logger.debug(f"[CaseLawAgent] {len(results)} case(s) found for: {query[:55]!r}")
     return results
 
 
@@ -331,7 +331,7 @@ async def summarize_case(case: dict, groq_client) -> str:
         return result
 
     except Exception as e:
-        logger.warning(f"[CaseLawAgent] summarize_case failed for {title[:50]!r}: {e}")
+        logger.exception(f"[CaseLawAgent] summarize_case failed for {title[:50]!r}")
         # Minimal deterministic fallback — never returns empty string
         return (
             f"The {court} decided {title} on {date}. "
@@ -363,13 +363,15 @@ def _validate_case_results(results: list[dict]) -> list[dict]:
             reasons.append(f"summary too short ({len(summary) if summary else 0} chars)")
             
         if reasons:
-            print(f"[DEBUG CaseLaw] Case {i} failed. reasons={reasons}")
-            print(f"  title: {case.get('title')}")
-            print(f"  citation: {case.get('citation')}")
-            print(f"  court: {case.get('court')}")
-            print(f"  date: {case.get('date')}")
-            print(f"  url: {case.get('url')}")
-            print(f"  summary len: {len(summary) if summary else 0}")
+            logger.debug(
+                f"[DEBUG CaseLaw] Case {i} failed. reasons={reasons}\n"
+                f"  title: {case.get('title')}\n"
+                f"  citation: {case.get('citation')}\n"
+                f"  court: {case.get('court')}\n"
+                f"  date: {case.get('date')}\n"
+                f"  url: {case.get('url')}\n"
+                f"  summary len: {len(summary) if summary else 0}"
+            )
             logger.warning(f"[CaseLawAgent] Case {i} failed validation: {', '.join(reasons)}")
         else:
             valid_results.append(item)
@@ -419,7 +421,7 @@ async def search_and_summarize(
 
         for i, (case, summary) in enumerate(zip(cases, summaries)):
             if isinstance(summary, Exception):
-                logger.error(f"[CaseLawAgent] Summarization failed for case {i}: {summary}")
+                logger.error(f"[CaseLawAgent] Summarization failed for case {i}", exc_info=summary)
                 summary_text = (
                     f"The {case.get('court', 'Indian Court')} decided {case.get('title', 'Unknown case')} on {case.get('date', '')}. "
                     f"This judgment is available on Indian Kanoon for reference."
@@ -581,7 +583,7 @@ def enrich_rag_response_with_case_law(
             cases = search_cases(search_query, max_results=max_cases_per_section)
             all_cases.extend(cases)
         except Exception as e:
-            logger.warning(f"[CaseLawAgent] Enrichment search failed for {sec_id}: {e}")
+            logger.exception(f"[CaseLawAgent] Enrichment search failed for {sec_id}")
             continue
 
     if not all_cases:
@@ -613,7 +615,7 @@ def enrich_rag_response_with_case_law(
 
     for i, (case, summary) in enumerate(zip(unique_cases, summaries)):
         if isinstance(summary, Exception):
-            logger.error(f"[CaseLawAgent] Summarization failed for case {i}: {summary}")
+            logger.error(f"[CaseLawAgent] Summarization failed for case {i}", exc_info=summary)
             summary_text = f"Judgment by {case.get('court', 'Indian Court')} ({case.get('date', '')})."
         else:
             summary_text = summary

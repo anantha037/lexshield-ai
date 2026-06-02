@@ -35,8 +35,11 @@ import uuid
 import json
 from contextvars import ContextVar
 from typing import Optional
+import logging
 
 from agents.pg_sessions import get_conn
+
+logger = logging.getLogger(__name__)
 
 # ── Per-request session context carrier ───────────────────────────────────────
 # Set by legal_rag_node before entering the RAG chain so that query_rewriter.py
@@ -125,10 +128,12 @@ class SessionMemory:
         Call this at the start of every legal_rag_node invocation before the
         RAG chain runs.  query_rewriter.py reads it via get_session_context().
         """
+        logger.debug(f"Setting session context to {session_id}")
         _active_session_id.set(session_id)
 
     def get_session_context(self) -> str:
         """Return the session_id bound to the current execution context."""
+        logger.debug("Getting session context")
         return _active_session_id.get()
 
     # ── Last-act / last-section persistence (in-memory, TTL-capped) ───────────
@@ -155,7 +160,7 @@ class SessionMemory:
         self.sessions[session_id]["last_act"]          = act.strip()
         self.sessions[session_id]["last_section"]      = section.strip()
         self.sessions[session_id]["last_act_ttl"]      = _LAST_ACT_TTL_TURNS
-        print(f"[Memory] set_last_act session={session_id[:8]}… act={act!r} section={section!r}")
+        logger.debug(f"set_last_act session={session_id[:8]}... act={act!r} section={section!r}")
 
     def get_last_act(self, session_id: str) -> tuple[str, str]:
         """
@@ -201,6 +206,7 @@ class SessionMemory:
     def create_session(self) -> str:
         """Generate a new UUID session and persist it."""
         sid = str(uuid.uuid4())
+        logger.info(f"Creating new session: {sid}")
         with get_conn() as conn:
             conn.execute(
                 "INSERT INTO sessions (session_id, created_ts) VALUES (%s, %s) "
@@ -231,7 +237,9 @@ class SessionMemory:
 
     def delete_session(self, session_id: str) -> bool:
         """Delete all turns and the session row.  Returns False if not found."""
+        logger.info(f"Deleting session: {session_id}")
         if not self.session_exists(session_id):
+            logger.warning(f"Session {session_id} not found for deletion")
             return False
         with get_conn() as conn:
             with conn.transaction():
@@ -380,8 +388,7 @@ class SessionMemory:
                     (session_id, summary, time.time(), start_id, end_id)
                 )
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"[SessionMemory] Failed to summarize turns: {e}")
+            logger.exception("Failed to summarize turns")
 
     def get_summary(self, session_id: str) -> str:
         """Fetch all summaries for a session, concatenated chronologically."""
@@ -547,6 +554,7 @@ class ProfileMemory:
             """)
 
     def update_profile(self, session_id: str, intent: str, entities: dict):
+        logger.info(f"Updating profile for session: {session_id}")
         with get_conn() as conn:
             row = conn.execute("SELECT * FROM user_profiles WHERE session_id = %s", (session_id,)).fetchone()
 

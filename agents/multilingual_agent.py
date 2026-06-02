@@ -142,7 +142,7 @@ def detect_language(text: str) -> str:
             # Raised for text that is too short or ambiguous (e.g. single word)
             pass
         except Exception as e:
-            logger.warning(f"[MultilingualAgent] langdetect error: {e}")
+            logger.exception("[MultilingualAgent] langdetect error")
 
     return "en"
 
@@ -225,7 +225,7 @@ def translate_to_english(text: str, source_language: str, groq_client) -> str:
         return result
 
     except Exception as e:
-        logger.error(f"[MultilingualAgent] translate_to_english failed ({lang_name}->EN): {e}")
+        logger.exception(f"[MultilingualAgent] translate_to_english failed ({lang_name}->EN)")
         return text  # safe fallback — raw query will still work for English RAG
 
 
@@ -300,7 +300,7 @@ def translate_to_source(text: str, target_language: str, groq_client) -> str:
         return result
 
     except Exception as e:
-        logger.error(f"[MultilingualAgent] translate_to_source failed (EN->{lang_name}): {e}")
+        logger.exception(f"[MultilingualAgent] translate_to_source failed (EN->{lang_name})")
         return text  # return English as fallback rather than empty string
 
 
@@ -377,7 +377,7 @@ def process_multilingual_query(
     detected_lang = detect_language(query)
     lang_name     = get_language_name(detected_lang)
 
-    print(
+    logger.info(
         f"[MultilingualAgent] session={session_id[:8] if session_id else '?'}… "
         f"detected={detected_lang!r} ({lang_name}) | query={query[:60]!r}"
     )
@@ -385,7 +385,7 @@ def process_multilingual_query(
     # ── Step 1: Translate query to English ────────────────────────────────────
     if detected_lang != "en":
         english_query = translate_to_english(query, detected_lang, groq_client)
-        print(f"[MultilingualAgent] EN query: {english_query[:80]!r}")
+        logger.debug(f"[MultilingualAgent] EN query: {english_query[:80]!r}")
     else:
         english_query = query
 
@@ -407,9 +407,9 @@ def process_multilingual_query(
             "rewritten_queries": rag_answer.rewritten_queries or [],
             "reranker_used":     rag_answer.reranker_used,
         }
-        print(f"[MultilingualAgent] RAG complete — {rag_meta['sources_consulted']} source(s)")
+        logger.info(f"[MultilingualAgent] RAG complete — {rag_meta['sources_consulted']} source(s)")
     except Exception as e:
-        logger.error(f"[MultilingualAgent] RAG pipeline error: {e}")
+        logger.exception("[MultilingualAgent] RAG pipeline error")
         english_response = (
             "I encountered an error processing your legal query. "
             "Please try again."

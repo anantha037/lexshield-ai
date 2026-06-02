@@ -116,11 +116,11 @@ def get_rights(category: str) -> dict:
     try:
         guide = _load_rights_guide()
         return guide.get(normalised, {})
-    except FileNotFoundError as e:
-        logger.error(f"[RightsAgent] {e}")
-        return {"error": True, "message": str(e)}
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
+        logger.exception("[RightsAgent] Schema error reading rights data")
+        return {"error": True, "message": "Failed to parse rights data."}
     except Exception as e:
-        logger.error(f"[RightsAgent] Failed to load rights for '{normalised}': {e}")
+        logger.exception(f"[RightsAgent] Failed to load rights for '{normalised}'")
         return {"error": True, "message": f"Failed to load rights guide: {e}"}
 
 
@@ -336,9 +336,7 @@ def get_rights_with_rag_enrichment(category: str, rag_pipeline) -> dict:
         return enriched
 
     except Exception as e:
-        logger.warning(
-            f"[RightsAgent] RAG enrichment failed for '{normalised}' (non-fatal): {e}"
-        )
+        logger.exception(f"[RightsAgent] RAG enrichment failed for '{normalised}' (non-fatal)")
         return base_rights  # Return base rights unchanged — enrichment is optional
 
 
@@ -411,5 +409,5 @@ def search_rights(keyword: str) -> list[dict]:
         return matches
 
     except Exception as e:
-        logger.warning(f"[RightsAgent] search_rights failed: {e}")
+        logger.exception("[RightsAgent] search_rights failed")
         return []

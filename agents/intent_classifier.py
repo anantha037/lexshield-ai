@@ -723,17 +723,14 @@ Respond ONLY with valid JSON matching this exact schema. No markdown, no explana
                 timeout     = 8,
             )
             result = self._parse_llm_response(raw_response)
-            print(
+            _llm_clf_logger.debug(
                 f"[Classifier] LLM -> intent={result.intent!r} "
                 f"conf={result.confidence:.2f} reasoning={result.reasoning!r}"
             )
             return result
 
         except Exception as exc:
-            _llm_clf_logger.warning(
-                f"[Classifier] classify_with_llm failed ({type(exc).__name__}: {exc}) "
-                "— falling back to classify()"
-            )
+            _llm_clf_logger.exception("[Classifier] LLM Classification failed — falling back to classify()")
             return self.classify(query)
 
     def _call_groq_json(self, query: str, groq_client, timeout: int) -> str:
