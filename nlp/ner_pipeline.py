@@ -45,6 +45,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -62,7 +66,7 @@ try:
 except ImportError:
     _SPACY_AVAILABLE = False
     spacy = None
-    print("[NER] spaCy not installed. Run: pip install spacy")
+    logger.warning("[NER] spaCy not installed. Run: pip install spacy")
 
 _nlp         = None
 _SPACY_READY = False
@@ -71,9 +75,9 @@ if _SPACY_AVAILABLE and not _USE_LEGAL_NER:
     try:
         _nlp         = spacy.load("en_core_web_sm")
         _SPACY_READY = True
-        print("[NER] en_core_web_sm loaded (dev mode).")
+        logger.info("[NER] en_core_web_sm loaded (dev mode).")
     except OSError:
-        print("[NER] en_core_web_sm not found. Run: python -m spacy download en_core_web_sm")
+        logger.warning("[NER] en_core_web_sm not found. Run: python -m spacy download en_core_web_sm")
 
 # ── Legal NER model load (en_legal_ner_trf) ───────────────────────────────────
 # Only attempted when USE_LEGAL_NER=true.
@@ -96,20 +100,20 @@ if _USE_LEGAL_NER and _SPACY_AVAILABLE:
     try:
         _legal_nlp       = spacy.load("en_legal_ner_trf")
         _LEGAL_NER_READY = True
-        print("[NER] en_legal_ner_trf loaded (production mode). Legal entity extraction active.")
+        logger.info("[NER] en_legal_ner_trf loaded (production mode). Legal entity extraction active.")
     except OSError:
-        print("[NER] en_legal_ner_trf not found — falling back to en_core_web_sm.")
-        print("      Install: pip install https://huggingface.co/opennyaiorg/en_legal_ner_trf"
+        logger.warning("[NER] en_legal_ner_trf not found — falling back to en_core_web_sm.")
+        logger.warning("      Install: pip install https://huggingface.co/opennyaiorg/en_legal_ner_trf"
               "/resolve/main/en_legal_ner_trf-any-py3-none-any.whl")
         # Graceful fallback: load en_core_web_sm so the endpoint still works
         try:
             _nlp         = spacy.load("en_core_web_sm")
             _SPACY_READY = True
-            print("[NER] Fallback: en_core_web_sm loaded.")
+            logger.info("[NER] Fallback: en_core_web_sm loaded.")
         except OSError:
-            print("[NER] en_core_web_sm also not found. NER will use regex only.")
+            logger.warning("[NER] en_core_web_sm also not found. NER will use regex only.")
     except Exception as e:
-        print(f"[NER] en_legal_ner_trf load failed ({e}) — falling back to en_core_web_sm.")
+        logger.exception("[NER] en_legal_ner_trf load failed — falling back to en_core_web_sm.")
         try:
             _nlp         = spacy.load("en_core_web_sm")
             _SPACY_READY = True
@@ -320,7 +324,7 @@ def _run_legal_ner(text: str) -> dict[str, list[str]]:
         return result
 
     except Exception as e:
-        print(f"[NER] en_legal_ner_trf extraction failed: {e}")
+        logger.exception("[NER] en_legal_ner_trf extraction failed")
         return {}
 
 
@@ -643,7 +647,7 @@ _active_backend = (
     "en_core_web_sm (dev/fallback)"  if _SPACY_READY     else
     "regex-only (no spaCy model)"
 )
-print(
+logger.info(
     f"[NER] Pipeline ready. "
     f"USE_LEGAL_NER={_USE_LEGAL_NER}  "
     f"backend={_active_backend}"
