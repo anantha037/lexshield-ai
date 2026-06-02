@@ -31,6 +31,10 @@ import os
 from functools import lru_cache
 from typing import Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PATH RESOLUTION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -60,13 +64,13 @@ def load_graph() -> dict:
         }
     """
     if not os.path.exists(_GRAPH_JSON):
-        print(f"[KG] WARNING: {_GRAPH_JSON} not found — returning empty graph")
+        logger.info(f"[KG] WARNING: {_GRAPH_JSON} not found — returning empty graph")
         return {}
 
     with open(_GRAPH_JSON, encoding="utf-8") as f:
         graph = json.load(f)
 
-    print(f"[KG] Loaded legal_graph.json: {len(graph)} nodes")
+    logger.info(f"[KG] Loaded legal_graph.json: {len(graph)} nodes")
     return graph
 
 
@@ -409,10 +413,10 @@ def enrich_retrieval(
                 # Fallback: keep all if filtering removed everything
                 # (graph may not have parent_act populated for all nodes)
                 related = related_all
-                print(f"[KG] act_hint filter removed all related for {resolved!r}; using unfiltered")
+                logger.info(f"[KG] act_hint filter removed all related for {resolved!r}; using unfiltered")
             else:
                 if len(related) < len(related_all):
-                    print(f"[KG] act_hint={act_hint!r}: {resolved!r} "
+                    logger.debug(f"[KG] act_hint={act_hint!r}: {resolved!r} "
                           f"{len(related_all)}->{len(related)} related after act filter")
         else:
             related = related_all
@@ -445,11 +449,11 @@ def enrich_retrieval(
                 all_related, existing_ids, graph
             )
     except Exception as e:
-        print(f"[KG] enrich_retrieval fetch error (non-fatal): {e}")
+        logger.info(f"[KG] enrich_retrieval fetch error (non-fatal): {e}")
         return chunk_pool
 
     if new_chunks:
-        print(f"[KG] enrich_retrieval: added {len(new_chunks)} graph-connected chunks "
+        logger.info(f"[KG] enrich_retrieval: added {len(new_chunks)} graph-connected chunks "
               f"for {len(ner_sections)} NER section(s)")
 
     return chunk_pool + new_chunks

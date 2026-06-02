@@ -33,6 +33,10 @@ import os
 import re
 from typing import Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -350,7 +354,7 @@ class RAGPipeline:
         try:
             return self._run(user_query, n_results or self.n_final, category_filter, context_block)
         except Exception as e:
-            import traceback; traceback.print_exc()
+            logger.exception("[Pipeline] Internal error")
             return LegalAnswer(
                 answer_text="An internal error occurred. Please try again.",
                 sources_consulted=0,
@@ -380,7 +384,7 @@ class RAGPipeline:
         complexity = classify_query_complexity(latest_expanded)
         # pipeline_depth is used by graph.py node (stored in AgentState)
         # Here we just use it to control which steps fire.
-        print(f"[Pipeline] complexity={complexity!r}")
+        logger.info(f"[Pipeline] complexity={complexity!r}")
 
         # ── Auto category (hybrid keyword + semantic) ─────────────────────────
         auto_category:    Optional[str] = None
@@ -391,11 +395,11 @@ class RAGPipeline:
             auto_category, auto_confidence = category_detector.detect(expanded)
             if auto_category and auto_confidence >= CONFIDENCE_HIGH:
                 effective_filter = auto_category
-                print(f"[Pipeline] Auto-category HIGH: {auto_category!r} conf={auto_confidence:.2f} -> filter")
+                logger.info(f"[Pipeline] Auto-category HIGH: {auto_category!r} conf={auto_confidence:.2f} -> filter")
             elif auto_category and auto_confidence >= CONFIDENCE_MED:
-                print(f"[Pipeline] Auto-category MED: {auto_category!r} conf={auto_confidence:.2f} -> dual search")
+                logger.info(f"[Pipeline] Auto-category MED: {auto_category!r} conf={auto_confidence:.2f} -> dual search")
             else:
-                print(f"[Pipeline] Auto-category LOW: conf={auto_confidence:.2f} -> global")
+                logger.info(f"[Pipeline] Auto-category LOW: conf={auto_confidence:.2f} -> global")
 
         # ── Section fast-path (always runs — priority 1 in all complexity tiers)
         pinned_chunks:      list[dict] = []
@@ -409,13 +413,13 @@ class RAGPipeline:
                 continue
 
             if hint is not None:
-                print(f"[Pipeline] Hard-pin: section={sec} source={hint!r} -> {len(hits)} chunk(s)")
+                logger.info(f"[Pipeline] Hard-pin: section={sec} source={hint!r} -> {len(hits)} chunk(s)")
                 pinned_chunks.extend(hits)
             elif len(hits) == 1:
-                print(f"[Pipeline] Hard-pin (unique): section={sec} -> {hits[0].get('source','?')[:45]}")
+                logger.info(f"[Pipeline] Hard-pin (unique): section={sec} -> {hits[0].get('source','?')[:45]}")
                 pinned_chunks.extend(hits)
             else:
-                print(f"[Pipeline] Ambiguous section={sec}: {len(hits)} acts -> reranker decides")
+                logger.info(f"[Pipeline] Ambiguous section={sec}: {len(hits)} acts -> reranker decides")
                 for h in hits:
                     h["hybrid_score"]     = AMBIGUOUS_SECTION_SCORE
                     h["retrieval_source"] = "section_candidate"
@@ -431,12 +435,12 @@ class RAGPipeline:
         # ── SIMPLE path: section fast-path is sufficient, skip heavy retrieval ─
         # Only use simple path when fast-path actually found pinned chunks.
         if complexity == "simple" and pinned_chunks:
-            print("[Pipeline] simple path — using section fast-path only")
+            logger.info("[Pipeline] simple path — using section fast-path only")
             # Still inject KG context and paired act if available
             if KG_INJECTION_ENABLED:
                 self._inject_kg(pinned_chunks, expanded)
             else:
-                print("[Pipeline] KG injection disabled — skipping")
+                logger.info("[Pipeline] KG injection disabled — skipping")
             soft_pinned = []
             if paired_source:
                 paired_all = get_paired_chunks(expanded, paired_source)
@@ -458,7 +462,7 @@ class RAGPipeline:
         if KG_INJECTION_ENABLED:
             self._inject_kg(pinned_chunks, expanded)
         else:
-            print("[Pipeline] KG injection disabled — skipping")
+            logger.info("[Pipeline] KG injection disabled — skipping")
 
         pinned_ids = {c["chunk_id"] for c in pinned_chunks}
 
@@ -477,7 +481,7 @@ class RAGPipeline:
             paired_all = get_paired_chunks(expanded, paired_source)
             if paired_all:
                 soft_pinned = [paired_all[0]]
-                print(f"[Pipeline] Soft-pinned paired: section={soft_pinned[0].get('section','?')} "
+                logger.debug(f"[Pipeline] Soft-pinned paired: section={soft_pinned[0].get('section','?')} "
                       f"source={soft_pinned[0].get('source','?')[:40]}")
 
         soft_pinned_ids  = {c["chunk_id"] for c in soft_pinned}
@@ -490,7 +494,7 @@ class RAGPipeline:
         decomposed_chunks: list[dict]                   = []
 
         if complexity == "complex":
-            print("[Pipeline] complex path — decomposing query")
+            logger.info("[Pipeline] complex path — decomposing query")
             sub_queries = decompose_query(expanded)
 
             if len(sub_queries) >= 2:
@@ -506,7 +510,7 @@ class RAGPipeline:
 
                 # Deduplicate decomposed pool
                 decomposed_chunks = deduplicate_chunks([decomposed_chunks])
-                print(f"[Pipeline] decomposed pool: {len(decomposed_chunks)} unique chunks")
+                logger.info(f"[Pipeline] decomposed pool: {len(decomposed_chunks)} unique chunks")
 
         # ═══════════════════════════════════════════════════════════════════════
         # STEP 2: Query rewriting (moderate + complex only)
@@ -625,7 +629,7 @@ class RAGPipeline:
                 # the pipeline caller, not CRAG.  We mark the answer with
                 # confidence="low" and fallback=True so the frontend can label
                 # it without any synthesizer changes.
-                print(
+                logger.warning(
                     "[Pipeline] CRAG: insufficient — continuing with fallback synthesis "
                     f"(score={crag_result['score']}, reason={crag_result['reason'][:80]!r})"
                 )
@@ -633,7 +637,7 @@ class RAGPipeline:
 
             elif crag_result["action"] == "rewrite" and not crag_triggered:
                 # Marginal retrieval — rewrite and re-retrieve once
-                print("[Pipeline] CRAG: rewrite triggered — re-retrieving")
+                logger.info("[Pipeline] CRAG: rewrite triggered — re-retrieving")
                 crag_triggered = True
                 extra_rewrites = query_rewriter.rewrite(expanded)
                 extra_queries  = [q for q in extra_rewrites if q not in all_queries]
@@ -646,7 +650,7 @@ class RAGPipeline:
                     existing_ids = {c["chunk_id"] for c in merged}
                     new_chunks   = [c for c in extra_chunks if c["chunk_id"] not in existing_ids]
                     merged       = merged + new_chunks
-                    print(f"[Pipeline] CRAG rewrite added {len(new_chunks)} new chunks")
+                    logger.info(f"[Pipeline] CRAG rewrite added {len(new_chunks)} new chunks")
                     all_queries  = all_queries + extra_queries
 
             # else: action == "proceed" — continue normally
@@ -791,9 +795,9 @@ class RAGPipeline:
                     "hybrid_score":     1.5,
                     "retrieval_source": "knowledge_graph",
                 })
-                print(f"[Pipeline] KG injected: {len(notes)} section(s)")
+                logger.info(f"[Pipeline] KG injected: {len(notes)} section(s)")
         except Exception as e:
-            print(f"[Pipeline] KG injection skipped: {e}")
+            logger.info(f"[Pipeline] KG injection skipped: {e}")
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

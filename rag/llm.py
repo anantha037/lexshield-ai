@@ -45,7 +45,7 @@ class LegalLLM:
             raise ValueError("GROQ_API_KEY not found in environment.")
         self.client = Groq(api_key=api_key)
         self.model  = "llama-3.3-70b-versatile"
-        print(f"LLM ready: {self.model} via Groq (single-provider mode)")
+        logger.info(f"LLM ready: {self.model} via Groq (single-provider mode)")
 
     def generate(
         self,

@@ -19,6 +19,10 @@ import os
 import re
 from typing import Literal, Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -285,7 +289,7 @@ class HybridSearcher:
         bm25_weight, sem_weight = _ALPHA_PRESETS.get(
             effective_complexity, _ALPHA_PRESETS["moderate"]
         )
-        print(
+        logger.debug(
             f"[HybridSearch] alpha=BM25:{bm25_weight}/semantic:{sem_weight} "
             f"complexity={effective_complexity}"
         )
@@ -296,7 +300,7 @@ class HybridSearcher:
         # correct it.  Drop the filter and fall through to full-corpus search.
         if category_filter is not None and category_confidence is not None:
             if category_confidence < _CATEGORY_CONF_THRESHOLD:
-                print(
+                logger.debug(
                     f"[HybridSearch] category_filter={category_filter!r} suppressed "
                     f"(confidence={category_confidence:.3f} < threshold={_CATEGORY_CONF_THRESHOLD})"
                 )
@@ -309,7 +313,7 @@ class HybridSearcher:
             if hits and category_filter:
                 hits = [h for h in hits if h.get("category", "") == category_filter]
             if hits:
-                print(f"[HybridSearch] Section fast path: {len(hits)} chunk(s) section={section_number!r} source_hint={source_hint!r}")
+                logger.info(f"[HybridSearch] Section fast path: {len(hits)} chunk(s) section={section_number!r} source_hint={source_hint!r}")
                 section_hits.extend(hits)
 
         seen: set[str] = set()
@@ -320,7 +324,7 @@ class HybridSearcher:
         bm25_hits   = bm25_retriever.search(query, n_results=fetch_k, category_filter=category_filter)
 
         if not vector_hits and not bm25_hits and vector_raw:
-            print(f"[HybridSearch] FALLBACK: threshold filtered all. Using raw vector (top={vector_raw[0].get('score',0):.4f})")
+            logger.info(f"[HybridSearch] FALLBACK: threshold filtered all. Using raw vector (top={vector_raw[0].get('score',0):.4f})")
             vector_hits = vector_raw[:fetch_k]
 
         lookup: dict[str, dict] = {}
@@ -389,9 +393,9 @@ class HybridSearcher:
             if act_filtered:
                 # Only apply filter if it leaves enough results
                 merged = act_filtered
-                print(f"[HybridSearch] act_hint={final_act_hint!r} -> filtered to {len(merged)} chunk(s)")
+                logger.info(f"[HybridSearch] act_hint={final_act_hint!r} -> filtered to {len(merged)} chunk(s)")
             else:
-                print(f"[HybridSearch] act_hint={final_act_hint!r} -> filter yielded 0; keeping all {len(merged)} chunks")
+                logger.info(f"[HybridSearch] act_hint={final_act_hint!r} -> filter yielded 0; keeping all {len(merged)} chunks")
 
         return merged[:n_results]
 

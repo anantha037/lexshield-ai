@@ -24,6 +24,10 @@ Usage:
 import re
 from typing import Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # ── Act registry ──────────────────────────────────────────────────────────────
 # Format: (match_phrase_lowercase, source_partial_string)
 # source_partial must be a substring of the `source` field in ChromaDB metadata.

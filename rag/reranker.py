@@ -24,6 +24,10 @@ import urllib.error
 from typing import Optional
 from dotenv import load_dotenv
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -56,9 +60,9 @@ class NVIDIAReranker:
         self.api_key   = NVIDIA_API_KEY
         self.available = bool(self.api_key)
         if not self.available:
-            print("[Reranker] NVIDIA_API_KEY not set — reranker will use fallback mode.")
+            logger.info("[Reranker] NVIDIA_API_KEY not set — reranker will use fallback mode.")
         else:
-            print("[Reranker] NVIDIA NIM reranker ready.")
+            logger.info("[Reranker] NVIDIA NIM reranker ready.")
 
     # ── Core rerank ───────────────────────────────────────────────────────────
 
@@ -89,7 +93,7 @@ class NVIDIAReranker:
         try:
             return self._call_api(query, chunks, top_n)
         except Exception as e:
-            print(f"[Reranker] API call failed ({type(e).__name__}: {e}) — using fallback.")
+            logger.exception(f"[Reranker] API call failed — using fallback.")
             return self._fallback(chunks, top_n, reason=str(e)), False
 
     # ── NVIDIA API call ───────────────────────────────────────────────────────
@@ -163,7 +167,7 @@ class NVIDIAReranker:
     ) -> list[dict]:
         """Returns first top_n chunks with rerank_score=None."""
         if reason:
-            print(f"[Reranker] Fallback reason: {reason}")
+            logger.info(f"[Reranker] Fallback reason: {reason}")
         result = []
         for c in chunks[:top_n]:
             c2 = dict(c)
@@ -185,7 +189,7 @@ class NVIDIAReranker:
             )
             return True
         except Exception as e:
-            print(f"[Reranker] Ping failed: {e}")
+            logger.exception(f"[Reranker] Ping failed")
             return False
 
 

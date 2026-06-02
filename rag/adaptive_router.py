@@ -43,6 +43,10 @@ Detection logic
 import re
 from typing import Literal
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ACT KEYWORD REGISTRY
@@ -162,7 +166,7 @@ def classify_query_complexity(
     else:
         complexity = "moderate"
 
-    print(
+    logger.debug(
         f"[AdaptiveRouter] acts={act_count} sections={section_count} "
         f"comparison={has_comparison} multihop={has_multihop} "
         f"-> complexity={complexity!r}"
@@ -180,9 +184,9 @@ def explain_complexity(query: str) -> None:
     multihops    = [p.pattern for p in _MULTIHOP_KEYWORDS   if p.search(query)]
     result       = classify_query_complexity(query)
 
-    print(f"\n[AdaptiveRouter] Query: {query!r}")
-    print(f"  Acts found    : {sorted(matched_acts) or 'none'}")
-    print(f"  Sections found: {section_refs or 'none'}")
-    print(f"  Comparisons   : {comparisons or 'none'}")
-    print(f"  Multi-hop     : {multihops or 'none'}")
-    print(f"  -> Complexity  : {result!r}\n")
+    logger.debug(f"\n[AdaptiveRouter] Query: {query!r}")
+    logger.info(f"  Acts found    : {sorted(matched_acts) or 'none'}")
+    logger.info(f"  Sections found: {section_refs or 'none'}")
+    logger.info(f"  Comparisons   : {comparisons or 'none'}")
+    logger.info(f"  Multi-hop     : {multihops or 'none'}")
+    logger.info(f"  -> Complexity  : {result!r}\n")

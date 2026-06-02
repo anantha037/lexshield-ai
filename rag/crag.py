@@ -30,6 +30,10 @@ import json
 import re
 import os
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -192,7 +196,7 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
         result = _parse_crag_response(raw)
         # Stamp fallback flag so pipeline can read it without inspecting action string.
         result["fallback"] = result["action"] == "insufficient"
-        print(
+        logger.debug(
             f"[CRAG] score={result['score']} action={result['action']!r} "
             f"reason={result['reason'][:60]!r}"
         )
@@ -200,7 +204,7 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
 
     except Exception as exc:
         # Safe fallback — never block the pipeline
-        print(f"[CRAG] Evaluator failed ({exc}) — defaulting to proceed")
+        logger.exception(f"[CRAG] Evaluator failed — defaulting to proceed")
         return {
             "score":  4,
             "reason": f"Evaluator unavailable: {exc}",
