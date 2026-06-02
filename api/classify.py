@@ -13,6 +13,9 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["classifier"])
 
@@ -62,19 +65,23 @@ class ClassifyResponse(BaseModel):
 
 def _extract_from_pdf_bytes(data: bytes) -> str:
     """Try PyMuPDF first (digital PDF), fall back to OCR (scanned)."""
+    logger.info("Extracting text from PDF bytes")
     text = ""
     try:
         import fitz   # PyMuPDF
         doc  = fitz.open(stream=data, filetype="pdf")
+        logger.debug(f"Opened PDF with {len(doc)} pages")
         for page in doc:
             text += page.get_text()
         doc.close()
         text = text.strip()
-    except Exception:
+    except Exception as e:
+        logger.exception("PyMuPDF extraction failed")
         pass
 
     # If PyMuPDF got nothing meaningful, use OCR
     if len(text) < 100:
+        logger.info("Falling back to OCR for PDF extraction")
         from cv.pipeline import extract_text_from_pdf_bytes
         text = extract_text_from_pdf_bytes(data)
 
@@ -83,10 +90,12 @@ def _extract_from_pdf_bytes(data: bytes) -> str:
 
 def _extract_from_image_bytes(data: bytes, filename: str) -> str:
     """Save to temp file, run CV pipeline."""
+    logger.info(f"Extracting text from image: {filename}")
     import cv2
     import numpy as np
     from cv.pipeline import preprocess_image, extract_text_from_image
 
+    logger.debug("Decoding image buffer")
     nparr = np.frombuffer(data, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if image is None:
@@ -97,11 +106,14 @@ def _extract_from_image_bytes(data: bytes, filename: str) -> str:
 
 def _extract_from_docx_bytes(data: bytes) -> str:
     """Extract text from Word document bytes."""
+    logger.info("Extracting text from DOCX bytes")
     try:
         import docx
         doc  = docx.Document(io.BytesIO(data))
+        logger.debug(f"Successfully loaded DOCX with {len(doc.paragraphs)} paragraphs")
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
     except ImportError:
+        logger.exception("python-docx not installed")
         raise HTTPException(
             status_code=500,
             detail="python-docx not installed. Run: pip install python-docx"
@@ -110,16 +122,19 @@ def _extract_from_docx_bytes(data: bytes) -> str:
 
 def _extract_from_txt_bytes(data: bytes) -> str:
     """Decode plain text file."""
+    logger.info("Extracting text from TXT bytes")
     for enc in ["utf-8", "latin-1", "cp1252"]:
         try:
             return data.decode(enc)
         except UnicodeDecodeError:
+            logger.exception(f"Failed to decode TXT as {enc}")
             continue
     return data.decode("utf-8", errors="ignore")
 
 
 def _detect_file_type(filename: str, content_type: str) -> str:
     """Detect file type from extension or content-type."""
+    logger.debug(f"Detecting file type for filename: {filename}, content_type: {content_type}")
     ext = Path(filename).suffix.lower()
     if ext in SUPPORTED_EXTENSIONS:
         return SUPPORTED_EXTENSIONS[ext]
@@ -138,6 +153,8 @@ def _run_classification(
     use_llm_risk: bool = False,
 ) -> dict:
     """Core classification logic — shared by text and file endpoints."""
+    logger.info("Running core classification logic")
+    logger.debug(f"Parameters: include_ner={include_ner}, use_llm_risk={use_llm_risk}, text_length={len(text) if text else 0}")
     if not text or len(text.strip()) < 20:
         raise HTTPException(
             status_code=400,
@@ -151,14 +168,17 @@ def _run_classification(
     # NER
     entities = {}
     if include_ner:
+        logger.info("Running NER pipeline")
         try:
             from nlp.ner_pipeline import run_ner
             entities          = run_ner(text)
             result["entities"] = entities
         except Exception as e:
+            logger.exception("NER failed")
             result["entities"] = {"warning": f"NER failed: {e}"}
 
     # Risk scoring
+    logger.info("Running risk scoring")
     try:
         from models.risk_scorer import risk_scorer
         risk           = risk_scorer.score(
@@ -169,6 +189,7 @@ def _run_classification(
         )
         result["risk"] = risk.to_dict()
     except Exception as e:
+        logger.exception("Risk scoring failed")
         result["risk"] = {"warning": f"Risk scoring failed: {e}"}
 
     return result
@@ -186,13 +207,16 @@ async def classify_text(req: ClassifyTextRequest):
         include_ner (bool): Run NER (slower, default False)
         use_llm_risk (bool): Use Groq for risk scoring (slower, default False)
     """
+    logger.info("Received text classification request")
     try:
         result = _run_classification(req.text, req.include_ner, req.use_llm_risk)
         result["char_count"] = len(req.text)
         return result
     except HTTPException:
+        logger.exception("HTTPException in classify_text")
         raise
     except Exception as e:
+        logger.exception("Unhandled exception in classify_text")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -218,13 +242,17 @@ async def classify_file(
           -F "file=@my_fir.pdf" \\
           -F "include_ner=true"
     """
+    logger.info(f"Received file classification request: {file.filename}")
     if not file.filename:
+        logger.warning("No file provided in request")
         raise HTTPException(status_code=400, detail="No file provided")
 
     # Read file bytes
     try:
         data = await file.read()
+        logger.debug(f"Read {len(data)} bytes from file")
     except Exception as e:
+        logger.exception("Could not read file bytes")
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
 
     if len(data) == 0:
@@ -246,8 +274,10 @@ async def classify_file(
         else:
             raise HTTPException(status_code=415, detail="Unsupported file type")
     except HTTPException:
+        logger.exception("HTTPException during text extraction")
         raise
     except Exception as e:
+        logger.exception(f"Text extraction failed for {file_type}")
         raise HTTPException(
             status_code=500,
             detail=f"Text extraction failed for {file_type}: {e}"
@@ -269,8 +299,10 @@ async def classify_file(
             result["extracted_text"] = text[:5000]   # cap at 5000 chars
         return result
     except HTTPException:
+        logger.exception("HTTPException during classification")
         raise
     except Exception as e:
+        logger.exception("Unhandled exception during file classification")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -278,24 +310,29 @@ async def classify_file(
 
 @router.get("/classify/categories")
 async def get_categories():
+    logger.info("Fetching classification categories")
     from models.classifier import CATEGORIES
     return {"categories": CATEGORIES, "count": len(CATEGORIES)}
 
 
 @router.get("/classify/status")
 async def classifier_status():
+    logger.info("Checking classifier status")
     try:
         from models.classifier import classifier
         return {"ready": classifier.is_ready(), "mode": classifier.get_mode()}
     except Exception as e:
+        logger.exception("Failed to check classifier status")
         return {"ready": False, "error": str(e)}
 
 
 @router.post("/classify/reload")
 async def reload_classifier():
+    logger.info("Reloading classifier")
     try:
         from models.classifier import classifier
         success = classifier.reload()
         return {"reloaded": success, "mode": classifier.get_mode()}
     except Exception as e:
+        logger.exception("Failed to reload classifier")
         raise HTTPException(status_code=500, detail=str(e))

@@ -11,6 +11,9 @@ Changes in this version:
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Literal
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/legal", tags=["legal"])
 
@@ -117,6 +120,7 @@ async def legal_query(request: LegalQueryRequest):
     """
     from rag.pipeline import rag_pipeline
 
+    logger.info(f"Legal query request: {request.query}, category: {request.category}")
     query = request.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")

@@ -63,6 +63,9 @@ from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from pydantic import BaseModel
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/document", tags=["document"])
 
@@ -232,6 +235,7 @@ def _extract_pdf(
         import tempfile, os
         tmp_path = None
         try:
+            logger.debug(f"Writing {len(file_bytes)} bytes to temporary PDF file")
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 tmp.write(file_bytes)
                 tmp_path = tmp.name
@@ -265,8 +269,10 @@ def _extract_pdf(
         return text, page_count, ocr_used, engine_used, ocr_confidence
 
     except HTTPException:
+        logger.exception("HTTPException during PDF extraction")
         raise
     except Exception as e:
+        logger.exception("Unhandled exception during PDF extraction")
         raise HTTPException(status_code=500, detail=f"PDF extraction failed: {e}")
 
 
@@ -298,6 +304,7 @@ def _extract_image(
         try:
             from cv.pipeline import _SURYA_AVAILABLE, _surya_ocr_image, _clean_extracted_text, _MIN_OCR_CONFIDENCE
             if _SURYA_AVAILABLE:
+                logger.debug(f"Using Surya OCR for language: {language}")
                 text, confidence = _surya_ocr_image(cv_img, language)
                 text             = _clean_extracted_text(text)
                 engine_used      = "surya"
@@ -311,8 +318,10 @@ def _extract_image(
         return text, 1, True, "tesseract", 0.5
 
     except HTTPException:
+        logger.exception("HTTPException during image extraction")
         raise
     except Exception as e:
+        logger.exception("Unhandled exception during image extraction")
         raise HTTPException(status_code=500, detail=f"Image OCR failed: {e}")
 
 
@@ -447,10 +456,7 @@ def _build_ephemeral_context(
                 pass
 
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(
-            "Ephemeral RAG fallback to [:3000] for /query — reason: %s", e
-        )
+        logger.exception("Ephemeral RAG fallback to [:3000] for /query")
         return fallback
 
 
@@ -505,6 +511,7 @@ async def analyze_document(
       curl -s -X POST "http://localhost:8000/api/v1/document/analyze?language=hi&run_rag=true" \\
         -F "file=@fir_hindi.pdf" | python -m json.tool
     """
+    logger.info(f"Analyze document request for file: {file.filename}, language: {language}, run_rag: {run_rag}")
     # ── Read file ─────────────────────────────────────────────────────────────
     file_bytes = await file.read()
     size_mb    = len(file_bytes) / (1024 * 1024)
@@ -648,6 +655,7 @@ async def analyze_document(
                 grounding_warning = rag_result.grounding_warning,
             )
         except Exception as e:
+            logger.exception("RAG pipeline failed during document analysis")
             warning = (warning or "") + f" RAG failed: {e}"
 
     return DocumentAnalysisResponse(
@@ -683,6 +691,7 @@ def document_query(req: DocQueryRequest):
       -d '{"doc_text":"THIS RENTAL AGREEMENT...","question":"Is this notice valid?","session_id":"<sid>"}' \\
       | python -m json.tool
     """
+    logger.info(f"Document query request for session: {req.session_id}")
     if not req.doc_text.strip():
         raise HTTPException(status_code=400, detail="doc_text must not be empty")
     if not req.question.strip():
@@ -763,6 +772,7 @@ def document_query(req: DocQueryRequest):
         risk_note = " ".join(risk_lines).strip()
 
     except Exception as e:
+        logger.exception("Document query generation failed")
         answer_text = f"Unable to process query: {e}"
 
     if detected_lang not in ("en", "english", None, "") and answer_text:
@@ -777,7 +787,8 @@ def document_query(req: DocQueryRequest):
         session_memory.ensure_session(req.session_id)
         session_memory.add_turn(req.session_id, "user",      req.question.strip(), intent="document_query")
         session_memory.add_turn(req.session_id, "assistant", answer_text,          intent="document_query")
-    except Exception:
+    except Exception as e:
+        logger.exception(f"Failed to save document query turn to memory for session {req.session_id}")
         pass
 
     return DocQueryResponse(
