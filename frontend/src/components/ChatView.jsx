@@ -5,10 +5,10 @@ import { useStore } from '../store';
 import { sendQuery, adaptQueryResponse } from '../api';
 import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown, IconGavel, IconExternalLink, IconCheckCircle, IconWarning, IconXCircle } from '../icons';
 
-const LANGS = [
-  { code: 'en', label: 'EN' }, { code: 'ml', label: 'ML' },
-  { code: 'hi', label: 'HI' }, { code: 'ta', label: 'TA' }, { code: 'te', label: 'TE' },
-];
+// const LANGS = [
+//   { code: 'en', label: 'EN' }, { code: 'ml', label: 'ML' },
+//   { code: 'hi', label: 'HI' }, { code: 'ta', label: 'TA' }, { code: 'te', label: 'TE' },
+// ];
 
 const QUICK = [
   { q: 'What is Section 302 IPC and its punishment?' },
@@ -277,7 +277,7 @@ export default function ChatView() {
         handleSendRef.current(q);
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefillInput]);
 
   const handleSend = useCallback(async (textOverride, suppressRedirect = false) => {
@@ -400,8 +400,8 @@ export default function ChatView() {
                   transition={{ duration: 0.25 }}
                   onClick={() => handleSend(q.q)}
                   className="quick-prompt-card"
-                  onHoverStart={(_, info) => {}}
-                  onHoverEnd={(_, info) => {}}
+                  onHoverStart={(_, info) => { }}
+                  onHoverEnd={(_, info) => { }}
                   data-card="true"
                 >
                   <span>{q.q}</span>
@@ -529,7 +529,7 @@ export default function ChatView() {
       )}
 
       <div className="chat-input-area">
-        <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        {/* <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
           {LANGS.map(l => (
             <button key={l.code}
               style={{ padding: '3px 12px', borderRadius: 99, fontSize: 12, fontWeight: 600, border: `1px solid ${language === l.code ? 'var(--c-gold)' : 'var(--c-border)'}`, color: language === l.code ? 'var(--c-gold)' : 'var(--c-text3)', background: language === l.code ? 'var(--c-gold-dim)' : 'transparent', cursor: 'pointer', transition: 'all 150ms' }}
@@ -540,7 +540,7 @@ export default function ChatView() {
               {l.label}
             </button>
           ))}
-        </div>
+        </div> */}
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
           <textarea ref={inputRef} className="textarea" value={input} onChange={onInput} onKeyDown={onKey}
             placeholder={caseLawMode ? 'Search for case law, judgments, or precedents...' : 'Ask a legal question...'} style={{ flex: 1, minHeight: 44, maxHeight: 140, resize: 'none' }} rows={1} />

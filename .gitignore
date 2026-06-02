@@ -87,3 +87,7 @@ debug_sc.txt
 all_imports.txt
 missing_requirements.txt
 unused_requirements.txt
+
+lexshield_docs.md
+project_documentation.md
+technical_specification.md
