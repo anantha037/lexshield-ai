@@ -256,6 +256,7 @@ def master_query(
     resp = master_orchestrator.handle_query(
         query      = request.query.strip(),
         session_id = request.session_id,
+        language   = request.language,
     )
 
     # Link session to user if authenticated

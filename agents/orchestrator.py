@@ -43,6 +43,7 @@ class MasterOrchestrator:
         self,
         query:      str,
         session_id: Optional[str] = None,
+        language:   Optional[str] = None,
     ) -> LexShieldResponse:
         start_time = time.time()
         session_id = session_memory.ensure_session(session_id)
@@ -91,7 +92,7 @@ class MasterOrchestrator:
             "draft_data":      {},
             "pipeline_depth":  0,
             "rag_grade":       "",
-            "source_language": "",
+            "source_language": language or "en",
             "response":        "",
             "error":           "",
             "scratchpad":      {},

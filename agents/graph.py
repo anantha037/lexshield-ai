@@ -350,8 +350,8 @@ def route_by_intent(state: AgentState) -> str:
         print(f"[Graph] route -> active draft -> draft_node")
         return "draft_node"
 
-    # Priority 2: non-English auto-detection
-    # rights_check NOT redirected — English guide content, translated at response layer
+    # Priority 2: non-English auto-detection or EXPLICIT UI selection
+    # We check if source_language is NOT 'en' (which will catch 'ml', 'hi', etc. passed from the UI)
     _multilingual_eligible = {"legal_query", "risk_check", "general"}
     if source_language != "en" and intent in _multilingual_eligible:
         print(
