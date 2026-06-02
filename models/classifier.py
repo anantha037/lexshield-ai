@@ -93,16 +93,16 @@ class DocumentClassifier:
         if FINETUNED_DIR.exists() and (FINETUNED_DIR / "config.json").exists():
             self._load_finetuned()
         else:
-            print("[Classifier] Fine-tuned model not found. Using centroid fallback.")
-            print("  To get best accuracy run:")
-            print("  1. python -m models.data_generator --samples 50")
-            print("  2. python -m models.finetune")
+            logger.info(f"[Classifier] Fine-tuned model not found. Using centroid fallback.")
+            logger.info(f"  To get best accuracy run:")
+            logger.info(f"  1. python -m models.data_generator --samples 50")
+            logger.info(f"  2. python -m models.finetune")
             self._load_centroid()
 
     def _load_finetuned(self):
         try:
             from transformers import AutoTokenizer, AutoModelForSequenceClassification
-            print(f"[Classifier] Loading fine-tuned model from {FINETUNED_DIR}...")
+            logger.info(f"[Classifier] Loading fine-tuned model from {FINETUNED_DIR}...")
             self._tokenizer = AutoTokenizer.from_pretrained(str(FINETUNED_DIR))
             self._model     = AutoModelForSequenceClassification.from_pretrained(
                 str(FINETUNED_DIR)
@@ -110,21 +110,21 @@ class DocumentClassifier:
             self._model.eval()
             self._mode  = "finetuned"
             self._ready = True
-            print("[Classifier] Fine-tuned InLegalBERT loaded. OK")
+            logger.info(f"[Classifier] Fine-tuned InLegalBERT loaded. OK")
         except Exception as e:
-            print(f"[Classifier] Fine-tuned load failed ({e}), falling back to centroid.")
+            logger.info(f"[Classifier] Fine-tuned load failed ({e}), falling back to centroid.")
             self._load_centroid()
 
     def _load_centroid(self):
         try:
             from transformers import AutoTokenizer, AutoModel
 
-            print(f"[Classifier] Loading {PRETRAINED_MODEL} for centroid mode...")
+            logger.info(f"[Classifier] Loading {PRETRAINED_MODEL} for centroid mode...")
             self._tokenizer  = AutoTokenizer.from_pretrained(PRETRAINED_MODEL)
             self._base_model = AutoModel.from_pretrained(PRETRAINED_MODEL)
             self._base_model.eval()
 
-            print("[Classifier] Building centroids...")
+            logger.info(f"[Classifier] Building centroids...")
             centroids = []
             for idx in range(len(CATEGORIES)):
                 category  = CATEGORIES[idx]
@@ -138,9 +138,9 @@ class DocumentClassifier:
             self._centroids = np.stack(centroids)
             self._mode      = "centroid"
             self._ready     = True
-            print("[Classifier] Centroid mode ready. OK")
+            logger.info(f"[Classifier] Centroid mode ready. OK")
         except Exception as e:
-            print(f"[Classifier] Centroid load also failed: {e}")
+            logger.info(f"[Classifier] Centroid load also failed: {e}")
 
     def _load_sample_texts(self, category: str) -> list[str]:
         texts   = []
@@ -230,7 +230,7 @@ class DocumentClassifier:
             }
 
         except Exception as e:
-            logger.error("predict() error: %s", e)
+            logger.exception("predict() error")
             return self._err(str(e))
 
     def is_ready(self)  -> bool: return self._ready
