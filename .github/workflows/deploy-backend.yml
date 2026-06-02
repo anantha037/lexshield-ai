@@ -35,4 +35,6 @@ jobs:
             --image=$REGISTRY/backend:$GITHUB_SHA \
             --region=$REGION \
             --platform=managed \
-            --service-account=558225717357-compute@developer.gserviceaccount.com
+            --service-account=558225717357-compute@developer.gserviceaccount.com \
+            --cpu-boost \
+            --startup-probe=tcpSocket.port=8080,initialDelaySeconds=15,periodSeconds=10,failureThreshold=90,timeoutSeconds=5
