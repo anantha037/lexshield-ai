@@ -2,12 +2,14 @@
 set -e
 
 if [ "${SKIP_GCS_DOWNLOAD}" != "true" ]; then
-  echo "[Startup] Downloading data from GCS bucket: ${GCS_BUCKET}"
+  echo "[Startup] Authenticating gcloud..."
   
-  # 1. Ensure target directories exist before downloading to prevent "Not Found" crashes
+  # Securely fetch the ambient Cloud Run token using Python's built-in JSON parser
+  export CLOUDSDK_AUTH_ACCESS_TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+  
+  echo "[Startup] Downloading data from GCS bucket: ${GCS_BUCKET}"
   mkdir -p data/processed models/saved
   
-  # 2. Use modern 'gcloud storage' instead of 'gsutil' to natively handle Cloud Run authentication and fast multithreading
   gcloud storage cp -r gs://${GCS_BUCKET}/chroma_db data/
   gcloud storage cp -r gs://${GCS_BUCKET}/processed data/
   gcloud storage cp -r gs://${GCS_BUCKET}/models/saved models/
