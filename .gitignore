@@ -29,8 +29,11 @@ data/chroma_db/
 data/classifier_samples
 *.csv
 *.pdf
-*.json
-
+data/classifier_samples/*.json
+tests/*.json
+data/legal_graph.json
+data/rights_guide.json
+evals/test_data/
 # =========================
 # 4. Logs & Temporary Files
 # =========================
