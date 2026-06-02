@@ -267,16 +267,20 @@ def classify_intent_node(state: AgentState) -> dict:
         except Exception as _e:
             print(f"[Graph] classify_intent_node active-draft check failed (non-fatal): {_e}")
     # ── End short-circuit ──────────────────────────────────────────────────────
+    
+    ui_language = state.get("source_language", "en")
+    detected_language = detect_language(query)
 
-    source_language = detect_language(query)
-    if source_language != "en":
-        print(f"[Graph] classify_intent_node -> detected language: {source_language!r}")
+    final_language = ui_language if ui_language != "en" else detected_language
+
+    if final_language != "en":
+        print(f"[Graph] classify_intent_node -> final language: {final_language!r}")
 
     # Primary: LLM-based classification (with regex override pre-filter + fallback)
     result = intent_classifier.classify_with_llm(query, groq_client)
     print(
         f"[Graph] classify_intent_node -> intent={result.intent!r} "
-        f"conf={result.confidence:.2f} lang={source_language!r}"
+        f"conf={result.confidence:.2f} lang={final_language!r}"
     )
 
     # ── Read entity fields (same attribute names on LLMIntentResult & IntentResult)
@@ -315,7 +319,7 @@ def classify_intent_node(state: AgentState) -> dict:
     return {
         "intent":          result.intent,
         "confidence":      result.confidence,
-        "source_language": source_language,
+        "source_language": final_language,
         "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
         "scratchpad":      scratchpad,
     }
