@@ -111,7 +111,10 @@ app = FastAPI(
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Read allowed origins from .env: ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
 # Falls back to both common dev ports if env var is absent.
-_raw_origins   = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+_raw_origins   = os.getenv(
+    "ALLOWED_ORIGINS", 
+    "http://localhost:3000,http://localhost:5173,https://lexshield-ai-prod.web.app,https://lexshieldai.in"
+)
 _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
