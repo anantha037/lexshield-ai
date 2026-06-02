@@ -56,6 +56,10 @@ class LegalAnswer:
     grounding_warning: Optional[str]  = None
     rewritten_queries: list[str]      = field(default_factory=list)
     reranker_used:     bool           = False
+    # Set by pipeline when CRAG scores insufficient — frontend uses these
+    # to label the response appropriately without changing synthesizer logic.
+    confidence:        str            = "normal"  # "normal" | "low"
+    fallback:          bool           = False      # True when CRAG: insufficient path taken
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
@@ -71,17 +75,12 @@ STRICT RULES — follow every one:
 2. Every sentence that states a legal fact MUST end with an inline citation: [1] or [2] or [1][3].
 3. If two sources say the same thing, cite both: [1][2].
 4. If sources address the same offence under both IPC and BNS, explain both and cite each separately.
-5. SECTION NUMBER RULE — THIS IS ABSOLUTE: You may ONLY write a section number if that exact
-   number appears in the [SOURCE N] header above. The headers are the ONLY permitted source of
-   section numbers. If you know a related section from your training but it does not appear in
-   any [SOURCE N] header, you MUST NOT write that number. Write the legal concept in plain words.
+5. Always cite the specific section number when it appears in the source header 
+   (e.g., write "Section 9 of the Wildlife Protection Act" not just "the Act"). 
+   Section numbers are provided in the source headers — use them.
+   Do not cite section numbers that do not appear in the provided sources.
 6. If the sources do not answer the question, say exactly:
    "The retrieved legal sections do not contain sufficient information to answer this question."
-7. Structure your answer:
-   a) Direct answer to the question (1-2 sentences)
-   b) Relevant legal provisions with inline citations
-   c) Punishment or remedy if present in sources
-   d) Procedure or practical note if present in sources
 8. Keep the answer between 150 and 350 words.
 9. Write in plain English that a non-lawyer can understand.
 """
@@ -108,9 +107,10 @@ STRICT RULES — follow every one:
    Structure it as:
      "Under the old law (pre-July 2024): ... [SOURCE N]"
      "Under the new law (post-July 2024): ... [SOURCE N]"
-4. SECTION NUMBER RULE — ABSOLUTE: Only write section numbers that appear in [SOURCE N] headers.
-   Never invent or recall section numbers from training. If you don't see the section number in
-   a header, describe the provision in plain words instead.
+4. Always cite the specific section number when it appears in the source header 
+   (e.g., write "Section 9 of the Wildlife Protection Act" not just "the Act"). 
+   Section numbers are provided in the source headers — use them.
+   Do not cite section numbers that do not appear in the provided sources.
 5. End your answer with a brief practical note:
    "If your matter arose before July 1, 2024, the [old act] applies.
     If it arose on or after July 1, 2024, the [new act] applies."
@@ -142,7 +142,7 @@ def get_system_prompt(chunks: list[dict]) -> str:
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
-def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
+def build_synthesis_prompt(query: str, chunks: list[dict], intent: str = "legal_query") -> str:
     """
     Formats retrieved chunks as numbered [SOURCE N] blocks.
     When paired act chunks are present, injects an era context note
@@ -191,6 +191,33 @@ def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
             f"{divider}\n"
             f"{text}\n"
         )
+        
+    if intent == "legal_query":
+        structure_prompt = (
+            "Structure your answer using these sections:\n"
+            "**Relevant Law:** State the act and section number directly\n"
+            "**What it says:** Explain the provision in plain language  \n"
+            "**Answer:** Direct answer to the question asked\n"
+            "**Punishment/Remedy:** State explicitly if present, or state \"No specific punishment is prescribed for this provision\"\n"
+            "**Note:** Only include if directly relevant — omit otherwise\n"
+        )
+    elif intent == "risk_check":
+        structure_prompt = (
+            "Structure your answer using these sections:\n"
+            "**Legal Risk:** State the applicable law and section\n"
+            "**Consequences:** Penalties, imprisonment, fines if present in sources\n"
+            "**Procedure:** What authorities are involved\n"
+            "**Advice:** Practical next step\n"
+        )
+    elif intent == "rights_check":
+        structure_prompt = (
+            "Structure your answer using these sections:\n"
+            "**Your Rights:** List rights from retrieved sources only\n"
+            "**Relevant Law:** Act and section for each right\n"
+            "**What to do:** Practical steps\n"
+        )
+    else:
+        structure_prompt = ""
 
     return (
         f"{era_note}"
@@ -202,7 +229,11 @@ def build_synthesis_prompt(query: str, chunks: list[dict]) -> str:
         f"Synthesize the above sources to answer the question.\n"
         f"- Cite every legal claim with its [SOURCE NUMBER] inline.\n"
         f"- If multiple sources address the same point, cite all of them.\n"
-        f"- If both old and new law sources are present, explain both separately.\n"
+        f"- If both old and new law sources are present, explain both separately.\n\n"
+        f"IMPORTANT: Only mention acts and sections that appear in the provided sources below. \n"
+        f"Do not introduce any act, section, or legal concept not present in the source material.\n"
+        f"Cite section numbers whenever they appear in the source headers.\n\n"
+        f"{structure_prompt}"
         f"Answer:"
     )
 
@@ -310,6 +341,26 @@ def check_grounding(answer_text: str, chunks: list[dict]) -> Optional[str]:
     if not inline and len(answer_text) > 100:
         return "No inline [N] citations found. LLM may not have followed synthesis instructions."
 
+    # Act name verification
+    def _act_matches(mention: str, available: set) -> bool:
+        mention_words = set(mention.lower().split())
+        for avail in available:
+            avail_words = set(avail.lower().split())
+            if len(mention_words & avail_words) >= 2:
+                return True
+        return False
+
+    act_mentions = set(re.findall(r'\b(?:[A-Z][a-zA-Z]+\s+)+(?:Act|Code|Sanhita|Adhiniyam)\b', answer_text))
+    available_acts = {str(c.get("source", "")).strip() for c in chunks if c.get("source")}
+    
+    phantom_acts = set()
+    for act in act_mentions:
+        if not _act_matches(act, available_acts):
+            phantom_acts.add(act)
+            
+    if phantom_acts:
+        return f"Answer mentions act(s) {phantom_acts} not found in retrieved sources. Possible hallucination."
+
     return None
 
 
@@ -342,12 +393,34 @@ def synthesize(
     rewritten_queries: list[str] = None,
     reranker_used:     bool      = False,
 ) -> LegalAnswer:
+    citations = build_citations(chunks)
+    
+    # Run grounding check on original LLM output before placeholder replacement
+    grounding_warning = check_grounding(llm_answer.strip(), chunks)
+
+    # Then do citation replacement on processed_answer
+    processed_answer = llm_answer.strip()
+    
+    for cit in citations:
+        idx = cit.source_number
+        act = cit.source
+        sec = cit.section
+        
+        if act and act != "Unknown":
+            if sec:
+                replacement = f"[{act}, Section {sec}]"
+            else:
+                replacement = f"[{act}]"
+                
+            processed_answer = re.sub(rf'\[{idx}\]', replacement, processed_answer)
+            processed_answer = re.sub(rf'\[SOURCE {idx}\]', replacement, processed_answer, flags=re.IGNORECASE)
+
     return LegalAnswer(
-        answer_text        = llm_answer.strip(),
-        citations          = build_citations(chunks),
+        answer_text        = processed_answer,
+        citations          = citations,
         sources_consulted  = len(chunks),
         synthesis_note     = build_synthesis_note(chunks),
-        grounding_warning  = check_grounding(llm_answer, chunks),
+        grounding_warning  = grounding_warning,
         rewritten_queries  = rewritten_queries or [],
         reranker_used      = reranker_used,
     )

@@ -10,7 +10,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./lexshield.db")
+
+# Ensure SQLAlchemy uses the psycopg v3 driver for PostgreSQL connections.
+# Standard libpq URLs (postgresql://...) default to psycopg2 in SQLAlchemy;
+# rewrite to postgresql+psycopg:// so the installed psycopg v3 is used instead.
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 # For SQLite, we need check_same_thread=False
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}

@@ -1,5 +1,6 @@
 import { StoreProvider, useStore } from './store';
 import Landing from './pages/Landing';
+
 import Dashboard from './pages/Dashboard';
 import Toast from './components/Toast';
 
@@ -13,8 +14,8 @@ function AppRoutes() {
   );
 
   const isAnon = sessionStorage.getItem('lexshield_anon') === '1';
+
   if (!user && !isAnon) return <Landing />;
-  
   return <Dashboard />;
 }
 

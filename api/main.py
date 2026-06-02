@@ -132,7 +132,7 @@ print(f"[LexShield] CORS allowed origins: {_allowed_origins}")
 from api.auth        import router as auth_router
 from api.document    import router as document_router
 from api.legal       import router as legal_router
-from api.orchestator import router as orchestrator_router
+# from api.orchestator import router as orchestrator_router
 from api.classify    import router as classify_router
 from api.master      import router as master_router
 
@@ -141,7 +141,7 @@ app.include_router(master_router)
 app.include_router(classify_router)
 app.include_router(document_router)
 app.include_router(legal_router)
-app.include_router(orchestrator_router)
+# app.include_router(orchestrator_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

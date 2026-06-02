@@ -102,12 +102,27 @@ BNS_IPC_PAIRS: dict[str, str] = {
 }
 
 
-def _get_statutory_hint(query: str) -> str | None:
-    q_lower = query.lower()
-    for keyword, hint in BNS_IPC_PAIRS.items():
-        if keyword in q_lower:
-            return hint
-    return None
+# ── Act-presence detector ───────────────────────────────────────────────────
+# Mirrors the act patterns from agents/graph.py _ACT_RE so that follow-up
+# queries like "what about section 8?" are correctly identified as act-free.
+_ACT_PRESENT_RE = re.compile(
+    r'\b(?:Indian Penal Code|Bharatiya Nyaya Sanhita'
+    r'|Code of Criminal Procedure|Bharatiya Nagarik Suraksha Sanhita'
+    r'|Indian Evidence Act|Bharatiya Sakshya Adhiniyam'
+    r'|Negotiable Instruments Act|Protection of Children from Sexual Offences Act'
+    r'|Consumer Protection Act|Information Technology Act'
+    r'|Motor Vehicles Act|Transfer of Property Act'
+    r'|Indian Contract Act|Prevention of Corruption Act'
+    r'|Narcotic Drugs and Psychotropic Substances Act'
+    r'|Unlawful Activities \(Prevention\) Act'
+    r'|IPC|BNS|CrPC|BNSS|NI\s*Act|BSA|POCSO|NDPS|UAPA)\b',
+    re.IGNORECASE,
+)
+
+
+def _query_has_act(query: str) -> bool:
+    """Return True if the query explicitly names any Indian act or abbreviation."""
+    return bool(_ACT_PRESENT_RE.search(query))
 
 
 # ── JSON parser (shared) ──────────────────────────────────────────────────────
@@ -210,7 +225,27 @@ def decompose_query(query: str) -> list[str]:
 # QUERY REWRITER  (unchanged from Week 2)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+def _get_statutory_hint(query: str) -> str:
+    """
+    Extract a statutory hint from the query by matching against BNS_IPC_PAIRS.
+
+    Scans the query for known legal concept keywords (murder, cheating, bail, etc.)
+    and returns the corresponding pre-built statutory search string that covers
+    both legacy (IPC/CrPC) and current (BNS/BNSS) act references.
+
+    Returns an empty string when no keyword matches — the caller treats this as
+    falsy and skips hint injection.
+    """
+    q_lower = query.lower()
+    for keyword, statutory_query in BNS_IPC_PAIRS.items():
+        if keyword in q_lower:
+            return statutory_query
+    return ""
+
+
 class QueryRewriter:
+
     """
     LLM-based query rewriter for legal retrieval.
 
@@ -228,13 +263,101 @@ class QueryRewriter:
         """
         Returns list of queries: [original] + up to 3 LLM rewrites + optional hint.
         Always returns at least [original] even on complete failure.
+
+        Act-context injection:
+          When the query has no explicit act reference (acts=[]) and the session
+          has a persisted last_act, the query is augmented with
+          "under {last_act}" before being sent to the LLM rewriter and returned
+          as the lead query.  This anchors ambiguous follow-ups ("what about
+          section 8?") to the correct act without touching the pipeline.
+
+          If the query explicitly names a different act, set_last_act is updated
+          so the new act takes precedence from this turn onwards.
         """
+        # Late import avoids circular dependency (memory -> llm -> memory).
+        from agents.memory import session_memory
+
         query = query.strip()
         if not query:
             return [query]
 
+        # ── Act-context injection ──────────────────────────────────────────
+        session_id = session_memory.get_session_context()
+        query_explicit_act = _query_has_act(query)
+
+        if query_explicit_act:
+            # User named an act explicitly — update last_act so future
+            # follow-ups inherit the new act correctly.
+            # Extract the first matched act name and persist it.
+            m = _ACT_PRESENT_RE.search(query)
+            if m and session_id:
+                session_memory.set_last_act(session_id, m.group(0))
+        else:
+            # No act in the current query — check whether this is a genuine
+            # contextual follow-up before inheriting last_act from the session.
+            #
+            # ── Two-signal follow-up guard ────────────────────────────────────
+            # Score three binary signals; inject only when score >= 2.
+            # Signal 1: query is short (< 10 words)
+            # Signal 2: contains a pronoun or demonstrative reference
+            # Signal 3: bare section reference with no act name in the query
+            #
+            # When score < 2 the query is treated as a topic shift — last_act
+            # is cleared so it does not persist into subsequent turns either.
+
+            _words = query.split()
+
+            # Signal 1: short query
+            _sig_short = len(_words) < 10
+
+            # Signal 2: pronoun / demonstrative reference
+            _FOLLOWUP_REF_RE = re.compile(
+                r'\b(it|its|this|that|these|those|the\s+same|such|thereof|therein)\b',
+                re.IGNORECASE,
+            )
+            _sig_ref = bool(_FOLLOWUP_REF_RE.search(query))
+
+            # Signal 3: bare section reference — digits/letters after section
+            # markers with no act name anywhere in the query.
+            # Matches: "section 8", "s.8", "s 8", "u/s 8", "sec. 12A"
+            _BARE_SECTION_RE = re.compile(
+                r'\b(?:section|sec\.?|u/s|u\.s\.)\s*\.?\s*\d{1,4}[A-Za-z]?\b',
+                re.IGNORECASE,
+            )
+            # Also catch standalone numbers in very short queries where users
+            # drop the "section" keyword entirely: "how about 54", "and 54?"
+            _STANDALONE_NUM_RE = re.compile(
+                r'(?<!\d)\b\d{1,4}[A-Za-z]?\b(?!\d)',
+            )
+            _sig_bare_section = bool(_BARE_SECTION_RE.search(query)) or (
+                _sig_short and len(_words) <= 6 and bool(_STANDALONE_NUM_RE.search(query))
+            )
+
+            _followup_score = int(_sig_short) + int(_sig_ref) + int(_sig_bare_section)
+
+            if _followup_score >= 2 and session_id:
+                last_act, last_section = session_memory.get_last_act(session_id)
+                if last_act:
+                    injected = f"{query} under {last_act}"
+                    print(
+                        f"[QueryRewriter] act-context injection (score={_followup_score}/3): "
+                        f"session={session_id[:8]}… last_act={last_act!r} "
+                        f"-> query augmented"
+                    )
+                    query = injected   # rewriter + hint logic operate on augmented query
+            else:
+                # Topic shift detected — clear last_act so it does not bleed
+                # into this turn or any subsequent turn.
+                if session_id:
+                    session_memory.clear_last_act(session_id)
+                    print(
+                        f"[QueryRewriter] topic-shift detected (score={_followup_score}/3): "
+                        f"session={session_id[:8]}… last_act cleared, no injection"
+                    )
+
         all_queries: list[str] = [query]
         hint = _get_statutory_hint(query)
+
 
         try:
             prompt = REWRITER_USER_TEMPLATE.format(query=query)

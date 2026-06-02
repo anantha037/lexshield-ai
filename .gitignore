@@ -14,7 +14,7 @@ __pycache__/
 # =========================
 # (This prevents another API token disaster!)
 .env
-.env.example
+# .env.example
 *.pem
 secrets.json
 
@@ -23,13 +23,17 @@ secrets.json
 # =========================
 # GitHub blocks pushes over 100MB, so never commit raw datasets
 data/raw/
+data/real/
 data/processed/
 data/chroma_db/
 data/classifier_samples
 *.csv
 *.pdf
-*.json
-
+data/classifier_samples/*.json
+tests/*.json
+data/legal_graph.json
+data/rights_guide.json
+evals/test_data/
 # =========================
 # 4. Logs & Temporary Files
 # =========================
@@ -54,7 +58,6 @@ Thumbs.db
 # 6. Models
 # =========================
 models/saved/
-models/scratch.py
 *.db
 *.db-*
 DOCUMENTATION.md
@@ -74,8 +77,13 @@ test_scratchpad.py
 scratch1_out.txt
 scratch1_out2.txt
 scratch1_out3.txt
+test_*.py
 
 debug_graph.txt
 debug_output.txt
 res_output.txt
 debug_sc.txt
+
+all_imports.txt
+missing_requirements.txt
+unused_requirements.txt

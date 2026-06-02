@@ -1,18 +1,41 @@
-# Use a lightweight Python image to save memory
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# Set the working directory
 WORKDIR /app
 
-# Copy requirements and install them
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    tesseract-ocr \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install gcloud CLI
+RUN curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts
+ENV PATH="/root/google-cloud-sdk/bin:${PATH}"
+
+# CPU-only torch first — prevents pip pulling 2GB CUDA wheel
+RUN pip install --no-cache-dir \
+    torch==2.12.0+cpu \
+    torchvision==0.27.0+cpu \
+    --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
+# spaCy models
+RUN python -m spacy download en_core_web_sm
+RUN python -m spacy download en_core_web_lg
+
+# Sentence transformer model
+RUN python -c "from sentence_transformers import SentenceTransformer; \
+    SentenceTransformer('all-MiniLM-L6-v2')"
+
+# Copy project code
 COPY . .
+RUN chmod +x startup.sh
 
-# Expose the API port
-EXPOSE 8000
-
-# Command to run the application
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["./startup.sh"]

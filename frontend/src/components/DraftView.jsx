@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { motion } from 'framer-motion';
 import { useStore } from '../store';
 import { sendQuery, adaptQueryResponse, deleteSession } from '../api';
 import { IconWage, IconHome, IconCheque, IconCart, IconPhone, IconHeart, IconBriefcase, IconDollar, IconSend, IconArrowBack, IconDraft, IconScale, IconCopy, IconCheck } from '../icons';
@@ -53,19 +54,37 @@ function CategorySelector({ onSelect }) {
   return (
     <div className="view-enter" style={{ padding: '48px 40px', maxWidth: 960, margin: '0 auto', overflowY: 'auto', height: '100%' }}>
       <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
+          <span style={{ fontFamily: 'var(--f-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '0.2em', color: 'var(--c-gold)', textTransform: 'uppercase' }}>
+            LexShield · Legal Intelligence
+          </span>
+        </div>
         <h2 style={{ fontFamily: 'var(--f-head)', fontSize: 36, fontWeight: 700, color: 'var(--c-text)', margin: 0 }}>What type of complaint do you need?</h2>
         <p style={{ fontSize: 15, color: 'var(--c-text2)', marginTop: 8, lineHeight: 1.6 }}>
           Select a category and I'll guide you through drafting your legal complaint step by step.
         </p>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginTop: 40 }}>
+      <motion.div
+        initial="hidden"
+        animate="visible"
+        variants={{ visible: { transition: { staggerChildren: 0.06 } } }}
+        style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20, marginTop: 40 }}
+      >
         {DRAFT_CATEGORIES.map((cat, i) => (
-          <div key={cat.id} className="draft-cat-card" onClick={() => onSelect(cat)} style={{
-            background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)', padding: '24px 20px', cursor: 'pointer', position: 'relative', overflow: 'hidden', transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)', animation: `fadeIn 300ms ease forwards ${i * 40}ms`, opacity: 0
-          }}>
+          <motion.div
+            key={cat.id}
+            variants={{ hidden: { opacity: 0, y: 14 }, visible: { opacity: 1, y: 0 } }}
+            whileHover={{ y: -4, transition: { duration: 0.2 } }}
+            className="draft-cat-card"
+            onClick={() => onSelect(cat)}
+            style={{
+              background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)', padding: '32px 28px', cursor: 'pointer', position: 'relative', overflow: 'hidden', transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)'
+            }}
+          >
             <style>{`
               .draft-cat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--c-gold); opacity: 0; transition: opacity 200ms ease; }
-              .draft-cat-card:hover { border-color: rgba(196,149,42,0.35); background: var(--c-elevated); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+              .draft-cat-card:hover { border-color: rgba(196,149,42,0.35); background: var(--c-elevated); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
               .draft-cat-card:hover::before { opacity: 1; }
               .draft-cat-card:active { transform: scale(0.97); transition: transform 100ms; }
             `}</style>
@@ -73,9 +92,9 @@ function CategorySelector({ onSelect }) {
             <cat.Icon color="var(--c-gold)" size={28} style={{ display: 'block', marginBottom: 12, strokeWidth: 1.5 }} />
             <div style={{ fontFamily: 'var(--f-head)', fontSize: 18, fontWeight: 600, color: 'var(--c-text)', marginBottom: 8 }}>{cat.name}</div>
             <div style={{ fontSize: 13, color: 'var(--c-text2)', lineHeight: 1.6 }}>{cat.desc}</div>
-          </div>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
     </div>
   );
 }
@@ -171,7 +190,7 @@ export default function DraftView() {
       </div>
 
       {/* Messages */}
-      <div className="messages-area" style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: 20, scrollBehavior: 'smooth' }}>
+      <div className="messages-area" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', scrollBehavior: 'smooth' }}>
         {messages.map((m, i) => {
           if (m.role === 'user') return (
             <div key={i} className="msg-enter" style={{ alignSelf: 'flex-end', maxWidth: '65%', background: 'var(--c-gold-dim)', border: '1px solid rgba(196,149,42,0.18)', borderRadius: '16px 16px 4px 16px', padding: '12px 16px', fontSize: 14, color: 'var(--c-text)', lineHeight: 1.6 }}>
@@ -267,7 +286,7 @@ export default function DraftView() {
       </div>
 
       {/* Input */}
-      <div className="chat-input-area" style={{ padding: '16px 40px 20px', borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
+      <div className="chat-input-area">
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
           <textarea className="textarea" value={input}
             onChange={e => { setInput(e.target.value); inputValRef.current = e.target.value; e.target.style.height = 'auto'; e.target.style.height = Math.min(Math.max(e.target.scrollHeight, 44), 140) + 'px'; }}

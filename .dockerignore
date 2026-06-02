@@ -1,0 +1,24 @@
+.git
+.env
+venv/
+.venv/
+__pycache__
+*.db
+*.db-shm
+*.db-wal
+frontend/node_modules
+frontend/.next
+tests/
+evals/
+*.pyc
+data/raw/
+data/processed/
+data/real/
+data/chroma_db/
+data/processed/
+data/classifier_samples/
+models/saved/
+data/rights_guide.json
+data/legal_graph.json
+data/sessions.db
+# NOT ignoring data/chroma_db — it must go into the image

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useStore } from '../store';
 import Sidebar from '../components/Sidebar';
-import ContextPanel from '../components/ContextPanel';
 import ChatView from '../components/ChatView';
 import DocumentView from '../components/DocumentView';
 import DraftView from '../components/DraftView';
@@ -15,9 +15,7 @@ const VIEWS = {
 };
 
 const LS_SW = 'lx_sidebar_w';
-const LS_CW = 'lx_context_w';
 const SIDEBAR_MIN = 180, SIDEBAR_MAX = 400, SIDEBAR_DEFAULT = 248;
-const CONTEXT_MIN = 200, CONTEXT_MAX = 480, CONTEXT_DEFAULT = 280;
 
 function DragHandle({ onDragStart }) {
   const [dragging, setDragging] = useState(false);
@@ -36,17 +34,20 @@ function DragHandle({ onDragStart }) {
 }
 
 export default function Dashboard() {
-  const { activeView, refreshSessions, user } = useStore();
+  const { activeView, refreshSessions, user, toast } = useStore();
   
-  useEffect(() => { if (user) refreshSessions(); }, [user, refreshSessions]);
+  useEffect(() => { 
+    if (user) refreshSessions(); 
+    const welcome = sessionStorage.getItem('lexshield_welcome');
+    if (welcome) {
+      toast(`Welcome, ${welcome}!`);
+      sessionStorage.removeItem('lexshield_welcome');
+    }
+  }, [user, refreshSessions, toast]);
 
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem(LS_SW);
     return saved ? parseInt(saved, 10) : SIDEBAR_DEFAULT;
-  });
-  const [contextWidth, setContextWidth] = useState(() => {
-    const saved = localStorage.getItem(LS_CW);
-    return saved ? parseInt(saved, 10) : CONTEXT_DEFAULT;
   });
 
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
@@ -75,21 +76,6 @@ export default function Dashboard() {
     document.addEventListener('mouseup', onUp);
   }, [sidebarWidth]);
 
-  const startContextDrag = useCallback((e) => {
-    e.preventDefault();
-    dragState.current = { type: 'context', startX: e.clientX, startW: contextWidth };
-    const onMove = (ev) => {
-      if (!dragState.current) return;
-      const delta = dragState.current.startX - ev.clientX; 
-      const newW = Math.min(CONTEXT_MAX, Math.max(CONTEXT_MIN, dragState.current.startW + delta));
-      setContextWidth(newW);
-      localStorage.setItem(LS_CW, String(newW));
-    };
-    const onUp = () => { dragState.current = null; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  }, [contextWidth]);
-
   // Handle activeView change on mobile to auto-close sidebar
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -98,7 +84,6 @@ export default function Dashboard() {
   const View = VIEWS[activeView] || ChatView;
   
   const showSidebar = windowWidth >= 768;
-  const showContext = windowWidth >= 1100;
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--c-bg)' }}>
@@ -134,7 +119,7 @@ export default function Dashboard() {
       {showSidebar && <DragHandle onDragStart={startSidebarDrag} />}
 
       {/* Main Content */}
-      <div className="view-container" style={{ position: 'relative' }}>
+      <div className="view-container" style={{ flex: 1, position: 'relative' }}>
         {!showSidebar && (
           <button 
             style={{ position: 'absolute', top: 24, left: 16, zIndex: 30, background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-sm)', padding: 6, color: 'var(--c-text)', cursor: 'pointer' }}
@@ -147,16 +132,19 @@ export default function Dashboard() {
             </svg>
           </button>
         )}
-        <View />
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={activeView}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+            style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+          >
+            <View />
+          </motion.div>
+        </AnimatePresence>
       </div>
-
-      {/* Context Panel */}
-      {showContext && <DragHandle onDragStart={startContextDrag} />}
-      {showContext && (
-        <div style={{ width: contextWidth, minWidth: contextWidth }}>
-          <ContextPanel />
-        </div>
-      )}
     </div>
   );
 }

@@ -22,7 +22,13 @@ export async function request(path, opts = {}) {
   try {
     const res = await fetch(`${BASE}${path}`, { ...opts, headers, signal });
     if (timer) clearTimeout(timer);
-    if (res.status === 401) { clearToken(); window.location.href = '/'; throw new Error('Unauthorized'); }
+    if (res.status === 401) {
+      if (!path.includes('/auth/login')) {
+        clearToken(); window.location.href = '/'; throw new Error('Unauthorized');
+      }
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || 'Incorrect credentials');
+    }
     if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `HTTP ${res.status}`); }
     return res.json();
   } catch (err) {

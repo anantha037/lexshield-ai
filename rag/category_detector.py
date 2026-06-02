@@ -34,8 +34,13 @@ import re
 import numpy as np
 from typing import Optional
  
+# CONFIDENCE_HIGH: use category as a hard ChromaDB filter
+# CONFIDENCE_MED:  must be above semantic noise floor for 10-13 category softmax.
+#   Random baseline = 1/N.  With all-MiniLM-L6-v2 the generic-legal noise band
+#   sits at ~0.35-0.44.  0.48 rejects spurious 'taxation'/'criminal' defaults
+#   and lets the pipeline fall through to full-corpus semantic search instead.
 CONFIDENCE_HIGH  = 0.55
-CONFIDENCE_MED   = 0.35
+CONFIDENCE_MED   = 0.48
 KEYWORD_WEIGHT   = 0.55
 SEMANTIC_WEIGHT  = 0.45
  
@@ -50,16 +55,29 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
         "trial conviction acquittal sentence IPC BNS Indian Penal Code Bharatiya Nyaya "
         "Sanhita CRPC BNSS criminal procedure magistrate sessions court cognizable "
         "non-cognizable bailable non-bailable POCSO NDPS PMLA UAPA money laundering "
-        "narcotics terrorism juvenile justice drunk driving penal code"
+        "narcotics terrorism juvenile justice drunk driving penal code BSA Bharatiya "
+        "Sakshya Adhiniyam evidence confession witness chargesheet challan remand "
+        "anticipatory bail regular bail default bail statutory bail crime scene forensic "
+        "accused offender delinquent arms act explosives Prevention of Corruption Act "
+        "CBI ED enforcement directorate organised crime gang gangster "
+        "Prevention of Money Laundering proceeds of crime attachment property "
+        "Narcotic Drugs Psychotropic Substances scheduled offence lookout notice"
     ),
     "family": (
         "divorce marriage matrimonial alimony maintenance custody child guardianship "
         "adoption succession inheritance will testamentary widow spouse husband wife "
         "dowry domestic violence protection order shared household aggrieved person "
-        "family court personal law Hindu Marriage Muslim law Shariat talaq nikah "
+        "family court personal law Hindu Marriage Act Muslim law Shariat talaq nikah "
         "judicial separation annulment cruelty desertion adultery restitution conjugal "
         "rights senior citizen parents domestic relationship live-in relationship "
-        "cohabitation child custody visitation rights child support stridhan"
+        "cohabitation child custody visitation rights child support stridhan mehr "
+        "Hindu Succession Act Indian Succession Act Special Marriage Act "
+        "child welfare guardianship minor orphan foster care surrogacy "
+        "Prohibition of Child Marriage Act inter-faith marriage "
+        "Protection of Women from Domestic Violence Act maintenance under CrPC section 125 "
+        "Muslim Women Protection of Rights on Marriage triple talaq maintenance "
+        "family pension widow pension nominees beneficiary "
+        "Hindu Undivided Family HUF coparcenary karta partition of family property"
     ),
     "corporate": (
         "company director shareholder board meeting quorum annual general meeting AGM "
@@ -67,24 +85,50 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
         "insolvency bankruptcy liquidation winding up IBC NCLT resolution professional "
         "committee of creditors cheque bounce dishonour section 138 negotiable instrument "
         "promissory note bill of exchange partnership LLP limited liability MSME MSMED "
-        "delayed payment supplier contract breach agreement arbitration specific "
-        "performance injunction creditor debtor moratorium competition monopoly merger "
-        "acquisition amalgamation takeover audit auditor statutory compliance frequency "
-        "meetings notice minutes register"
+        "delayed payment supplier contract breach agreement specific performance "
+        "injunction creditor debtor moratorium competition monopoly merger "
+        "acquisition amalgamation takeover audit auditor statutory compliance "
+        "meetings notice minutes register Companies Act 2013 "
+        "CCI Competition Commission anti-competitive agreement dominant position "
+        "corporate governance independent director related party transaction "
+        "statutory registers filing ROC Registrar of Companies charge creation "
+        "buy-back preferential allotment rights issue bonus shares ESOP "
+        "one person company OPC section 8 company NGO producer company "
+        "foreign company branch office liaison office FIPB FDI approval "
+        "corporate social responsibility CSR fund allocation "
+        "business contract agreement novation assignment consideration capacity"
     ),
     "taxation": (
-        "income tax GST CGST IGST SGST goods services tax TDS TCS advance tax capital "
-        "gains deduction exemption refund assessment reassessment scrutiny penalty tax "
-        "evasion customs duty import export excise SEBI securities stock market shares "
-        "IPO insider trading banking RBI reserve bank FEMA foreign exchange NBFC loan "
-        "interest rate financial black money ITR return filing input tax credit"
+        "income tax GST CGST IGST SGST goods and services tax TDS TCS advance tax "
+        "capital gains deduction exemption refund assessment reassessment scrutiny "
+        "penalty tax evasion customs duty import export excise SEBI securities "
+        "stock market shares IPO insider trading banking RBI reserve bank FEMA "
+        "foreign exchange NBFC loan interest rate financial black money ITR return "
+        "filing input tax credit Income Tax Act Finance Act budget taxation "
+        "wealth tax gift tax stamp duty valuation transfer pricing "
+        "tax treaty DTAA double taxation avoidance agreement "
+        "CBDT CBIC Commissioner Appeals Tribunal ITAT AAR advance ruling "
+        "tax demand notice objection assessment order rectification "
+        "TAN PAN permanent account number annual information return "
+        "banking regulation SARFAESI debt recovery tribunal DRT DRAT "
+        "NPA non-performing asset recovery bank loan default guarantor "
+        "revenue department state tax professional tax"
     ),
     "property": (
         "property land flat apartment house building lease rent landlord tenant eviction "
         "tenancy rent control sale deed title ownership possession mortgage registration "
         "RERA real estate builder developer construction encumbrance easement transfer "
-        "conveyance gift deed partition mutation adverse possession stamp duty Kerala "
-        "rent buildings lease agreement notice vacate immovable property"
+        "conveyance gift deed partition mutation adverse possession stamp duty "
+        "rent agreement notice vacate immovable property Transfer of Property Act "
+        "Registration Act Indian Stamp Act "
+        "housing society cooperative society maintenance charges "
+        "development agreement power of attorney joint development "
+        "agricultural land conversion non-agricultural NA land use change "
+        "town planning development control regulations FSI floor space index "
+        "property tax assessment municipal corporation house tax "
+        "succession certificate probate letter of administration estate "
+        "attachment of property decree execution attachment before judgment "
+        "pre-emption right of pre-emption co-sharer joint ownership"
     ),
     "labour": (
         "employee employer worker workman labour wages salary minimum wage overtime "
@@ -92,27 +136,91 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
         "bargaining industrial dispute provident fund EPF gratuity bonus ESI maternity "
         "leave paternity working hours sexual harassment POSH internal complaints "
         "committee workplace occupational safety workmen compensation contract labour "
-        "apprentice social security industrial relations labour code"
+        "apprentice social security industrial relations labour code "
+        "Factories Act Shops and Establishments Act Payment of Wages Act "
+        "Industrial Disputes Act Trade Unions Act "
+        "Code on Wages Code on Social Security Code on Industrial Relations "
+        "Occupational Safety Health and Working Conditions Code "
+        "standing orders misconduct domestic enquiry show cause notice "
+        "labour court industrial tribunal central government industrial tribunal "
+        "unfair labour practice illegal strike illegal lockout "
+        "migrant workers unorganised sector informal workers gig workers "
+        "fixed term employment casual worker probationer trainee "
+        "employee state insurance ESIC disability compensation permanent disablement "
+        "construction workers building workers plantation workers mine workers"
     ),
     "health": (
         "food safety adulteration FSSAI food standard drug medicine hospital clinic "
         "doctor patient medical clinical establishment healthcare pharmaceutical "
         "cosmetic ayurvedic nutraceutical health supplement pharmacy drug license "
         "nursing home right to education RTE school compulsory education elementary "
-        "mid day meal medical negligence vaccination genetically modified food"
+        "mid day meal medical negligence vaccination genetically modified food "
+        "Drugs and Cosmetics Act Medical Devices Rules "
+        "Indian Medical Council Dentists Act Nursing Council "
+        "mental health Mental Healthcare Act psychiatric institution "
+        "blood bank transplantation organ donation National Medical Commission "
+        "clinical trial bio-equivalence pharmacovigilance adverse drug reaction "
+        "Epidemic Diseases Act disaster management public health emergency "
+        "consumer protection medical service deficiency hospital negligence "
+        "pre-conception prenatal diagnostic sex selection PCPNDT "
+        "tobacco cigarette COTPA alcohol prohibition excise state "
+        "private school unaided minority institution fee regulation "
+        "university education UGC AICTE medical admission NEET"
     ),
     "environment": (
         "environment pollution air pollution water pollution noise emission effluent "
         "discharge hazardous waste forest deforestation tree wildlife poaching "
         "biodiversity national park sanctuary protected area mining quarrying "
-        "environmental impact assessment EPA CPCB SPCB climate carbon green"
+        "environmental impact assessment EPA CPCB SPCB climate carbon green "
+        "Environment Protection Act Water Act Air Act Forest Conservation Act "
+        "Wildlife Protection Act Biological Diversity Act "
+        "coastal regulation zone CRZ mangrove wetland "
+        "National Green Tribunal NGT environmental compensation "
+        "eco-sensitive zone buffer zone core zone "
+        "plastic waste biomedical waste e-waste battery waste "
+        "groundwater extraction sand mining stone quarrying "
+        "forest rights tribal rights Scheduled Tribes Forest Dwellers Act "
+        "compensatory afforestation CAMPA net present value "
+        "carbon credits renewable energy solar wind power green energy "
+        "climate change adaptation mitigation Paris Agreement "
+        "river water dispute inter-state water dispute tribunal "
+        "tree felling felling of trees timber timber transit permit transit pass "
+        "forest permission forest clearance forest diversion reserved forest "
+        "protected forest government forest deemed forest state forest "
+        "Indian Forest Act forest offence forest officer range officer "
+        "divisional forest officer conservator of forests chief conservator "
+        "forest produce minor forest produce non-timber forest produce "
+        "cattle trespass forest grazing forest fire slash and burn jhum cultivation "
+        "sawmill wood depot illicit felling smuggling of timber sandalwood teak "
+        "elephant corridor wildlife corridor tiger conservation "
+        "Schedule I Schedule II Schedule III Schedule IV endangered species "
+        "hunting trapping snaring trophy animal article captive breeding "
+        "zoo wildlife sanctuary biosphere reserve community reserve "
+        "conservation reserve wetland Ramsar mangrove coral reef "
+        "forest dwelling community forest management joint forest management "
+        "van panchayat forest village forest settlement "
+        "cutting trees without permission felling trees without permission "
+        "government permission for forest activities illegal logging and timber "
+        "environmental damage penalties wildlife harm hunting without license "
+        "forest land encroachment"
     ),
     "technology": (
         "cyber cybercrime hacking unauthorised access computer data breach data privacy "
         "personal data protection digital electronic digital signature internet social "
         "media IT Act DPDP information technology intermediary encryption phishing "
         "online fraud cyberbullying copyright patent trademark intellectual property "
-        "software domain name cyber security"
+        "software domain name cyber security Information Technology Act 2000 "
+        "Digital Personal Data Protection Act 2023 data fiduciary data principal "
+        "consent manager data localisation cross-border transfer "
+        "intermediary guidelines due diligence significant social media intermediary "
+        "OTT platform streaming content takedown blocking order "
+        "artificial intelligence AI algorithm automated decision "
+        "fintech payment gateway UPI digital payment NPCI RBI digital "
+        "e-commerce marketplace platform liability seller "
+        "geo-blocking VPN dark web deepfake synthetic media "
+        "semiconductor chip design layout geographical indication "
+        "trade secret confidential information breach of confidentiality "
+        "open source licence software patent copyright infringement DMCA safe harbour"
     ),
     "civil": (
         "constitution fundamental rights right to life article 21 directive principles "
@@ -120,7 +228,67 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
         "insurance accident compensation RTI right to information public information "
         "officer Aadhaar consumer protection consumer forum deficiency in service "
         "unfair trade practice civil procedure CPC decree writ habeas corpus mandamus "
-        "certiorari PIL public interest litigation citizenship election"
+        "certiorari PIL public interest litigation citizenship election "
+        "Civil Procedure Code Order Rule stay injunction execution decree "
+        "Motor Vehicles Act Motor Accident Claims Tribunal MACT third party insurance "
+        "solatium no-fault liability hit and run scheme "
+        "consumer redressal NCDRC SCDRC DCDRC mediation "
+        "election petition corrupt practice disqualification Election Commission "
+        "contempt of court civil contempt criminal contempt "
+        "lokpal lokayukta vigilance anticorruption ombudsman "
+        "administrative law natural justice audi alteram partem "
+        "statutory authority delegated legislation ultra vires judicial review "
+        "freedom of speech press censorship defamation civil "
+        "right to privacy Puttaswamy Aadhaar biometric data surveillance"
+    ),
+    # ── New categories covering corpus domains with zero prior detector coverage ──
+    "immigration": (
+        "citizenship nationality passport visa foreigner immigration migration "
+        "Citizenship Act Foreigners Act Passport Entry into India Act "
+        "FRRO Foreigners Regional Registration Officer residence permit "
+        "stateless person asylum refugee Overseas Citizen of India OCI "
+        "Person of Indian Origin PIO renunciation acquisition citizenship "
+        "naturalisation domicile place of birth parentage bloodline "
+        "deportation expulsion detention foreigner illegal stay "
+        "border protection entry exit immigration officer "
+        "Protected Area Permit Restricted Area Permit Inner Line Permit "
+        "NRI non-resident Indian dual citizenship foreign national "
+        "work permit employment visa student visa business visa tourist visa "
+        "citizenship amendment CAA NRC National Register of Citizens"
+    ),
+    "arbitration": (
+        "arbitration conciliation mediation alternate dispute resolution ADR "
+        "arbitral tribunal arbitral award Arbitration and Conciliation Act "
+        "domestic arbitration international commercial arbitration "
+        "institutional arbitration ad hoc arbitration ICC SIAC LCIA DIAC "
+        "seat of arbitration venue place of arbitration "
+        "arbitration agreement arbitration clause arbitration notice "
+        "appointment of arbitrator challenge to arbitrator "
+        "interim relief section 9 section 17 emergency arbitrator "
+        "setting aside award section 34 enforcement of award section 36 "
+        "New York Convention foreign award reciprocating territory "
+        "conciliation conciliator settlement agreement mediation mediator "
+        "Lok Adalat National Legal Services Authority NALSA DLSA "
+        "permanent Lok Adalat motor accident pre-litigation settlement "
+        "online dispute resolution ODR fast track arbitration"
+    ),
+    "revenue": (
+        "land acquisition land reform revenue land record cadastral survey "
+        "Land Acquisition Act Right to Fair Compensation Transparency "
+        "Rehabilitation and Resettlement Act LARR "
+        "urgency clause social impact assessment solatium annuity "
+        "collector district collector state government notification "
+        "khata khasra patta chitta adangal revenue record patwari "
+        "jamabandi fard record of rights mutation khatedaar "
+        "ceiling surplus land consolidation of land holding "
+        "tenancy reforms Zamindari abolition bhoodan "
+        "agricultural land purchase restriction tribal land alienation "
+        "government land encroachment forest land revenue forest "
+        "mining lease quarry lease minor minerals major minerals "
+        "registration document stamp duty valuation sub-registrar "
+        "power of attorney notary attestation court fee "
+        "special economic zone SEZ industrial corridor development authority "
+        "urban land ceiling town planning scheme development plan DP"
     ),
 }
 
@@ -204,7 +372,7 @@ _KEYWORDS: dict[str, tuple[str, int]] = {
     "arrest":                       ("criminal", 1),
     "bail":                         ("criminal", 1),
     "anticipatory bail":            ("criminal", 2),
-    "custody":                      ("criminal", 1),
+    # NOTE: bare "custody" homed under FAMILY; "police custody"/"judicial custody" stay here.
     "remand":                       ("criminal", 1),
     "police custody":               ("criminal", 2),
     "judicial custody":             ("criminal", 2),
@@ -417,9 +585,9 @@ _KEYWORDS: dict[str, tuple[str, int]] = {
     "indemnity":                    ("corporate", 1),
     "guarantee":                    ("corporate", 1),
     "surety":                       ("corporate", 1),
-    "arbitration":                  ("corporate", 1),
-    "arbitral":                     ("corporate", 1),
-    "arbitral award":               ("corporate", 2),
+    # NOTE: 'arbitration', 'arbitral', 'arbitral award' removed from CORPORATE
+    #       — they are now homed in the dedicated ARBITRATION category block.
+    # NOTE: "arbitral award" removed — homed in ARBITRATION block below.
     "specific performance":         ("corporate", 2),
     "injunction":                   ("corporate", 1),
     "creditor":                     ("corporate", 1),
@@ -709,18 +877,72 @@ _KEYWORDS: dict[str, tuple[str, int]] = {
     "waste disposal":               ("environment", 2),
     "solid waste":                  ("environment", 2),
     "e-waste":                      ("environment", 2),
-    "forest":                       ("environment", 1),
+    "forest":                       ("environment", 2),
     "deforestation":                ("environment", 2),
     "forest land":                  ("environment", 2),
     "tree cutting":                 ("environment", 2),
+    "tree felling":                 ("environment", 2),
+    "felling of trees":             ("environment", 2),
+    "felling":                      ("environment", 2),
+    "timber":                       ("environment", 2),
+    "timber transit":               ("environment", 2),
+    "transit pass":                 ("environment", 2),
+    "transit permit":               ("environment", 2),
+    "forest permission":            ("environment", 2),
+    "forest clearance":             ("environment", 2),
+    "forest diversion":             ("environment", 2),
+    "reserved forest":              ("environment", 2),
+    "protected forest":             ("environment", 2),
+    "government forest":            ("environment", 2),
+    "deemed forest":                ("environment", 2),
+    "state forest":                 ("environment", 2),
+    "indian forest act":            ("environment", 2),
+    "forest act":                   ("environment", 2),
+    "forest conservation act":      ("environment", 2),
+    "forest offence":               ("environment", 2),
+    "forest officer":               ("environment", 2),
+    "range officer":                ("environment", 2),
+    "divisional forest officer":    ("environment", 2),
+    "conservator of forests":       ("environment", 2),
+    "forest produce":               ("environment", 2),
+    "minor forest produce":         ("environment", 2),
+    "non-timber forest produce":    ("environment", 2),
+    "cattle trespass":              ("environment", 2),
+    "illicit felling":              ("environment", 2),
+    "smuggling of timber":          ("environment", 2),
+    "sandalwood":                   ("environment", 2),
+    "teak":                         ("environment", 2),
+    "sawmill":                      ("environment", 2),
+    "wood depot":                   ("environment", 2),
     "wildlife":                     ("environment", 2),
+    "wildlife protection act":      ("environment", 2),
     "wild animal":                  ("environment", 2),
     "poaching":                     ("environment", 2),
+    "hunting":                      ("environment", 2),
+    "trapping":                     ("environment", 2),
+    "endangered species":           ("environment", 2),
+    "schedule i":                   ("environment", 1),
+    "schedule ii":                  ("environment", 1),
     "biodiversity":                 ("environment", 2),
     "national park":                ("environment", 2),
     "sanctuary":                    ("environment", 2),
     "protected area":               ("environment", 2),
     "tiger reserve":                ("environment", 2),
+    "tiger conservation":           ("environment", 2),
+    "elephant corridor":            ("environment", 2),
+    "wildlife corridor":            ("environment", 2),
+    "biosphere reserve":            ("environment", 2),
+    "community reserve":            ("environment", 2),
+    "conservation reserve":         ("environment", 2),
+    "van panchayat":                ("environment", 2),
+    "forest village":               ("environment", 2),
+    "joint forest management":      ("environment", 2),
+    "forest rights":                ("environment", 2),
+    "forest dwellers":              ("environment", 2),
+    "compensatory afforestation":   ("environment", 2),
+    "campa":                        ("environment", 2),
+    "ngt":                          ("environment", 2),
+    "national green tribunal":      ("environment", 2),
     "mining":                       ("environment", 1),
     "quarrying":                    ("environment", 2),
     "eia":                          ("environment", 2),
@@ -841,6 +1063,118 @@ _KEYWORDS: dict[str, tuple[str, int]] = {
     "citizenship":                  ("civil", 2),
     "election":                     ("civil", 1),
     "election law":                 ("civil", 2),
+
+    # ═══════════════════════════════════════════════════════════════
+    # IMMIGRATION
+    # ═══════════════════════════════════════════════════════════════
+    # NOTE: 'citizenship' already defined under CIVIL above — not redefined here
+    #       to avoid silent dict key overwrite.
+    "nationality":                  ("immigration", 2),
+    "passport":                     ("immigration", 2),
+    "visa":                         ("immigration", 2),
+    "foreigner":                    ("immigration", 2),
+    "foreigners act":               ("immigration", 2),
+    "immigration":                  ("immigration", 2),
+    "frro":                         ("immigration", 2),
+    "residence permit":             ("immigration", 2),
+    "asylum":                       ("immigration", 2),
+    "refugee":                      ("immigration", 2),
+    "oci":                          ("immigration", 2),
+    "overseas citizen":             ("immigration", 2),
+    "naturalisation":               ("immigration", 2),
+    "deportation":                  ("immigration", 2),
+    "inner line permit":            ("immigration", 2),
+    "protected area permit":        ("immigration", 2),
+    "nri":                          ("immigration", 2),
+    "non resident indian":          ("immigration", 2),
+    "stateless":                    ("immigration", 2),
+    "citizenship amendment":        ("immigration", 2),
+    "caa":                          ("immigration", 2),
+    "nrc":                          ("immigration", 2),
+    "migration":                    ("immigration", 1),
+    "emigration":                   ("immigration", 2),
+    "work permit":                  ("immigration", 2),
+    "student visa":                 ("immigration", 2),
+    "tourist visa":                 ("immigration", 2),
+
+    # ═══════════════════════════════════════════════════════════════
+    # ARBITRATION / ADR
+    # ═══════════════════════════════════════════════════════════════
+    "arbitration":                  ("arbitration", 2),
+    "arbitral":                     ("arbitration", 2),
+    "arbitral tribunal":            ("arbitration", 2),
+    "arbitral award":               ("arbitration", 2),
+    "arbitration agreement":        ("arbitration", 2),
+    "arbitration clause":           ("arbitration", 2),
+    "arbitration and conciliation": ("arbitration", 2),
+    "seat of arbitration":          ("arbitration", 2),
+    "domestic arbitration":         ("arbitration", 2),
+    "international arbitration":    ("arbitration", 2),
+    "conciliation":                 ("arbitration", 2),
+    "conciliator":                  ("arbitration", 2),
+    "mediation":                    ("arbitration", 2),
+    "mediator":                     ("arbitration", 2),
+    "lok adalat":                   ("arbitration", 2),
+    "nalsa":                        ("arbitration", 2),
+    "dlsa":                         ("arbitration", 2),
+    "legal services authority":     ("arbitration", 2),
+    "pre-litigation":               ("arbitration", 2),
+    "adr":                          ("arbitration", 2),
+    "alternate dispute":            ("arbitration", 2),
+    "setting aside award":          ("arbitration", 2),
+    "enforcement of award":         ("arbitration", 2),
+    "new york convention":          ("arbitration", 2),
+    "foreign award":                ("arbitration", 2),
+    "icc arbitration":              ("arbitration", 2),
+    "siac":                         ("arbitration", 2),
+    "fast track arbitration":       ("arbitration", 2),
+    "online dispute resolution":    ("arbitration", 2),
+
+    # ═══════════════════════════════════════════════════════════════
+    # REVENUE / LAND ACQUISITION
+    # ═══════════════════════════════════════════════════════════════
+    "land acquisition":             ("revenue", 2),
+    "land reform":                  ("revenue", 2),
+    "revenue land":                 ("revenue", 2),
+    "revenue record":               ("revenue", 2),
+    "cadastral":                    ("revenue", 2),
+    "larr":                         ("revenue", 2),
+    "rehabilitation and resettlement": ("revenue", 2),
+    "solatium":                     ("revenue", 2),
+    "urgency clause":               ("revenue", 2),
+    "social impact assessment":     ("revenue", 2),
+    "district collector":           ("revenue", 2),
+    # NOTE: 'khata' and 'patta' already defined under PROPERTY above — not
+    #       redefined here to avoid silent dict key overwrite.
+    "khasra":                       ("revenue", 2),
+    "chitta":                       ("revenue", 2),
+    "adangal":                      ("revenue", 2),
+    "jamabandi":                    ("revenue", 2),
+    "fard":                         ("revenue", 2),
+    "record of rights":             ("revenue", 2),
+    "patwari":                      ("revenue", 2),
+    "khatedaar":                    ("revenue", 2),
+    "land ceiling":                 ("revenue", 2),
+    "surplus land":                 ("revenue", 2),
+    "land consolidation":           ("revenue", 2),
+    "zamindari":                    ("revenue", 2),
+    "bhoodan":                      ("revenue", 2),
+    "tribal land":                  ("revenue", 2),
+    # NOTE: 'forest land' already defined under ENVIRONMENT above — not redefined.
+    "government land":              ("revenue", 2),
+    "land encroachment":            ("revenue", 2),
+    "mining lease":                 ("revenue", 2),
+    "quarry lease":                 ("revenue", 2),
+    "minor minerals":               ("revenue", 2),
+    "major minerals":               ("revenue", 2),
+    "special economic zone":        ("revenue", 2),
+    "sez":                          ("revenue", 2),
+    "industrial corridor":          ("revenue", 2),
+    "development authority":        ("revenue", 2),
+    "urban land ceiling":           ("revenue", 2),
+    "sub-registrar":                ("revenue", 2),
+    "sub registrar":                ("revenue", 2),
+    "court fee":                    ("revenue", 2),
 }
 
 _SORTED_KEYWORDS = sorted(_KEYWORDS.items(), key=lambda x: -len(x[0]))

@@ -43,11 +43,10 @@ Priority order in route_by_intent:
 
 import os
 import re
-import sqlite3
 from typing import TypedDict, Optional
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -102,14 +101,13 @@ _JURISDICTION_RE = re.compile(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SQLITE CHECKPOINTER
+# POSTGRESQL CHECKPOINTER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_PROJECT_ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DB_PATH         = os.path.join(_PROJECT_ROOT, "data", "sessions.db")
+from agents.pg_sessions import pool as _pg_pool
 
-_checkpoint_conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-checkpointer     = SqliteSaver(_checkpoint_conn)
+checkpointer = PostgresSaver(_pg_pool)
+checkpointer.setup()  # Idempotent: creates checkpoint tables if missing
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -190,18 +188,74 @@ def classify_intent_node(state: AgentState) -> dict:
             "pipeline_depth":  1,
         }
 
-    # ── Priority 0: active draft session short-circuit ────────────────────────
-    # If this session has an in-progress draft (any stage except DONE),
-    # bypass LLM classification entirely. Returning intent="draft_request" here
-    # ensures route_by_intent's Priority 1 check also fires correctly.
+    # ── Priority 0: active draft session — four-stage-aware short-circuit ──────
     _session_id_early = state.get("session_id", "")
     if _session_id_early:
         try:
             from agents.drafting_agent import drafting_agent as _da
             if _da.has_active_draft(_session_id_early):
+                _row = _da._load(_session_id_early)
+                _draft_stage = _row["stage"] if _row else ""
+
+                # ── AWAITING_CONFIRMATION: detect cancel / confirm / ambiguous ─
+                if _draft_stage in ("AWAITING_CONFIRMATION", "CONFIRM"):
+                    _CANCEL_RE = re.compile(
+                        r'\b(cancel|don\'t\s+confirm|do\s+not\s+confirm|'
+                        r'stop|abort|discard|never\s*mind|forget\s*it|'
+                        r'don\'t\s+draft|do\s+not\s+draft|'
+                        r'don\'t\s+generate|do\s+not\s+generate)\b',
+                        re.IGNORECASE,
+                    )
+                    _CONFIRM_RE = re.compile(
+                        r'\b(confirm|yes|proceed|generate|draft\s+it|'
+                        r'go\s+ahead|yes\s+please|approved?|do\s+it|make\s+it)\b',
+                        re.IGNORECASE,
+                    )
+                    _q = query.lower().strip()
+
+                    if _CANCEL_RE.search(_q):
+                        _da.cancel_draft(_session_id_early)
+                        print("[Graph] AWAITING_CONFIRMATION -> cancel -> clearing draft")
+                        return {
+                            "intent":          "_draft_handled",
+                            "confidence":      1.0,
+                            "source_language": "en",
+                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+                            "scratchpad":      dict(state.get("scratchpad", {})),
+                            "response": (
+                                "✅ Draft cancelled. Your draft session has been cleared.\n\n"
+                                "Feel free to start a new draft or ask me anything else."
+                            ),
+                        }
+                    elif _CONFIRM_RE.search(_q):
+                        print("[Graph] AWAITING_CONFIRMATION -> confirmed -> draft_node")
+                        return {
+                            "intent":          "draft_request",
+                            "confidence":      1.0,
+                            "source_language": "en",
+                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+                            "scratchpad":      dict(state.get("scratchpad", {})),
+                        }
+                    else:
+                        # Ambiguous — re-prompt without clearing state
+                        print("[Graph] AWAITING_CONFIRMATION -> ambiguous -> re-prompt")
+                        return {
+                            "intent":          "_draft_handled",
+                            "confidence":      1.0,
+                            "source_language": "en",
+                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+                            "scratchpad":      dict(state.get("scratchpad", {})),
+                            "response": (
+                                "I need a clear confirmation to proceed.\n\n"
+                                "Reply **'confirm'** to generate your legal draft, "
+                                "or **'cancel'** to discard it."
+                            ),
+                        }
+
+                # ── MENU_SHOWN / COLLECTING_FIELDS: always route to draft_node ─
                 print(
-                    f"[Graph] classify_intent_node -> active draft detected "
-                    f"for session {_session_id_early[:8]}… -> short-circuit to draft_request"
+                    f"[Graph] classify_intent_node -> draft stage={_draft_stage} "
+                    f"session={_session_id_early[:8]}… -> short-circuit to draft_request"
                 )
                 return {
                     "intent":          "draft_request",
@@ -286,6 +340,11 @@ def route_by_intent(state: AgentState) -> str:
     source_language = state.get("source_language", "en")
     intent          = state.get("intent", "general")
 
+    # Priority 0: response already handled (cancellation / re-prompt)
+    if intent == "_draft_handled":
+        print("[Graph] route -> _draft_handled -> general_node (response pre-set)")
+        return "general_node"
+
     # Priority 1: active draft
     if session_id and drafting_agent.has_active_draft(session_id):
         print(f"[Graph] route -> active draft -> draft_node")
@@ -334,11 +393,18 @@ def legal_rag_node(state: AgentState) -> dict:
         enrich_rag_response_with_case_law,
         ENABLE_CASE_LAW_ENRICHMENT,
     )
+    from agents.memory import session_memory
 
     query         = state.get("query", "")
+    session_id    = state.get("session_id", "")
     context_block = state.get("rag_result", {}).get("context_block", "")
-    
-    # ── Scratchpad reader: jurisdiction hint ────────────────────────────────
+
+    # ── Bind session_id into ContextVar so query_rewriter can read it ─────────
+    # Must run before any RAG/rewriter call.  Safe when session_id is empty.
+    if session_id:
+        session_memory.set_session_context(session_id)
+
+    # ── Scratchpad reader: jurisdiction hint ───────────────────────────────────
     scratchpad = dict(state.get("scratchpad", {}))
     jurisdiction = scratchpad.get(SCRATCH_JURISDICTION, "")
     if jurisdiction and context_block:
@@ -347,6 +413,7 @@ def legal_rag_node(state: AgentState) -> dict:
         context_block = f"[JURISDICTION CONTEXT: {jurisdiction}]"
 
     print("[Graph] legal_rag_node -> NER + KG + RAG")
+
 
     # NER
     ner_out: dict        = {"entities": []}
@@ -411,6 +478,28 @@ def legal_rag_node(state: AgentState) -> dict:
             scope_message = "No relevant Indian legal provisions could be found for this query."
             rag_answer_text = ""
             ner_sections = []
+            # Clear stale act context — no valid retrieval means no act to persist.
+            if session_id:
+                session_memory.clear_last_act(session_id)
+        else:
+            # ── Persist last_act + last_section for follow-up queries ────────
+            # Prefer the scratchpad act (LLM/regex extracted from the current
+            # query) over the NER act.  Use first section from scratchpad too.
+            detected_acts     = scratchpad.get(SCRATCH_DETECTED_ACTS, [])
+            detected_sections = scratchpad.get(SCRATCH_DETECTED_SECTIONS, [])
+            resolved_act = detected_acts[0] if detected_acts else ""
+
+            # Fallback: pull act name from NER entity labels if scratchpad empty
+            if not resolved_act:
+                for ent in ner_out.get("entities", []):
+                    if ent.get("label") in ("ACT", "LEGISLATION"):
+                        resolved_act = ent.get("text", "").strip()
+                        if resolved_act:
+                            break
+
+            if resolved_act and session_id:
+                resolved_section = detected_sections[0] if detected_sections else ""
+                session_memory.set_last_act(session_id, resolved_act, resolved_section)
 
         return {
             "rag_result": {
@@ -941,6 +1030,23 @@ def _detect_rights_category(query_lower: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def general_node(state: AgentState) -> dict:
+    # ── Early return if response was pre-set (draft cancel / re-prompt) ───────
+    existing_response = state.get("response", "")
+    if existing_response:
+        print("[Graph] general_node -> returning pre-set response")
+        return {
+            "response": existing_response,
+            "rag_result": {
+                "answer": existing_response, "sources_consulted": 0,
+                "synthesis_note": "pre-set response", "grounding_warning": "",
+                "rewritten_queries": [], "reranker_used": False, "mode": "general_node",
+            },
+            "source": "llm_only",
+            "sourced": False,
+            "pipeline_depth": state.get("pipeline_depth", 1) + 1,
+            "error": "",
+        }
+
     from rag.llm import llm
 
     query         = state.get("query", "")
@@ -965,6 +1071,8 @@ def general_node(state: AgentState) -> dict:
                 "synthesis_note": "", "grounding_warning": "",
                 "rewritten_queries": [], "reranker_used": False, "mode": "general_node",
             },
+            "source": "llm_only",
+            "sourced": False,
             "pipeline_depth": state.get("pipeline_depth", 1) + 1,
             "error": "",
         }
@@ -973,6 +1081,8 @@ def general_node(state: AgentState) -> dict:
         return {
             "response":   "Hello! I'm LexShield AI, your Indian legal assistant. How can I help you today?",
             "rag_result": {},
+            "source":     "llm_only",
+            "sourced":    False,
             "error":      str(exc),
         }
 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { motion } from 'framer-motion';
 import { useStore } from '../store';
 import { IconShield, IconHome, IconBriefcase, IconCart, IconPhone } from '../icons';
 
@@ -49,15 +50,18 @@ export default function RightsView() {
   const [question, setQuestion] = useState('');
 
   const askAbout = async (questionText) => {
+    // BUG2 fix: get the new session_id BEFORE setting prefillInput so ChatView
+    // always sends the query under the correct (fresh) session, not the stale one.
+    let newSessionId = 'LX-' + Math.random().toString(36).substr(2,8).toUpperCase();
     try {
       const res = await fetch('http://localhost:8000/api/v1/master/session/new');
       const data = await res.json();
-      setActiveSession(data.session_id);
-    } catch (e) {
-      const fallbackId = 'LX-' + Math.random().toString(36).substr(2,8).toUpperCase();
-      setActiveSession(fallbackId);
-    }
+      newSessionId = data.session_id;
+    } catch (e) { /* keep fallback id */ }
+
+    // Clear messages and set session BEFORE navigating / setting prefill
     if (setChatMessages) setChatMessages([]);
+    setActiveSession(newSessionId);
     setPrefillInput(questionText);
     setActiveView('chat');
   };
@@ -67,9 +71,15 @@ export default function RightsView() {
 
   return (
     <div style={{ overflowY: 'auto', height: '100%' }} className="view-enter">
-      <div className="view-header" style={{ padding: '32px 40px 24px', borderBottom: '1px solid var(--c-border2)' }}>
-        <h1 style={{ fontFamily: 'var(--f-head)', fontSize: 32, fontWeight: 700, color: 'var(--c-text)', letterSpacing: '-0.01em', margin: 0 }}>Know Your Rights</h1>
-        <p style={{ fontSize: 14, color: 'var(--c-text2)', marginTop: 6, margin: 0 }}>Explore statutory protections and constitutional guarantees across key legal domains.</p>
+      <div className="view-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
+          <span style={{ fontFamily: 'var(--f-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '0.2em', color: 'var(--c-gold)', textTransform: 'uppercase' }}>
+            LexShield · Legal Intelligence
+          </span>
+        </div>
+        <h1 style={{ fontFamily: 'var(--f-head)', fontSize: 36, fontWeight: 700, color: 'var(--c-text)', letterSpacing: '-0.01em', margin: 0 }}>Know Your Rights</h1>
+        <p style={{ fontSize: 15, color: 'var(--c-text2)', marginTop: 8, margin: 0 }}>Explore statutory protections and constitutional guarantees across key legal domains.</p>
       </div>
 
       <div style={{ padding: '32px 40px' }}>
@@ -79,7 +89,8 @@ export default function RightsView() {
               style={{
                 display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', background: selected === id ? 'var(--c-gold-dim)' : 'var(--c-surface)',
                 border: `1px solid ${selected === id ? 'var(--c-gold)' : 'var(--c-border)'}`, borderRadius: 'var(--r-md)', cursor: 'pointer',
-                whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600, color: selected === id ? 'var(--c-gold)' : 'var(--c-text2)', transition: 'all 150ms'
+                whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600, color: selected === id ? 'var(--c-gold)' : 'var(--c-text2)', transition: 'all 150ms',
+                position: 'relative'
               }}
               onMouseEnter={(e) => {
                 if (selected !== id) { e.currentTarget.style.borderColor = 'rgba(196,149,42,0.3)'; e.currentTarget.style.color = 'var(--c-text)'; }
@@ -94,6 +105,21 @@ export default function RightsView() {
                 e.currentTarget.style.animation = 'rightsPulse 400ms ease-out forwards';
               }}
             >
+              {selected === id && (
+                <motion.span
+                  layoutId="rights-tab-indicator"
+                  style={{
+                    position: 'absolute',
+                    bottom: -1,
+                    left: 0,
+                    right: 0,
+                    height: 2,
+                    background: 'var(--c-gold)',
+                    borderRadius: 1,
+                  }}
+                  transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+                />
+              )}
               <Icon size={16} />
               {label}
             </div>
@@ -102,9 +128,21 @@ export default function RightsView() {
 
         {selected && cards.length > 0 && (
           <div className="fade-in">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 24 }}>
+            <motion.div
+              key={selected}
+              initial="hidden"
+              animate="visible"
+              variants={{ visible: { transition: { staggerChildren: 0.08 } } }}
+              style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 28 }}
+            >
               {cards.map((r, i) => (
-                <div key={i} className="right-card" style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)', padding: '20px 24px', transition: 'border-color 150ms', position: 'relative', overflow: 'hidden' }}>
+                <motion.div
+                  key={i}
+                  variants={{ hidden: { opacity: 0, y: 16 }, visible: { opacity: 1, y: 0 } }}
+                  whileHover={{ y: -3 }}
+                  className="right-card"
+                  style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)', padding: '28px', transition: 'border-color 150ms', position: 'relative', overflow: 'hidden', borderLeft: '3px solid var(--c-gold)' }}
+                >
                   <style>{`
                     .right-card:hover { border-color: rgba(196,149,42,0.25); }
                     .right-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--c-gold); transform: scaleY(0); transform-origin: top; transition: transform 150ms ease; }
@@ -118,9 +156,9 @@ export default function RightsView() {
                   <button className="right-card-ask" onClick={() => askAbout(`Explain the law: ${r.title} — ${r.body.slice(0, 100)}`)}>
                     Ask about this →
                   </button>
-                </div>
+                </motion.div>
               ))}
-            </div>
+            </motion.div>
 
             <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--c-border2)' }}>
               <label style={{ fontSize: 13, color: 'var(--c-text2)', marginBottom: 8, display: 'block' }}>

@@ -1,8 +1,7 @@
 """
 LexShield AI — Authentication Module  (Session 6 — Final)
 ===========================================================
-Pure SQLite backend — uses data/sessions.db (same file as session_memory).
-No SQLAlchemy, no ORM — consistent with the rest of the project.
+PostgreSQL backend — uses shared psycopg v3 pool from pg_sessions.
 
 Tables managed here
 --------------------
@@ -16,7 +15,7 @@ users (
 )
 
 The sessions table already exists in memory.py; we ADD a user_id column
-via ALTER TABLE IF NOT EXISTS pattern (SQLite-safe idempotent migration).
+via ALTER TABLE IF NOT EXISTS (PostgreSQL-safe idempotent migration).
 
 Endpoints
 ---------
@@ -32,14 +31,12 @@ or raises HTTP 401 if token is missing / invalid / user not found.
 
 Verification
 ------------
-curl -s -X POST http://localhost:8000/api/v1/auth/register \
-  -H "Content-Type: application/json" \
+curl -s -X POST http://localhost:8000/api/v1/auth/register \\
+  -H "Content-Type: application/json" \\
   -d '{"email":"anantha@lexshield.ai","password":"test1234","full_name":"Anantha Krishnan K"}' | python -m json.tool
 """
 
 import os
-import sqlite3
-import threading
 import time
 import uuid
 import logging
@@ -49,43 +46,31 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 
+from agents.pg_sessions import get_conn
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DATABASE — reuse sessions.db from memory.py
+# DATABASE — uses shared PostgreSQL pool
 # ═══════════════════════════════════════════════════════════════════════════════
-
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DB_PATH      = os.path.join(_PROJECT_ROOT, "data", "sessions.db")
-
-_conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-_conn.row_factory = sqlite3.Row
-_lock = threading.Lock()
 
 
 def _init_auth_tables() -> None:
     """Create users table and add user_id column to sessions if missing."""
-    with _lock:
-        _conn.executescript("""
+    with get_conn() as conn:
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id              TEXT    PRIMARY KEY,
                 email           TEXT    UNIQUE NOT NULL,
                 hashed_password TEXT    NOT NULL,
                 full_name       TEXT,
-                created_at      REAL    NOT NULL,
-                last_login      REAL
-            );
+                created_at      DOUBLE PRECISION NOT NULL,
+                last_login      DOUBLE PRECISION
+            )
         """)
-        _conn.commit()
 
-        # Idempotent ALTER: add user_id to sessions table (SQLite-safe)
-        cols = [
-            row["name"]
-            for row in _conn.execute("PRAGMA table_info(sessions)").fetchall()
-        ]
-        if "user_id" not in cols:
-            _conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
-            _conn.commit()
+        # Idempotent: add user_id to sessions table if not present
+        conn.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_id TEXT")
 
 
 _init_auth_tables()
@@ -134,14 +119,15 @@ def _decode_token(token: str) -> Optional[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# USER CRUD (raw SQLite — no ORM)
+# USER CRUD (raw psycopg — no ORM)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _create_user(email: str, password: str, full_name: str) -> dict:
     """Insert a new user. Raises ValueError if email already exists."""
-    existing = _conn.execute(
-        "SELECT id FROM users WHERE email = ?", (email.lower(),)
-    ).fetchone()
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM users WHERE email = %s", (email.lower(),)
+        ).fetchone()
     if existing:
         raise ValueError(f"Email already registered: {email}")
 
@@ -149,13 +135,12 @@ def _create_user(email: str, password: str, full_name: str) -> dict:
     now     = time.time()
     hashed  = _hash_password(password)
 
-    with _lock:
-        _conn.execute(
+    with get_conn() as conn:
+        conn.execute(
             "INSERT INTO users (id, email, hashed_password, full_name, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s)",
             (user_id, email.lower(), hashed, full_name.strip(), now),
         )
-        _conn.commit()
 
     return {
         "id":         user_id,
@@ -167,22 +152,22 @@ def _create_user(email: str, password: str, full_name: str) -> dict:
 
 def _authenticate_user(email: str, password: str) -> Optional[dict]:
     """Return user dict on success, None on bad credentials."""
-    row = _conn.execute(
-        "SELECT id, email, hashed_password, full_name, created_at FROM users WHERE email = ?",
-        (email.lower(),),
-    ).fetchone()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email, hashed_password, full_name, created_at FROM users WHERE email = %s",
+            (email.lower(),),
+        ).fetchone()
     if not row:
         return None
     if not _verify_password(password, row["hashed_password"]):
         return None
 
     # Update last_login
-    with _lock:
-        _conn.execute(
-            "UPDATE users SET last_login = ? WHERE id = ?",
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET last_login = %s WHERE id = %s",
             (time.time(), row["id"]),
         )
-        _conn.commit()
 
     return {
         "id":         row["id"],
@@ -193,10 +178,11 @@ def _authenticate_user(email: str, password: str) -> Optional[dict]:
 
 
 def _get_user_by_id(user_id: str) -> Optional[dict]:
-    row = _conn.execute(
-        "SELECT id, email, full_name, created_at FROM users WHERE id = ?",
-        (user_id,),
-    ).fetchone()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email, full_name, created_at FROM users WHERE id = %s",
+            (user_id,),
+        ).fetchone()
     return dict(row) if row else None
 
 

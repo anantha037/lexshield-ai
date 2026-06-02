@@ -125,25 +125,34 @@ except ImportError:
 # LANGUAGE CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Surya uses ISO 639-1 codes directly — same codes used by the API
+# Surya 0.14.7 uses its own language codes (3-letter for Indic scripts)
 _SURYA_SUPPORTED_LANGS = {
-    "ml", "hi", "ta", "te", "kn", "mr", "bn", "gu", "pa", "or",
-    "en", "fr", "de", "es", "zh", "ja", "ko", "ar", "ru",
+    "en", "tam", "mal", "hin", "tel", "kan",
+    "mr", "bn", "gu", "pa", "or",
+    "fr", "de", "es", "zh", "ja", "ko", "ar", "ru",
 }
 
-# Tesseract fallback language map (unchanged from previous version)
+# Map from Surya lang code → Tesseract lang string
 _TESSERACT_LANG_MAP: dict[str, str] = {
-    "ml": "mal+eng",
-    "hi": "hin+eng",
-    "ta": "tam+eng",
-    "te": "tel+eng",
-    "kn": "kan+eng",
-    "mr": "hin+eng",
-    "bn": "ben+eng",
-    "gu": "guj+eng",
-    "pa": "pan+eng",
-    "or": "ori+eng",
-    "en": "eng",
+    "mal": "mal+eng",
+    "hin": "hin+eng",
+    "tam": "tam+eng",
+    "tel": "tel+eng",
+    "kan": "kan+eng",
+    "mr":  "hin+eng",
+    "bn":  "ben+eng",
+    "gu":  "guj+eng",
+    "pa":  "pan+eng",
+    "or":  "ori+eng",
+    "en":  "eng",
+}
+
+# Readable names for Tesseract missing-pack error messages
+_LANG_DISPLAY_NAMES: dict[str, str] = {
+    "tam": "Tamil",   "mal": "Malayalam", "hin": "Hindi",
+    "tel": "Telugu",  "kan": "Kannada",   "mr":  "Marathi",
+    "bn":  "Bengali", "gu":  "Gujarati",  "pa":  "Punjabi",
+    "or":  "Oriya",   "en":  "English",
 }
 
 _TESSERACT_CONFIG = "--psm 3 --oem 3"
@@ -186,7 +195,7 @@ def _get_surya_predictors():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LANGUAGE DETECTION (unchanged — reuses multilingual_agent)
+# LANGUAGE DETECTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _detect_ocr_language(text: str) -> str:
@@ -198,6 +207,80 @@ def _detect_ocr_language(text: str) -> str:
         return detect_language(text.strip()[:500])
     except Exception:
         return "en"
+
+
+# ── Indic script detection for Surya language parameter ───────────────────────
+
+# Unicode block ranges for Indic scripts
+_INDIC_SCRIPT_RANGES: list[tuple[int, int, str]] = [
+    (0x0B80, 0x0BFF, "tam"),   # Tamil
+    (0x0D00, 0x0D7F, "mal"),   # Malayalam
+    (0x0900, 0x097F, "hin"),   # Devanagari (Hindi)
+    (0x0C00, 0x0C7F, "tel"),   # Telugu
+    (0x0C80, 0x0CFF, "kan"),   # Kannada
+]
+
+# Keyword hints that may appear in filenames or metadata
+_INDIC_FILENAME_HINTS: dict[str, str] = {
+    "tamil":     "tam",  "tam":  "tam",
+    "malayalam": "mal",  "mal":  "mal",
+    "hindi":     "hin",  "hin":  "hin",
+    "telugu":    "tel",  "tel":  "tel",
+    "kannada":   "kan",  "kan":  "kan",
+}
+
+
+def _detect_indic_script(
+    filename: Optional[str] = None,
+    metadata_hint: Optional[str] = None,
+    prescan_text: Optional[str] = None,
+) -> str:
+    """
+    Detect Indic script from filename, metadata hint, or a pre-scan of
+    extractable text.  Returns a Surya 0.14.7 language code.
+
+    Priority:
+      1. Filename keywords  (e.g. "contract_tamil.pdf")
+      2. Metadata hint       (e.g. caller passes "ta" or "tamil")
+      3. Unicode block scan  (look at actual character ranges in text)
+      4. Default → "en"
+    """
+    # 1. Filename keywords
+    if filename:
+        name_lower = filename.lower()
+        for keyword, lang in _INDIC_FILENAME_HINTS.items():
+            if keyword in name_lower:
+                logger.debug(f"[CV] Indic script detected from filename: {lang}")
+                return lang
+
+    # 2. Metadata hint
+    if metadata_hint:
+        hint = metadata_hint.strip().lower()
+        if hint in _INDIC_FILENAME_HINTS:
+            return _INDIC_FILENAME_HINTS[hint]
+        # Also accept Surya codes directly
+        if hint in _SURYA_SUPPORTED_LANGS:
+            return hint
+
+    # 3. Unicode block scan of available text
+    if prescan_text and len(prescan_text) >= 5:
+        script_counts: dict[str, int] = {}
+        for ch in prescan_text[:2000]:
+            cp = ord(ch)
+            for lo, hi, lang in _INDIC_SCRIPT_RANGES:
+                if lo <= cp <= hi:
+                    script_counts[lang] = script_counts.get(lang, 0) + 1
+                    break
+        if script_counts:
+            dominant = max(script_counts, key=script_counts.get)  # type: ignore[arg-type]
+            if script_counts[dominant] >= 3:  # at least 3 chars to be confident
+                logger.debug(
+                    f"[CV] Indic script detected from unicode scan: {dominant} "
+                    f"({script_counts[dominant]} chars)"
+                )
+                return dominant
+
+    return "en"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -320,13 +403,26 @@ def _extract_digital_pdf_bytes(pdf_bytes: bytes) -> Optional[str]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _surya_ocr_image(
-    image:     np.ndarray,
-    lang_code: str = "en",
+    image:         np.ndarray,
+    lang_code:     str = "en",
+    filename:      Optional[str] = None,
+    metadata_hint: Optional[str] = None,
 ) -> tuple[str, float]:
     """
     Run Surya OCR on a single numpy image (BGR).
-    surya-ocr 0.14+ API: rec_predictor(images, [langs]) returns OCRResult list.
+    surya-ocr 0.14.7 API:  rec_predictor(images, langs, det_predictor)
+      - images: list[PIL.Image]
+      - langs:  list[list[str]]  (language codes per image)
+      - det_predictor: DetectionPredictor instance
+
+    On any Surya exception, returns ("", 0.0) so callers fall through
+    to the Tesseract fallback path.
     """
+    if isinstance(lang_code, list):
+        lang_code = lang_code[0] if lang_code else "en"
+    if isinstance(metadata_hint, list):
+        metadata_hint = metadata_hint[0] if metadata_hint else None
+
     det_predictor, rec_predictor = _get_surya_predictors()
     if det_predictor is None:
         return "", 0.0
@@ -334,16 +430,25 @@ def _surya_ocr_image(
     try:
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_image)
-        lang      = lang_code if lang_code in _SURYA_SUPPORTED_LANGS else "en"
 
-        # New API: pass images list + langs list-of-lists to recognition predictor
-        # Detection runs internally; no need to call det_predictor separately
-        results = rec_predictor([pil_image], task_names=[lang], det_predictor=det_predictor)
+        # Detect Indic script from filename / metadata / pre-scan
+        lang = _detect_indic_script(
+            filename=filename,
+            metadata_hint=metadata_hint if metadata_hint else (
+                lang_code if lang_code != "en" else None
+            ),
+        )
+        if lang not in _SURYA_SUPPORTED_LANGS:
+            lang = "en"
 
-        if not results or not results[0].text_lines:
+        # Surya 0.14.7: langs was removed. 2nd positional is task_names.
+        # Passing [[lang]] to task_names causes unhashable type: 'list'
+        predictions = rec_predictor([pil_image], None, det_predictor)
+
+        if not predictions or not predictions[0].text_lines:
             return "", 0.0
 
-        lines       = results[0].text_lines
+        lines       = predictions[0].text_lines
         text_lines  = []
         confidences = []
         for line in lines:
@@ -363,13 +468,23 @@ def _surya_ocr_image(
 
 
 def _surya_ocr_pdf(
-    pdf_bytes: bytes,
-    lang_code: str = "en",
+    pdf_bytes:     bytes,
+    lang_code:     str = "en",
+    filename:      Optional[str] = None,
+    metadata_hint: Optional[str] = None,
 ) -> tuple[str, float]:
     """
     Run Surya OCR on a scanned PDF — one page at a time for RAM safety.
-    surya-ocr 0.14+ API: same rec_predictor call as _surya_ocr_image.
+    surya-ocr 0.14.7 API:  rec_predictor(images, langs, det_predictor)
+
+    On any Surya exception, returns ("", 0.0) so callers fall through
+    to the Tesseract fallback path.
     """
+    if isinstance(lang_code, list):
+        lang_code = lang_code[0] if lang_code else "en"
+    if isinstance(metadata_hint, list):
+        metadata_hint = metadata_hint[0] if metadata_hint else None
+
     if not _PYMUPDF_AVAILABLE:
         logger.warning("[CV] PyMuPDF needed for PDF-to-image conversion")
         return "", 0.0
@@ -383,7 +498,16 @@ def _surya_ocr_pdf(
         page_count = len(doc)
         all_pages  = []
         all_confs  = []
-        lang       = lang_code if lang_code in _SURYA_SUPPORTED_LANGS else "en"
+
+        # Detect Indic script from filename / metadata
+        lang = _detect_indic_script(
+            filename=filename,
+            metadata_hint=metadata_hint if metadata_hint else (
+                lang_code if lang_code != "en" else None
+            ),
+        )
+        if lang not in _SURYA_SUPPORTED_LANGS:
+            lang = "en"
 
         if page_count > _MAX_PAGES_PER_CALL:
             logger.warning(
@@ -397,13 +521,28 @@ def _surya_ocr_pdf(
             pix  = page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
             img  = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            try:
-                results = rec_predictor([img], task_names=[lang], det_predictor=det_predictor)
+            # On the first page, try to refine language from extracted text
+            if page_num == 0 and lang == "en":
+                # Quick prescan: try to get text from first page for script detection
+                try:
+                    first_page_text = doc[0].get_text("text")
+                    if first_page_text and len(first_page_text.strip()) >= 5:
+                        detected = _detect_indic_script(prescan_text=first_page_text)
+                        if detected != "en":
+                            lang = detected
+                            logger.info(f"[CV] Indic script detected from page 1 text: {lang}")
+                except Exception:
+                    pass
 
-                if results and results[0].text_lines:
+            try:
+                # Surya 0.14.7: langs was removed. 2nd positional is task_names.
+                # Passing [[lang]] to task_names causes unhashable type: 'list'
+                predictions = rec_predictor([img], None, det_predictor)
+
+                if predictions and predictions[0].text_lines:
                     page_lines = []
                     page_confs = []
-                    for line in results[0].text_lines:
+                    for line in predictions[0].text_lines:
                         if line.text.strip():
                             page_lines.append(line.text.strip())
                             page_confs.append(line.confidence)
@@ -428,7 +567,7 @@ def _surya_ocr_pdf(
         text           = "\n\n".join(all_pages)
         logger.info(
             f"[CV] Surya PDF: {len(all_pages)} page(s), "
-            f"{len(text)} chars, confidence={avg_confidence:.2f}"
+            f"{len(text)} chars, lang={lang}, confidence={avg_confidence:.2f}"
         )
         return text, round(avg_confidence, 3)
 
@@ -484,7 +623,11 @@ def _tesseract_ocr_image(image: np.ndarray, lang_code: str = "en") -> str:
     """
     Tesseract OCR on a preprocessed image.
     FIXED: path now resolved via shutil.which() — works on Windows + Linux/Docker.
+    Returns a missing-pack message if the required language data is not installed.
     """
+    if isinstance(lang_code, list):
+        lang_code = lang_code[0] if lang_code else "en"
+
     if not _TESSERACT_AVAILABLE:
         return ""
 
@@ -497,7 +640,18 @@ def _tesseract_ocr_image(image: np.ndarray, lang_code: str = "en") -> str:
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
         return "\n".join(lines)
     except Exception as e:
+        err_str = str(e).lower()
         logger.warning(f"[CV] Tesseract error (lang={tess_lang}): {e}")
+
+        # Detect missing language pack
+        if "failed loading language" in err_str or "not found" in err_str:
+            display = _LANG_DISPLAY_NAMES.get(lang_code, lang_code)
+            tess_pack = tess_lang.split("+")[0]  # e.g. "mal" from "mal+eng"
+            return (
+                f"OCR language pack for {display} not installed. "
+                f"Run: apt-get install tesseract-ocr-{tess_pack}"
+            )
+
         if tess_lang != "eng":
             try:
                 raw   = pytesseract.image_to_string(pil_img, lang="eng", config=_TESSERACT_CONFIG)

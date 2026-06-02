@@ -162,6 +162,7 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
             "score":  1,
             "reason": "No chunks were retrieved for this query.",
             "action": "insufficient",
+            "fallback": True,
         }
 
     # Take top N chunks by hybrid_score; truncate text previews
@@ -189,6 +190,8 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
             max_tokens=120,    # score + reason + action fits in ~80 tokens
         )
         result = _parse_crag_response(raw)
+        # Stamp fallback flag so pipeline can read it without inspecting action string.
+        result["fallback"] = result["action"] == "insufficient"
         print(
             f"[CRAG] score={result['score']} action={result['action']!r} "
             f"reason={result['reason'][:60]!r}"

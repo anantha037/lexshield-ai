@@ -1,20 +1,18 @@
 """
-LexShield AI — Session Memory  (SQLite backend)
-================================================
-Replaces the in-memory dict with a persistent SQLite store.
-Survives server restarts.  Same public interface as the old
-in-memory version so orchestrator.py needs no changes.
+LexShield AI — Session Memory  (PostgreSQL backend)
+====================================================
+Persistent session store backed by PostgreSQL via psycopg v3.
+Survives server restarts.  Same public interface as the previous
+SQLite version so orchestrator.py needs no changes.
 
 Tables
 ------
 sessions (session_id PK, created_ts, user_id TEXT nullable)
-turns    (id PK, session_id FK, role, content, intent, ts, citation_status)
+turns    (id PK SERIAL, session_id FK, role, content, intent, ts, citation_status)
+session_summaries (session_id, summary_text, created_at, turn_range_start, turn_range_end)
+user_profiles (session_id PK, preferred_domain, jurisdiction, ...)
 
-Uses the SAME data/sessions.db file as the LangGraph SqliteSaver
-checkpointer — the table names do not overlap (LangGraph uses
-checkpoints / checkpoint_blobs / checkpoint_writes).
-
-Public interface (unchanged from in-memory version)
+Public interface (unchanged from previous version)
 ----------------------------------------------------
 session_memory.ensure_session(sid)              -> str
 session_memory.session_exists(sid)              -> bool
@@ -31,81 +29,72 @@ session_memory.link_session_to_user(sid, uid)   -> None
 session_memory.get_user_sessions(uid)           -> list[dict]
 """
 
-import os
-import sqlite3
 import threading
 import time
 import uuid
 import json
+from contextvars import ContextVar
 from typing import Optional
+
+from agents.pg_sessions import get_conn
+
+# ── Per-request session context carrier ───────────────────────────────────────
+# Set by legal_rag_node before entering the RAG chain so that query_rewriter.py
+# can read the active session_id without receiving it as a parameter.
+# ContextVar is safe across asyncio tasks and native threads.
+_active_session_id: ContextVar[str] = ContextVar("active_session_id", default="")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATABASE SETUP
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DB_PATH      = os.path.join(_PROJECT_ROOT, "data", "sessions.db")
-
-# One connection, shared across threads.
-# check_same_thread=False is safe here because all writes go through _lock.
-_conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-_conn.row_factory = sqlite3.Row
-_lock = threading.Lock()
-
-
 def _init_db() -> None:
     """Create tables and run idempotent migrations."""
-    with _lock:
-        _conn.executescript("""
+    with get_conn() as conn:
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id  TEXT    PRIMARY KEY,
-                created_ts  REAL    NOT NULL
-            );
+                created_ts  DOUBLE PRECISION NOT NULL,
+                user_id     TEXT
+            )
+        """)
 
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS turns (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                id              SERIAL PRIMARY KEY,
                 session_id      TEXT    NOT NULL,
-                role            TEXT    NOT NULL,   -- "user" | "assistant"
+                role            TEXT    NOT NULL,
                 content         TEXT    NOT NULL,
-                intent          TEXT,               -- nullable
-                ts              REAL    NOT NULL,
-                citation_status TEXT                -- nullable, "cited"|"partial"|"unverified"
-            );
+                intent          TEXT,
+                ts              DOUBLE PRECISION NOT NULL,
+                citation_status TEXT
+            )
+        """)
 
+        conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_turns_session_id
-                ON turns (session_id, id);
+                ON turns (session_id, id)
+        """)
 
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS session_summaries (
                 session_id       TEXT    NOT NULL,
                 summary_text     TEXT    NOT NULL,
-                created_at       REAL    NOT NULL,
+                created_at       DOUBLE PRECISION NOT NULL,
                 turn_range_start INTEGER NOT NULL,
                 turn_range_end   INTEGER NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_summaries_session_id
-                ON session_summaries (session_id, created_at);
+            )
         """)
-        _conn.commit()
 
-        # Idempotent migrations: add columns if not present
-        cols = [
-            row["name"]
-            for row in _conn.execute("PRAGMA table_info(sessions)").fetchall()
-        ]
-        if "user_id" not in cols:
-            _conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
-            _conn.commit()
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_summaries_session_id
+                ON session_summaries (session_id, created_at)
+        """)
 
-        # FIX: add citation_status column to turns if not present (existing DBs)
-        turn_cols = [
-            row["name"]
-            for row in _conn.execute("PRAGMA table_info(turns)").fetchall()
-        ]
-        if "citation_status" not in turn_cols:
-            _conn.execute("ALTER TABLE turns ADD COLUMN citation_status TEXT")
-            _conn.commit()
+        # Idempotent migrations (no-ops on fresh DBs, safe on older schemas)
+        conn.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_id TEXT")
+        conn.execute("ALTER TABLE turns ADD COLUMN IF NOT EXISTS citation_status TEXT")
 
 
 _init_db()
@@ -119,10 +108,85 @@ GENERAL_INTENT_TURNS = 3  # reduced turn count for trivial/general queries
 # SESSION MEMORY MANAGER
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# One turn = one user→assistant round-trip.  last_act expires after this many.
+_LAST_ACT_TTL_TURNS = 10
+
+
 class SessionMemory:
 
     def __init__(self):
         self.sessions = {}
+
+    # ── Per-request context carrier (for query_rewriter) ──────────────────────
+
+    def set_session_context(self, session_id: str) -> None:
+        """
+        Bind session_id to the current execution context (ContextVar).
+        Call this at the start of every legal_rag_node invocation before the
+        RAG chain runs.  query_rewriter.py reads it via get_session_context().
+        """
+        _active_session_id.set(session_id)
+
+    def get_session_context(self) -> str:
+        """Return the session_id bound to the current execution context."""
+        return _active_session_id.get()
+
+    # ── Last-act / last-section persistence (in-memory, TTL-capped) ───────────
+
+    def set_last_act(
+        self,
+        session_id: str,
+        act:        str,
+        section:    str = "",
+    ) -> None:
+        """
+        Persist the most-recently resolved act (and optionally section) for a
+        session.  Called by legal_rag_node after a successful RAG response.
+
+        The entry expires automatically after _LAST_ACT_TTL_TURNS turns so
+        stale context from an old topic does not bleed into unrelated follow-ups.
+        The turn counter is reset whenever the caller explicitly provides a new
+        act (i.e. call set_last_act again with the new act name).
+        """
+        if not session_id or not act:
+            return
+        if session_id not in self.sessions:
+            self.sessions[session_id] = {}
+        self.sessions[session_id]["last_act"]          = act.strip()
+        self.sessions[session_id]["last_section"]      = section.strip()
+        self.sessions[session_id]["last_act_ttl"]      = _LAST_ACT_TTL_TURNS
+        print(f"[Memory] set_last_act session={session_id[:8]}… act={act!r} section={section!r}")
+
+    def get_last_act(self, session_id: str) -> tuple[str, str]:
+        """
+        Return (last_act, last_section) for the session, decrementing the TTL
+        counter on each read.  Returns ('', '') when expired or absent.
+        """
+        if not session_id:
+            return "", ""
+        sess = self.sessions.get(session_id, {})
+        act  = sess.get("last_act", "")
+        if not act:
+            return "", ""
+        ttl = sess.get("last_act_ttl", 0)
+        if ttl <= 0:
+            # Expired — purge
+            sess.pop("last_act",     None)
+            sess.pop("last_section", None)
+            sess.pop("last_act_ttl", None)
+            return "", ""
+        # Decrement TTL on each read (each retrieval attempt = one turn usage)
+        self.sessions[session_id]["last_act_ttl"] = ttl - 1
+        return act, sess.get("last_section", "")
+
+    def clear_last_act(self, session_id: str) -> None:
+        """Explicitly clear last_act — called when the user switches topics."""
+        sess = self.sessions.get(session_id, {})
+        sess.pop("last_act",     None)
+        sess.pop("last_section", None)
+        sess.pop("last_act_ttl", None)
+
+    # ── Entity scratchpad (pre-existing) ───────────────────────────────────────
 
     def store_last_entities(self, session_id: str, entities: list[str]) -> None:
         if session_id not in self.sessions:
@@ -137,22 +201,23 @@ class SessionMemory:
     def create_session(self) -> str:
         """Generate a new UUID session and persist it."""
         sid = str(uuid.uuid4())
-        with _lock:
-            _conn.execute(
-                "INSERT OR IGNORE INTO sessions (session_id, created_ts) VALUES (?, ?)",
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT INTO sessions (session_id, created_ts) VALUES (%s, %s) "
+                "ON CONFLICT (session_id) DO NOTHING",
                 (sid, time.time()),
             )
-            _conn.commit()
         return sid
 
     def session_exists(self, session_id: str) -> bool:
-        """True if the session row exists in SQLite."""
+        """True if the session row exists in PostgreSQL."""
         if not session_id:
             return False
-        row = _conn.execute(
-            "SELECT 1 FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sessions WHERE session_id = %s",
+                (session_id,),
+            ).fetchone()
         return row is not None
 
     def ensure_session(self, session_id: Optional[str]) -> str:
@@ -168,10 +233,10 @@ class SessionMemory:
         """Delete all turns and the session row.  Returns False if not found."""
         if not self.session_exists(session_id):
             return False
-        with _lock:
-            _conn.execute("DELETE FROM turns    WHERE session_id = ?", (session_id,))
-            _conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-            _conn.commit()
+        with get_conn() as conn:
+            with conn.transaction():
+                conn.execute("DELETE FROM turns    WHERE session_id = %s", (session_id,))
+                conn.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))
         return True
 
     # ── User ↔ Session linking (Session 6) ────────────────────────────────────
@@ -181,12 +246,11 @@ class SessionMemory:
         Associate a session with an authenticated user.
         Idempotent — safe to call on every authenticated request.
         """
-        with _lock:
-            _conn.execute(
-                "UPDATE sessions SET user_id = ? WHERE session_id = ?",
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE sessions SET user_id = %s WHERE session_id = %s",
                 (user_id, session_id),
             )
-            _conn.commit()
 
     def get_user_sessions(self, user_id: str) -> list[dict]:
         """
@@ -198,29 +262,30 @@ class SessionMemory:
         first_message — first user turn content truncated to 60 chars.
         last_active   — timestamp of the most recent turn (or session creation).
         """
-        rows = _conn.execute(
-            """
-            SELECT
-                s.session_id,
-                s.created_ts                                            AS created_at,
-                COALESCE(MAX(t.ts), s.created_ts)                      AS last_active,
-                COUNT(t.id)                                             AS turn_count,
-                (
-                    SELECT SUBSTR(t2.content, 1, 60)
-                    FROM   turns t2
-                    WHERE  t2.session_id = s.session_id
-                    AND    t2.role = 'user'
-                    ORDER  BY t2.id ASC
-                    LIMIT  1
-                )                                                       AS first_message
-            FROM   sessions s
-            LEFT JOIN turns t ON t.session_id = s.session_id
-            WHERE  s.user_id = ?
-            GROUP  BY s.session_id
-            ORDER  BY last_active DESC
-            """,
-            (user_id,),
-        ).fetchall()
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    s.session_id,
+                    s.created_ts                                            AS created_at,
+                    COALESCE(MAX(t.ts), s.created_ts)                      AS last_active,
+                    COUNT(t.id)                                             AS turn_count,
+                    (
+                        SELECT LEFT(t2.content, 60)
+                        FROM   turns t2
+                        WHERE  t2.session_id = s.session_id
+                        AND    t2.role = 'user'
+                        ORDER  BY t2.id ASC
+                        LIMIT  1
+                    )                                                       AS first_message
+                FROM   sessions s
+                LEFT JOIN turns t ON t.session_id = s.session_id
+                WHERE  s.user_id = %s
+                GROUP  BY s.session_id, s.created_ts
+                ORDER  BY last_active DESC
+                """,
+                (user_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ── Turn operations ────────────────────────────────────────────────────────
@@ -237,61 +302,60 @@ class SessionMemory:
         Append a turn.  Auto-creates session row if missing.
         Trims to MAX_TURNS_STORED (FIFO) after insert.
         """
-        with _lock:
+        with get_conn() as conn:
             # Ensure session row exists (idempotent)
-            _conn.execute(
-                "INSERT OR IGNORE INTO sessions (session_id, created_ts) VALUES (?, ?)",
+            conn.execute(
+                "INSERT INTO sessions (session_id, created_ts) VALUES (%s, %s) "
+                "ON CONFLICT (session_id) DO NOTHING",
                 (session_id, time.time()),
             )
-            _conn.execute(
+            conn.execute(
                 "INSERT INTO turns (session_id, role, content, intent, ts, citation_status) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (session_id, role, content, intent, time.time(), citation_status),
             )
-            _conn.commit()
 
         self._trim(session_id)
 
     def _trim(self, session_id: str) -> None:
         """Delete oldest turns that exceed MAX_TURNS_STORED."""
-        rows = _conn.execute(
-            """
-            SELECT id, role, content FROM turns
-            WHERE session_id = ?
-            ORDER BY id DESC
-            LIMIT -1 OFFSET ?
-            """,
-            (session_id, MAX_TURNS_STORED),
-        ).fetchall()
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, role, content FROM turns
+                WHERE session_id = %s
+                ORDER BY id DESC
+                OFFSET %s
+                """,
+                (session_id, MAX_TURNS_STORED),
+            ).fetchall()
 
         if rows:
             ids = [r["id"] for r in rows]
-            
+
             # Summarize before deleting
             turns_to_summarize = [
-                {"id": r["id"], "role": r["role"], "content": r["content"]} 
+                {"id": r["id"], "role": r["role"], "content": r["content"]}
                 for r in reversed(rows)
             ]
-            
+
             threading.Thread(
-                target=self._summarize_turns, 
+                target=self._summarize_turns,
                 args=(session_id, turns_to_summarize),
                 daemon=True
             ).start()
 
-            placeholders = ",".join("?" * len(ids))
-            with _lock:
-                _conn.execute(
-                    f"DELETE FROM turns WHERE id IN ({placeholders})", ids
+            with get_conn() as conn:
+                conn.execute(
+                    "DELETE FROM turns WHERE id = ANY(%s)", (ids,)
                 )
-                _conn.commit()
 
     def _summarize_turns(self, session_id: str, turns: list[dict]) -> None:
         """Background thread to summarize older turns via Groq LLM."""
         from rag.llm import llm
-        
+
         transcript = "\n".join(f"{t['role'].capitalize()}: {t['content']}" for t in turns)
-        
+
         system_prompt = (
             "You are an expert legal AI memory summarizer. "
             "Summarize the following conversation into a single dense paragraph. "
@@ -300,40 +364,40 @@ class SessionMemory:
             "- Preserve the user's stated jurisdiction, context, and intent.\n"
             "- DO NOT omit specific factual details, case names, or entities."
         )
-        
+
         try:
             summary = llm.generate(prompt=transcript, system_prompt=system_prompt, max_tokens=300)
-            
+
             start_id = turns[0]['id']
             end_id = turns[-1]['id']
-            
-            with _lock:
-                _conn.execute(
+
+            with get_conn() as conn:
+                conn.execute(
                     """
                     INSERT INTO session_summaries (session_id, summary_text, created_at, turn_range_start, turn_range_end)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
                     (session_id, summary, time.time(), start_id, end_id)
                 )
-                _conn.commit()
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"[SessionMemory] Failed to summarize turns: {e}")
 
     def get_summary(self, session_id: str) -> str:
         """Fetch all summaries for a session, concatenated chronologically."""
-        rows = _conn.execute(
-            """
-            SELECT summary_text FROM session_summaries
-            WHERE session_id = ?
-            ORDER BY created_at ASC
-            """,
-            (session_id,)
-        ).fetchall()
-        
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT summary_text FROM session_summaries
+                WHERE session_id = %s
+                ORDER BY created_at ASC
+                """,
+                (session_id,)
+            ).fetchall()
+
         if not rows:
             return ""
-            
+
         return "\n\n".join(r["summary_text"] for r in rows)
 
     def get_history(self, session_id: str) -> list[dict]:
@@ -344,11 +408,12 @@ class SessionMemory:
 
         Each dict: { role, content, intent, ts, citation_status }
         """
-        rows = _conn.execute(
-            "SELECT role, content, intent, ts, citation_status FROM turns "
-            "WHERE session_id = ? ORDER BY id ASC",
-            (session_id,),
-        ).fetchall()
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT role, content, intent, ts, citation_status FROM turns "
+                "WHERE session_id = %s ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def get_context_block(self, session_id: str) -> str:
@@ -362,11 +427,12 @@ class SessionMemory:
           Assistant: ...
           [END HISTORY]
         """
-        rows = _conn.execute(
-            "SELECT role, content FROM turns "
-            "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-            (session_id, MAX_TURNS_INJECT),
-        ).fetchall()
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT role, content FROM turns "
+                "WHERE session_id = %s ORDER BY id DESC LIMIT %s",
+                (session_id, MAX_TURNS_INJECT),
+            ).fetchall()
 
         if not rows:
             return ""
@@ -399,11 +465,12 @@ class SessionMemory:
 
             query_tokens = tokenize(current_query)
             if len(query_tokens) <= 2:
-                rows = _conn.execute(
-                    "SELECT role, content FROM turns "
-                    "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-                    (session_id, GENERAL_INTENT_TURNS),
-                ).fetchall()
+                with get_conn() as conn:
+                    rows = conn.execute(
+                        "SELECT role, content FROM turns "
+                        "WHERE session_id = %s ORDER BY id DESC LIMIT %s",
+                        (session_id, GENERAL_INTENT_TURNS),
+                    ).fetchall()
                 if not rows:
                     return ""
                 lines = ["[CONVERSATION HISTORY]"]
@@ -413,11 +480,12 @@ class SessionMemory:
                 lines.append("[END HISTORY]")
                 return "\n".join(lines)
 
-            rows = _conn.execute(
-                "SELECT id, role, content FROM turns "
-                "WHERE session_id = ? ORDER BY id ASC",
-                (session_id,),
-            ).fetchall()
+            with get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT id, role, content FROM turns "
+                    "WHERE session_id = %s ORDER BY id ASC",
+                    (session_id,),
+                ).fetchall()
 
             if len(rows) < top_k:
                 return self.get_context_block(session_id)
@@ -446,10 +514,11 @@ class SessionMemory:
             return self.get_context_block(session_id)
 
     def turn_count(self, session_id: str) -> int:
-        row = _conn.execute(
-            "SELECT COUNT(*) AS c FROM turns WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM turns WHERE session_id = %s",
+                (session_id,),
+            ).fetchone()
         return int(row["c"]) if row else 0
 
 
@@ -463,8 +532,8 @@ session_memory = SessionMemory()
 
 class ProfileMemory:
     def __init__(self):
-        with _lock:
-            _conn.executescript("""
+        with get_conn() as conn:
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     session_id           TEXT PRIMARY KEY,
                     preferred_domain     TEXT,
@@ -473,14 +542,14 @@ class ProfileMemory:
                     frequent_doc_types   TEXT,
                     act_frequencies      TEXT,
                     doc_type_frequencies TEXT,
-                    last_updated         REAL
-                );
+                    last_updated         DOUBLE PRECISION
+                )
             """)
-            _conn.commit()
 
     def update_profile(self, session_id: str, intent: str, entities: dict):
-        row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
-        
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM user_profiles WHERE session_id = %s", (session_id,)).fetchone()
+
         if row:
             profile = dict(row)
             act_freq = json.loads(profile['act_frequencies'] or '{}')
@@ -495,25 +564,25 @@ class ProfileMemory:
 
         for loc in entities.get("locations", []):
             jurisdictions.add(loc)
-            
+
         for act in entities.get("acts", []):
             act_freq[act] = act_freq.get(act, 0) + 1
-            
+
         for doc in entities.get("doc_types", []):
             doc_freq[doc] = doc_freq.get(doc, 0) + 1
-            
+
         for dom in entities.get("domains", []):
             domains.add(dom)
 
         frequent_acts = [act for act, count in act_freq.items() if count >= 3]
         frequent_doc_types = [dt for dt, count in doc_freq.items() if count >= 3]
 
-        with _lock:
-            _conn.execute("""
+        with get_conn() as conn:
+            conn.execute("""
                 INSERT INTO user_profiles (
-                    session_id, preferred_domain, jurisdiction, frequent_acts, 
+                    session_id, preferred_domain, jurisdiction, frequent_acts,
                     frequent_doc_types, act_frequencies, doc_type_frequencies, last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(session_id) DO UPDATE SET
                     preferred_domain=excluded.preferred_domain,
                     jurisdiction=excluded.jurisdiction,
@@ -532,28 +601,28 @@ class ProfileMemory:
                 json.dumps(doc_freq),
                 time.time()
             ))
-            _conn.commit()
 
     def get_profile_block(self, session_id: str) -> str:
-        row = _conn.execute("SELECT * FROM user_profiles WHERE session_id = ?", (session_id,)).fetchone()
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM user_profiles WHERE session_id = %s", (session_id,)).fetchone()
         if not row:
             return ""
-            
+
         domains = json.loads(row['preferred_domain'] or '[]')
         jurisdictions = json.loads(row['jurisdiction'] or '[]')
         acts = json.loads(row['frequent_acts'] or '[]')
         docs = json.loads(row['frequent_doc_types'] or '[]')
-        
+
         if not any([domains, jurisdictions, acts, docs]):
             return ""
-            
+
         lines = ["[USER PROFILE]"]
         if domains: lines.append(f"Preferred Domains: {', '.join(domains)}")
         if jurisdictions: lines.append(f"Jurisdiction: {', '.join(jurisdictions)}")
         if acts: lines.append(f"Frequently Mentioned Acts: {', '.join(acts)}")
         if docs: lines.append(f"Frequently Used Document Types: {', '.join(docs)}")
         lines.append("[END PROFILE]")
-        
+
         return "\n".join(lines)
 
 profile_memory = ProfileMemory()

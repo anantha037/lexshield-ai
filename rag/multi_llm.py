@@ -379,7 +379,14 @@ class MultiLLMRouter:
                         max_tokens  = max_tokens,
                         temperature = temperature,
                     )
-                    result = response.choices[0].message.content.strip()
+                    raw_content = response.choices[0].message.content
+                    if raw_content is None or raw_content.strip() == "":
+                        logger.warning(
+                            f"[MultiLLMRouter] Provider {cfg.name} returned empty response — trying next"
+                        )
+                        self._record_failure(cfg, state, RuntimeError("empty response"))
+                        continue
+                    result = raw_content.strip()
                     self._record_success(cfg, state)
                     return result
 

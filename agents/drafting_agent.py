@@ -1,7 +1,7 @@
 """
 LexShield AI — Drafting Agent (Session 3 — Full Implementation)
 ================================================================
-Multi-turn, SQLite-persisted, 6-stage workflow for generating
+Multi-turn, PostgreSQL-persisted, 6-stage workflow for generating
 professional Indian legal complaint drafts.
 
 Stage Flow:
@@ -12,8 +12,8 @@ Stage Flow:
   fir_complaint | domestic_violence | employment_termination | loan_default
 
 Architecture:
-  - All draft state is stored in data/sessions.db (drafts table).
-  - In-memory dict is NOT used — every read/write goes to SQLite.
+  - All draft state is stored in PostgreSQL (drafts table).
+  - In-memory dict is NOT used — every read/write goes to PostgreSQL.
   - This survives server restarts, unlike the previous in-memory approach.
   - graph.py calls has_active_draft() before intent routing.
   - draft_node calls handle() which dispatches by stage.
@@ -27,7 +27,6 @@ LLM:
 import json
 import os
 import re
-import sqlite3
 import time
 from enum import Enum
 from typing import Optional
@@ -52,6 +51,11 @@ class FactExtractionResult(BaseModel):
 
 class DraftStage(str, Enum):
     INIT               = "INIT"
+    # ── New explicit stages (graph-aware) ─────────────────────────────────────
+    MENU_SHOWN         = "MENU_SHOWN"          # menu presented, waiting for selection
+    COLLECTING_FIELDS  = "COLLECTING_FIELDS"   # complaint type set, collecting fields
+    AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"  # all fields done, confirm/cancel
+    # ── Legacy internal stages (kept for backward-compat) ─────────────────────
     CLARIFY            = "CLARIFY"
     RETRIEVE_SECTIONS  = "RETRIEVE_SECTIONS"
     IDENTIFY_AUTHORITY = "IDENTIFY_AUTHORITY"
@@ -61,29 +65,27 @@ class DraftStage(str, Enum):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DB PATH
+# DB SETUP
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DB_PATH      = os.path.join(_PROJECT_ROOT, "data", "sessions.db")
+from agents.pg_sessions import get_conn
 
 
-def _get_conn() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS drafts (
-            session_id  TEXT PRIMARY KEY,
-            stage       TEXT NOT NULL,
-            category    TEXT NOT NULL,
-            draft_data  TEXT NOT NULL,
-            created_at  REAL NOT NULL,
-            updated_at  REAL NOT NULL
-        )
-    """)
-    conn.commit()
-    return conn
+def _init_drafts_table() -> None:
+    with get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS drafts (
+                session_id  TEXT PRIMARY KEY,
+                stage       TEXT NOT NULL,
+                category    TEXT NOT NULL,
+                draft_data  TEXT NOT NULL,
+                created_at  DOUBLE PRECISION NOT NULL,
+                updated_at  DOUBLE PRECISION NOT NULL
+            )
+        """)
+
+
+_init_drafts_table()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -257,11 +259,83 @@ _CLARIFYING_QUESTIONS: dict[str, list[str]] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FIELD -> QUESTION MAPPING  (used by dynamic clarification path)
+# FIELD -> QUESTION MAPPING  (direct per-category lookup — Bug 1 fix)
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# The old keyword-scan approach caused multiple fields (complainant_name,
+# accused_name, cheque_number, cheque_amount) to all resolve to the same
+# "cheque details" question — so Q1 was repeated 4 times in a row.
+# This direct map gives every field its own unique question string.
 
-# Explicit question overrides for always-ask fields.
-# Keys must match ALWAYS_ASK_FIELDS values exactly.
+_FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
+    "wage_theft": {
+        "jurisdiction":       "In which State and District is your employer located? (This determines the correct Labour Commissioner's jurisdiction.)",
+        "complainant_name":   "What is your full name? (as it should appear on the complaint)",
+        "employer_name":      "Please provide the full name of your employer / company.",
+        "employer_address":   "Please provide the complete address of your employer / company.",
+        "unpaid_amount":      "What is the total amount of unpaid wages/salary? (e.g., ₹45,000)",
+        "unpaid_period":      "For which period are the wages unpaid? (e.g., April–June 2024)",
+        "documentary_proof":  "Do you have any documentary proof? (e.g., appointment letter, salary slips, bank statement showing last salary credited, Form 16, or any written communication from employer)",
+    },
+    "illegal_eviction": {
+        "jurisdiction":       "In which State and District is the property located?",
+        "complainant_name":   "What is your full name? (as it should appear on the complaint)",
+        "landlord_name":      "What is the full name of your landlord / property owner?",
+        "property_address":   "Is the property residential or commercial? Please provide its full address.",
+        "monthly_rent":       "What is the monthly rent amount and how was it paid? (cash / bank transfer / cheque — and do you have receipts?)",
+        "eviction_date":      "Did the landlord give any written notice before eviction? If yes, what reason was stated and on what date?",
+    },
+    "cheque_bounce": {
+        "complainant_name":   "What is your full name? (the payee — person/company to whom the cheque was issued)",
+        "accused_name":       "What is the full name of the cheque issuer (drawer/accused)?",
+        "cheque_number":      "Please provide the cheque number and the name of the bank and branch it was drawn on.",
+        "cheque_amount":      "What is the cheque amount (₹) and the date written on the cheque?",
+        "dishonour_date":     "On what date was the cheque dishonoured (returned by the bank)?",
+        "dishonour_reason":   "What reason did the bank give for dishonour? (e.g., 'funds insufficient', 'account closed', 'signature mismatch')",
+    },
+    "consumer_complaint": {
+        "complainant_name":   "What is your full name? (as it should appear on the complaint)",
+        "respondent_name":    "What is the name of the company / seller / service provider you are complaining against?",
+        "product_service":    "What is the name of the product or service involved?",
+        "defect_description": "Describe the specific defect in the product or deficiency in the service clearly.",
+        "relief_sought":      "Have you already lodged a complaint with the company? If yes, on what date and what was their response?",
+        "jurisdiction":       "In which State and District did you purchase the product / receive the service?",
+    },
+    "fir_complaint": {
+        "complainant_name":          "What is your full name and contact address?",
+        "incident_location":         "In which State and Police Station jurisdiction did the incident occur? (Provide district and nearest police station name.)",
+        "incident_description":      "What is the nature of the offence? (e.g., theft, assault, cheating/fraud, extortion, criminal intimidation)",
+        "incident_date":             "What was the date, time, and exact location of the incident?",
+        "accused_name_or_description": "Please provide the names and addresses of the accused, if known. (Write 'Not identified' if unknown.)",
+        "sections_applicable":       "Do you know which IPC/BNS sections apply? (Leave blank if unsure — we will identify them for you.)",
+    },
+    "domestic_violence": {
+        "complainant_name":  "What is your full name? (as it should appear on the application)",
+        "jurisdiction":      "In which State and District do you currently reside?",
+        "respondent_name":   "What is the full name of the respondent (perpetrator)?",
+        "relationship":      "What is your relationship with the respondent? (e.g., husband, father-in-law, mother-in-law, brother-in-law)",
+        "violence_type":     "What type of violence have you experienced? (physical / emotional / verbal / economic / sexual — you may specify more than one)",
+        "supporting_evidence": "Do you have any supporting evidence? (e.g., medical reports, photographs of injuries, witness names, police diary entries, written communications)",
+    },
+    "employment_termination": {
+        "complainant_name":    "What is your full name? (as it should appear on the complaint)",
+        "employer_name":       "What is the full name of your employer / company?",
+        "jurisdiction":        "In which State and District is your employer located?",
+        "termination_reason":  "What reason, if any, was given for your termination? Was it communicated orally or in writing?",
+        "service_period":      "What was your total period of service and your designation?",
+        "last_salary":         "What was your last drawn monthly salary (₹)?",
+    },
+    "loan_default": {
+        "complainant_name":    "What is your full name? (as it should appear on the complaint)",
+        "lender_name":         "What is the full name of the lender? (Bank / NBFC / private individual — include branch name if applicable.)",
+        "loan_amount":         "What was the total loan amount (₹) sanctioned?",
+        "loan_type":           "What type of loan is it? (home / personal / business / vehicle / gold / other)",
+        "defaulted_emis":      "How many EMIs have been defaulted, and from which month?",
+        "outstanding_amount":  "What is the total outstanding amount as of today (₹)?",
+    },
+}
+
+# Explicit overrides for always-ask fields (shared across categories)
 _FIELD_QUESTION_OVERRIDES: dict[str, str] = {
     "documentary_proof": (
         "Do you have any documentary proof? "
@@ -275,68 +349,27 @@ _FIELD_QUESTION_OVERRIDES: dict[str, str] = {
     ),
 }
 
-# keyword fragments used to match field names to existing _CLARIFYING_QUESTIONS text
-_FIELD_KEYWORDS: dict[str, list[str]] = {
-    "complainant_name":            ["your name", "your full name"],
-    "employer_name":               ["name and complete address of your employer"],
-    "employer_address":            ["name and complete address of your employer", "employer"],
-    "unpaid_amount":               ["total amount of unpaid wages", "amount of unpaid"],
-    "unpaid_period":               ["total amount of unpaid wages", "period"],
-    "jurisdiction":                ["state and district", "state and police station"],
-    "landlord_name":               ["landlord", "owner"],
-    "property_address":            ["residential or commercial", "full address"],
-    "monthly_rent":                ["monthly rent", "rent amount"],
-    "eviction_date":               ["written notice before eviction", "landlord give any"],
-    "accused_name":                ["cheque details", "names and addresses of the accused"],
-    "cheque_number":               ["cheque details", "cheque number"],
-    "cheque_amount":               ["cheque details", "amount"],
-    "dishonour_date":              ["cheque dishonoured", "date was the cheque dishonoured"],
-    "dishonour_reason":            ["reason did the bank give", "dishonoured"],
-    "respondent_name":             ["name of the company", "service provider"],
-    "product_service":             ["name of the product or service"],
-    "defect_description":          ["defect in the product", "deficiency in the service"],
-    "relief_sought":               ["lodged a complaint with the company"],
-    "accused_name_or_description": ["names and addresses of the accused"],
-    "incident_description":        ["nature of the offence"],
-    "incident_date":               ["date, time, and exact location"],
-    "incident_location":           ["state and police station", "police station jurisdiction"],
-    "sections_applicable":         ["nature of the offence"],
-    "relationship":                ["relationship with the respondent"],
-    "violence_type":               ["type of violence"],
-    "termination_reason":          ["reason, if any, was given for your termination"],
-    "service_period":              ["total period of service, designation"],
-    "last_salary":                 ["total period of service, designation", "salary"],
-    "lender_name":                 ["full name of the lender"],
-    "loan_amount":                 ["total loan amount"],
-    "loan_type":                   ["type of loan"],
-    "defaulted_emis":              ["how many emis have been defaulted"],
-    "outstanding_amount":          ["total outstanding amount"],
-}
-
 
 def _field_question(field: str, category: str) -> str:
     """
     Return a human-readable question for a given REQUIRED_FIELDS field name.
 
     Resolution order:
-      1. _FIELD_QUESTION_OVERRIDES — explicit string (used for always-ask fields).
-      2. Keyword scan of _CLARIFYING_QUESTIONS[category] — returns the best-matching
-         existing question so users see the same high-quality prompts.
+      1. Per-category direct lookup in _FIELD_QUESTION_MAP — unique question per field.
+      2. _FIELD_QUESTION_OVERRIDES — shared overrides for always-ask fields.
       3. Generic prettified fallback.
     """
+    # 1. Direct per-category lookup (primary path — prevents question repetition)
+    cat_map = _FIELD_QUESTION_MAP.get(category, {})
+    if field in cat_map:
+        return cat_map[field]
+
+    # 2. Shared always-ask overrides
     override = _FIELD_QUESTION_OVERRIDES.get(field)
     if override:
         return override
 
-    questions = _CLARIFYING_QUESTIONS.get(category, [])
-    keywords  = _FIELD_KEYWORDS.get(field, [field.replace("_", " ")])
-
-    for q in questions:
-        q_lower = q.lower()
-        if any(kw.lower() in q_lower for kw in keywords):
-            return q
-
-    # Generic fallback
+    # 3. Generic fallback
     pretty = field.replace("_", " ").title()
     return f"Please provide the {pretty} for your {category.replace('_', ' ')} document."
 
@@ -1277,46 +1310,41 @@ LIST OF ENCLOSURES: [numbered]""",
 class DraftingAgent:
 
     def __init__(self):
-        self._conn: Optional[sqlite3.Connection] = None
-
-    def _db(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = _get_conn()
-        return self._conn
+        pass
 
     # ── DB helpers ─────────────────────────────────────────────────────────────
 
     def _load(self, session_id: str) -> Optional[dict]:
         """Load draft row from DB. Returns None if not found."""
-        cur = self._db().execute(
-            "SELECT stage, category, draft_data FROM drafts WHERE session_id = ?",
-            (session_id,)
-        )
-        row = cur.fetchone()
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT stage, category, draft_data FROM drafts WHERE session_id = %s",
+                (session_id,)
+            ).fetchone()
         if row is None:
             return None
         return {
-            "stage":      row[0],
-            "category":   row[1],
-            "draft_data": json.loads(row[2]),
+            "stage":      row["stage"],
+            "category":   row["category"],
+            "draft_data": json.loads(row["draft_data"]),
         }
 
     def _save(self, session_id: str, stage: str, category: str, draft_data: dict) -> None:
         now = time.time()
-        self._db().execute("""
-            INSERT INTO drafts (session_id, stage, category, draft_data, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                stage      = excluded.stage,
-                category   = excluded.category,
-                draft_data = excluded.draft_data,
-                updated_at = excluded.updated_at
-        """, (session_id, stage, category, json.dumps(draft_data), now, now))
-        self._db().commit()
+        with get_conn() as conn:
+            conn.execute("""
+                INSERT INTO drafts (session_id, stage, category, draft_data, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    stage      = excluded.stage,
+                    category   = excluded.category,
+                    draft_data = excluded.draft_data,
+                    updated_at = excluded.updated_at
+            """, (session_id, stage, category, json.dumps(draft_data), now, now))
 
     def _delete(self, session_id: str) -> None:
-        self._db().execute("DELETE FROM drafts WHERE session_id = ?", (session_id,))
-        self._db().commit()
+        with get_conn() as conn:
+            conn.execute("DELETE FROM drafts WHERE session_id = %s", (session_id,))
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -1331,6 +1359,17 @@ class DraftingAgent:
         """
         Main dispatch entry point called by draft_node in graph.py.
         Routes to the appropriate stage handler based on DB state.
+
+        Stage dispatch order:
+          None              -> _start_draft  (detects category or shows menu)
+          MENU_SHOWN        -> _handle_menu_shown  (parse selection, advance to COLLECTING_FIELDS)
+          COLLECTING_FIELDS -> _process_answer     (collect field values, advance to AWAITING_CONFIRMATION)
+          AWAITING_CONFIRMATION -> _generate_draft (only reached on confirmed intent from graph.py)
+          CLARIFY           -> _process_answer     (legacy fallback path)
+          RETRIEVE_SECTIONS -> _retrieve_sections
+          IDENTIFY_AUTHORITY-> _identify_authority
+          CONFIRM           -> _handle_confirm      (legacy — kept for back-compat)
+          GENERATE          -> _generate_draft
         """
         row = self._load(session_id)
 
@@ -1339,6 +1378,18 @@ class DraftingAgent:
 
         stage = row["stage"]
 
+        # ── New explicit stages ────────────────────────────────────────────────
+        if stage == DraftStage.MENU_SHOWN:
+            return self._handle_menu_shown(session_id, query, row)
+
+        if stage == DraftStage.COLLECTING_FIELDS:
+            return self._process_answer(session_id, query, row)
+
+        if stage == DraftStage.AWAITING_CONFIRMATION:
+            # graph.py only routes here on confirmed intent — generate immediately
+            return self._generate_draft(session_id, row)
+
+        # ── Legacy internal stages (backward-compat) ───────────────────────────
         if stage == DraftStage.CLARIFY:
             return self._process_answer(session_id, query, row)
 
@@ -1469,38 +1520,113 @@ class DraftingAgent:
 
 
     def _field_question(self, field: str, category: str) -> str:
-        """Map a REQUIRED_FIELDS field name to a human-readable question.
+        """Delegates to the module-level _field_question() which uses
+        _FIELD_QUESTION_MAP for a unique per-field question (Bug 1 fix)."""
+        return _field_question(field, category)
 
-        Strategy:
-        1. Check _FIELD_QUESTION_OVERRIDES if it exists.
-        2. Scan _CLARIFYING_QUESTIONS[category] for keyword match.
-        3. Fall back to a generic prettified question.
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE: MENU_SHOWN handler
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Map of digit / word / partial name -> category key
+    _MENU_MAP: dict = {
+        "1": "wage_theft",          "one": "wage_theft",
+        "2": "illegal_eviction",     "two": "illegal_eviction",
+        "3": "cheque_bounce",        "three": "cheque_bounce",
+        "4": "consumer_complaint",   "four": "consumer_complaint",
+        "5": "fir_complaint",        "five": "fir_complaint",
+        "6": "domestic_violence",    "six": "domestic_violence",
+        "7": "employment_termination", "seven": "employment_termination",
+        "8": "loan_default",         "eight": "loan_default",
+        # partial name aliases
+        "wage": "wage_theft", "salary": "wage_theft", "unpaid": "wage_theft",
+        "eviction": "illegal_eviction", "evict": "illegal_eviction",
+        "cheque": "cheque_bounce", "bounce": "cheque_bounce", "ni act": "cheque_bounce",
+        "consumer": "consumer_complaint",
+        "fir": "fir_complaint", "police": "fir_complaint",
+        "domestic": "domestic_violence", "violence": "domestic_violence", "dv": "domestic_violence",
+        "termination": "employment_termination", "wrongful": "employment_termination", "employment": "employment_termination",
+        "loan": "loan_default", "bank": "loan_default", "emi": "loan_default",
+    }
+
+    def _handle_menu_shown(self, session_id: str, query: str, row: dict) -> dict:
         """
-        # Check overrides first
-        overrides = getattr(self, '_FIELD_QUESTION_OVERRIDES', {})
-        key = f"{category}.{field}"
-        if key in overrides:
-            return overrides[key]
-        if field in overrides:
-            return overrides[field]
+        MENU_SHOWN stage: parse user's complaint-type selection.
+        Accepts: digit ("8"), number word ("eight"), or partial name ("loan", "cheque bounce").
+        On match  -> save COLLECTING_FIELDS, start field collection.
+        On no match -> re-display menu.
+        """
+        q = query.strip().lower()
 
-        # Scan existing clarifying questions for keyword match
-        questions = _CLARIFYING_QUESTIONS.get(category, [])
-        field_keywords = field.replace('_', ' ').lower().split()
-        for q in questions:
-            q_lower = q.lower()
-            if any(kw in q_lower for kw in field_keywords):
-                return q
+        # Try exact digit / word first
+        category = self._MENU_MAP.get(q)
 
-        # Generic fallback
-        pretty = field.replace('_', ' ').title()
-        pretty_cat = category.replace('_', ' ').title()
-        return f"Please provide the {pretty} for your {pretty_cat} document."
+        # Try partial match anywhere in the query
+        if category is None:
+            for key, cat in self._MENU_MAP.items():
+                if key in q:
+                    category = cat
+                    break
+
+        if category is None:
+            # Could not parse — re-prompt
+            return {
+                "answer": (
+                    "Sorry, I didn't catch that. Please reply with the number (1–8) "
+                    "or name of the complaint type you need:\n\n"
+                    "1. **Unpaid Wages / Salary**\n"
+                    "2. **Illegal Eviction**\n"
+                    "3. **Cheque Bounce** (Section 138 NI Act)\n"
+                    "4. **Consumer Complaint**\n"
+                    "5. **FIR / Police Complaint**\n"
+                    "6. **Domestic Violence**\n"
+                    "7. **Wrongful Termination**\n"
+                    "8. **Loan / Bank Harassment**"
+                ),
+                "stage":    DraftStage.MENU_SHOWN,
+                "doc_type": "",
+                "complete": False,
+                "draft":    "",
+            }
+
+        print(f"[DraftingAgent] Menu selection -> category={category!r}")
+
+        # Build initial draft_data and immediately start field collection
+        # Treat the selection query as an empty description (no facts to extract)
+        label     = _CATEGORY_LABELS[category]
+        questions = _CLARIFYING_QUESTIONS[category]
+        required  = REQUIRED_FIELDS.get(category, [])
+
+        draft_data = {
+            "answers":          {},
+            "current_q_index":  0,
+            "missing_fields":   list(required),
+            "use_dynamic":      True,
+            "applicable_sections_text": "",
+            "authority":        "",
+        }
+        self._save(session_id, DraftStage.COLLECTING_FIELDS, category, draft_data)
+
+        first_field = required[0] if required else None
+        first_q = _field_question(first_field, category) if first_field else questions[0]
+        return {
+            "answer": (
+                f"I will help you draft a **{label}**.\n\n"
+                f"I need a few details. Please answer the following questions one at a time.\n\n"
+                f"**Question 1 of {len(required)}:**\n{first_q}"
+            ),
+            "stage":    DraftStage.COLLECTING_FIELDS,
+            "doc_type": category,
+            "complete": False,
+            "draft":    "",
+        }
 
     def _start_draft(self, session_id: str, description: str) -> dict:
         category = _detect_category(description)
 
         if category is None:
+            # ── Persist MENU_SHOWN so the next reply is routed to draft_node ──
+            self._save(session_id, DraftStage.MENU_SHOWN, "__menu__", {})
             return {
                 "answer": (
                     "I can help you draft complaints and legal documents for the following situations:\n\n"
@@ -1512,12 +1638,10 @@ class DraftingAgent:
                     "6. **Domestic Violence** — application under DV Act to Magistrate\n"
                     "7. **Wrongful Termination** — complaint to Labour Court\n"
                     "8. **Loan / Bank Harassment** — complaint to RBI Ombudsman / DRT\n\n"
-                    "Please describe your situation and I will identify the right complaint type. "
-                    "For example: *'My employer has not paid my salary for 3 months'* or "
-                    "*'My landlord has illegally locked me out of my rented flat'*"
+                    "Please reply with the number (1–8) or describe your situation and I will "
+                    "identify the right complaint type."
                 ),
-                "answer_text": None,  # signal: no draft started
-                "stage":    0,
+                "stage":    DraftStage.MENU_SHOWN,
                 "doc_type": "",
                 "complete": False,
                 "draft":    "",
@@ -1525,12 +1649,12 @@ class DraftingAgent:
 
         label      = _CATEGORY_LABELS[category]
         questions  = _CLARIFYING_QUESTIONS[category]
+        required   = REQUIRED_FIELDS.get(category, [])
 
         # ── Attempt dynamic fact extraction ────────────────────────────────────
         extraction = self._extract_facts(description, category)
 
         if extraction.confidence >= 0.5 and extraction.extracted_facts:
-            # Dynamic path — store extracted facts and ask only for missing
             n_extracted = len(extraction.extracted_facts)
             n_missing   = len(extraction.missing_fields)
             print(
@@ -1548,16 +1672,16 @@ class DraftingAgent:
             }
 
             if not extraction.missing_fields:
-                # All facts present — skip CLARIFY entirely
+                # All facts extracted — advance straight to AWAITING_CONFIRMATION
                 self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
                 return self._retrieve_sections(
                     session_id, {"category": category, "draft_data": draft_data}
                 )
 
-            # Some fields missing — ask the first one
+            # Some fields missing — persist COLLECTING_FIELDS, ask the first one
             first_field = extraction.missing_fields[0]
             first_q     = _field_question(first_field, category)
-            self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+            self._save(session_id, DraftStage.COLLECTING_FIELDS, category, draft_data)
 
             return {
                 "answer": (
@@ -1565,101 +1689,109 @@ class DraftingAgent:
                     f"I've noted the details you provided. I just need a few more:\n\n"
                     f"**Question 1 of {n_missing}:**\n{first_q}"
                 ),
-                "stage":    DraftStage.CLARIFY,
+                "stage":    DraftStage.COLLECTING_FIELDS,
                 "doc_type": category,
                 "complete": False,
                 "draft":    "",
             }
 
-        # ── Fallback path — full sequential questioning ────────────────────────
+        # ── Fallback: no extraction — sequential questioning ───────────────────
         print(
             f"[DraftingAgent] Extracted 0 facts, "
-            f"{len(REQUIRED_FIELDS.get(category, []))} fields missing for {category}"
+            f"{len(required)} fields missing for {category}"
         )
 
-        first_q    = questions[0]
+        # BUG1 fix: use _field_question so the shown question matches required[0],
+        # not just the first clarifying question (which may be for a different field).
+        first_q    = _field_question(required[0], category) if required else questions[0]
         draft_data = {
-            "answers":          {},    # q_index (str) -> answer
+            "answers":          {},
             "current_q_index":  0,
-            "use_dynamic":      False,
+            "missing_fields":   list(required),
+            "use_dynamic":      True,   # use field-based loop for consistency
             "applicable_sections_text": "",
             "authority":        "",
         }
 
-        self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+        self._save(session_id, DraftStage.COLLECTING_FIELDS, category, draft_data)
 
         return {
             "answer": (
                 f"I will help you draft a **{label}**.\n\n"
                 f"I need to gather some details first. Please answer the following questions "
                 f"one at a time.\n\n"
-                f"**Question 1 of {len(questions)}:**\n{first_q}"
+                f"**Question 1 of {len(required)}:**\n{first_q}"
             ),
-            "stage":    DraftStage.CLARIFY,
+            "stage":    DraftStage.COLLECTING_FIELDS,
             "doc_type": category,
             "complete": False,
             "draft":    "",
         }
 
-    # ── STAGE: CLARIFY (collect answers one turn at a time) ────────────────────
+    # ── STAGE: COLLECTING_FIELDS / CLARIFY (collect answers one turn at a time) ─
 
     def _process_answer(self, session_id: str, answer: str, row: dict) -> dict:
-        category   = row["category"]
-        draft_data = row["draft_data"]
+        """
+        Handles both COLLECTING_FIELDS (new) and CLARIFY (legacy) stages.
+        Always uses the dynamic missing_fields loop when use_dynamic=True.
+        Advances to RETRIEVE_SECTIONS (-> IDENTIFY_AUTHORITY -> AWAITING_CONFIRMATION)
+        when all fields are collected.
+        """
+        category    = row["category"]
+        draft_data  = row["draft_data"]
         use_dynamic = draft_data.get("use_dynamic", False)
+        cur_stage   = row["stage"]  # COLLECTING_FIELDS or CLARIFY
 
         if use_dynamic:
-            # ── Dynamic path — iterate over missing_fields ─────────────────────
             missing = draft_data.get("missing_fields", [])
             idx     = draft_data["current_q_index"]
-            field   = missing[idx]
-            draft_data["answers"][field] = answer.strip()
+
+            if idx < len(missing):
+                field = missing[idx]
+                draft_data["answers"][field] = answer.strip()
 
             next_idx = idx + 1
             if next_idx < len(missing):
                 draft_data["current_q_index"] = next_idx
                 next_field = missing[next_idx]
                 next_q     = _field_question(next_field, category)
-                self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+                # Stay in same stage (COLLECTING_FIELDS or CLARIFY)
+                self._save(session_id, cur_stage, category, draft_data)
                 return {
                     "answer": (
                         f"**Question {next_idx + 1} of {len(missing)}:**\n"
                         f"{next_q}"
                     ),
-                    "stage":    DraftStage.CLARIFY,
+                    "stage":    cur_stage,
                     "doc_type": category,
                     "complete": False,
                     "draft":    "",
                 }
 
-            # All missing fields answered -> RETRIEVE_SECTIONS
+            # All fields collected -> pipeline advances to AWAITING_CONFIRMATION
             self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
             return self._retrieve_sections(session_id, {"category": category, "draft_data": draft_data})
 
-        # ── Fallback path — original sequential loop ───────────────────────────
+        # ── Legacy fallback: sequential index-based loop ───────────────────────
         questions = _CLARIFYING_QUESTIONS[category]
-
-        idx = draft_data["current_q_index"]
+        idx       = draft_data["current_q_index"]
         draft_data["answers"][str(idx)] = answer.strip()
+        next_idx  = idx + 1
 
-        next_idx = idx + 1
-
-        # More questions remaining
         if next_idx < len(questions):
             draft_data["current_q_index"] = next_idx
-            self._save(session_id, DraftStage.CLARIFY, category, draft_data)
+            self._save(session_id, cur_stage, category, draft_data)
             return {
                 "answer": (
                     f"**Question {next_idx + 1} of {len(questions)}:**\n"
                     f"{questions[next_idx]}"
                 ),
-                "stage":    DraftStage.CLARIFY,
+                "stage":    cur_stage,
                 "doc_type": category,
                 "complete": False,
                 "draft":    "",
             }
 
-        # All questions answered — move to RETRIEVE_SECTIONS
         self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
         return self._retrieve_sections(session_id, {"category": category, "draft_data": draft_data})
 
@@ -1694,7 +1826,7 @@ class DraftingAgent:
         authority = _FILING_AUTHORITY.get(category, "Competent Authority as per applicable law")
         draft_data["authority"] = authority
 
-        self._save(session_id, DraftStage.CONFIRM, category, draft_data)
+        self._save(session_id, DraftStage.AWAITING_CONFIRMATION, category, draft_data)
         return self._confirm_draft(session_id, {"category": category, "draft_data": draft_data})
 
     # ── STAGE: CONFIRM ─────────────────────────────────────────────────────────
