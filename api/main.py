@@ -61,6 +61,18 @@ _tracing_enabled = _LANGSMITH_KEYS["LANGCHAIN_TRACING_V2"].lower() == "true"
 _api_key_present = bool(_LANGSMITH_KEYS["LANGCHAIN_API_KEY"])
 
 import logging
+
+# ── NEW CODE: Configure the root logger ────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+# ───────────────────────────────────────────────────────────────────────────────
+
 logger = logging.getLogger(__name__)
 
 if _tracing_enabled and _api_key_present:
