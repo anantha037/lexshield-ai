@@ -3,6 +3,10 @@ import json
 from pathlib import Path
 from datasets import load_dataset
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Add your token here
 HF_TOKEN = os.getenv("HF_TOKEN")
 
@@ -18,7 +22,7 @@ def download_iltur_judgments():
     all_judgments = []
 
     # Config 1: summ — full SC judgment texts with summaries
-    print("Downloading IL-TUR 'summ' (judgment summaries)...")
+    logger.info(f"Downloading IL-TUR 'summ' (judgment summaries)...")
     try:
         ds = load_dataset("Exploration-Lab/IL-TUR", "summ", token=HF_TOKEN)
         split = "train" if "train" in ds else list(ds.keys())[0]
@@ -34,12 +38,12 @@ def download_iltur_judgments():
                     "doc_type": "judgment",
                     "source_config": "summ"
                 })
-        print(f"    Got {len(all_judgments)} judgment docs from 'summ'")
+        logger.info(f"    Got {len(all_judgments)} judgment docs from 'summ'")
     except Exception as e:
-        print(f"    summ failed: {e}")
+        logger.exception("summ failed")
 
     # Config 2: bail — criminal bail cases
-    print("Downloading IL-TUR 'bail' (bail cases)...")
+    logger.info(f"Downloading IL-TUR 'bail' (bail cases)...")
     bail_count = 0
     try:
         ds = load_dataset("Exploration-Lab/IL-TUR", "bail", token=HF_TOKEN)
@@ -56,23 +60,23 @@ def download_iltur_judgments():
                     "source_config": "bail"
                 })
                 bail_count += 1
-        print(f"    Got {bail_count} bail cases")
+        logger.info(f"    Got {bail_count} bail cases")
     except Exception as e:
-        print(f"    bail failed: {e}")
+        logger.exception("bail failed")
 
     if all_judgments:
         output_path = OUTPUT_DIR / "iltur_judgments.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(all_judgments, f, ensure_ascii=False, indent=2)
-        print(f"\nSaved {len(all_judgments)} total IL-TUR docs -> {output_path}")
+        logger.info(f"\nSaved {len(all_judgments)} total IL-TUR docs -> {output_path}")
     else:
-        print("No IL-TUR data saved — sc_prechunked.json is sufficient, continuing.")
+        logger.info(f"No IL-TUR data saved — sc_prechunked.json is sufficient, continuing.")
 
 def download_pre_chunked_judgments():
     """
     Pre-chunked SC Judgments — already processed, ready to use.
     """
-    print("\nDownloading pre-chunked SC Judgments dataset...")
+    logger.info(f"\nDownloading pre-chunked SC Judgments dataset...")
     
     try:
         # Added token, removed trust_remote_code
@@ -94,10 +98,10 @@ def download_pre_chunked_judgments():
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(chunks, f, ensure_ascii=False, indent=2)
 
-        print(f"Saved {len(chunks)} pre-chunked judgment chunks to {output_path}")
+        logger.info(f"Saved {len(chunks)} pre-chunked judgment chunks to {output_path}")
         
     except Exception as e:
-        print(f"Failed to download pre-chunked dataset: {e}")
+        logger.exception("Failed to download pre-chunked dataset")
 
 if __name__ == "__main__":
     download_iltur_judgments()

@@ -19,9 +19,12 @@ Supported languages:
   Bengali, Gujarati, Punjabi, Odia, Urdu
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -236,7 +239,7 @@ class TranslationAgent:
         llm = self._get_llm()
         rag = self._get_rag()
 
-        print(f"[TranslationAgent] Detected {source_lang} script -> translating to English")
+        logger.info(f"[TranslationAgent] Detected {source_lang} script -> translating to English")
 
         # Step 1: Translate to English
         try:
@@ -247,7 +250,7 @@ class TranslationAgent:
                 temperature   = 0.1,
             ).strip()
         except Exception as e:
-            print(f"[TranslationAgent] Translation to English failed: {e}")
+            logger.exception("[TranslationAgent] Translation to English failed")
             english_query = query  # fallback
 
         # Step 2: RAG on English query
@@ -263,7 +266,7 @@ class TranslationAgent:
                 temperature   = 0.1,
             ).strip()
         except Exception as e:
-            print(f"[TranslationAgent] Translation back to {source_lang} failed: {e}")
+            logger.exception(f"[TranslationAgent] Translation back to {source_lang} failed")
             translated_answer = english_ans
 
         return {
@@ -284,7 +287,7 @@ class TranslationAgent:
         llm = self._get_llm()
         rag = self._get_rag()
 
-        print(f"[TranslationAgent] English query -> answer in {target_lang}")
+        logger.info(f"[TranslationAgent] English query -> answer in {target_lang}")
 
         # Extract the actual legal question
         english_query = _strip_legal_content(query, target_lang)
@@ -308,7 +311,7 @@ class TranslationAgent:
                 f"[{target_lang}]\n{translated_answer}"
             )
         except Exception as e:
-            print(f"[TranslationAgent] Translation to {target_lang} failed: {e}")
+            logger.exception(f"[TranslationAgent] Translation to {target_lang} failed")
             final_answer = english_ans
 
         return {
@@ -328,7 +331,7 @@ class TranslationAgent:
         """Fallback — no clear legal question found, translate text directly."""
         llm = self._get_llm()
 
-        print(f"[TranslationAgent] Direct translation fallback")
+        logger.info("[TranslationAgent] Direct translation fallback")
 
         answer = llm.generate(
             prompt = (

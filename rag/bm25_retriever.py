@@ -37,6 +37,10 @@ import difflib
 from pathlib import Path
 from typing import Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -109,19 +113,19 @@ class BM25Retriever:
                 f"[BM25] chunks.json not found at {self.chunks_path}\n"
                 "Run: python -m data.preprocessor first."
             )
-        print(f"[BM25] Loading {self.chunks_path} ...")
+        logger.info(f"[BM25] Loading {self.chunks_path} ...")
         with open(path, "r", encoding="utf-8") as f:
             self.chunks = json.load(f)
-        print(f"[BM25] {len(self.chunks)} chunks loaded.")
+        logger.info(f"[BM25] {len(self.chunks)} chunks loaded.")
 
         corpus_texts = [
             c.get("context_text") or c.get("text", "")
             for c in self.chunks
         ]
-        print("[BM25] Tokenising corpus ...")
+        logger.info("[BM25] Tokenising corpus ...")
         tokenized = [tokenize(t) for t in corpus_texts]
 
-        print("[BM25] Fitting BM25Okapi ...")
+        logger.info("[BM25] Fitting BM25Okapi ...")
         self.bm25   = BM25Okapi(tokenized)
         self._ready = True
 
@@ -129,14 +133,14 @@ class BM25Retriever:
         # BM25Okapi stores IDF in self.bm25.idf (dict: token -> idf_score)
         if hasattr(self.bm25, 'idf'):
             self._vocabulary = set(self.bm25.idf.keys())
-            print(f"[BM25] Vocabulary: {len(self._vocabulary)} unique terms.")
+            logger.info(f"[BM25] Vocabulary: {len(self._vocabulary)} unique terms.")
         else:
             # Fallback: flatten tokenized corpus (slower but reliable)
             self._vocabulary = {tok for doc in tokenized for tok in doc}
-            print(f"[BM25] Vocabulary (fallback): {len(self._vocabulary)} unique terms.")
+            logger.info(f"[BM25] Vocabulary (fallback): {len(self._vocabulary)} unique terms.")
 
         gc.collect()
-        print(f"[BM25] Index ready ({len(self.chunks)} docs).")
+        logger.info(f"[BM25] Index ready ({len(self.chunks)} docs).")
 
     def rebuild(self) -> None:
         """Reload chunks.json and rebuild index. Call after re-ingestion."""
@@ -185,7 +189,7 @@ class BM25Retriever:
                 if matches:
                     corrected.append(matches[0])
                     if matches[0] != token:
-                        print(f"[BM25] Typo correction: {token!r} -> {matches[0]!r}")
+                        logger.info(f"[BM25] Typo correction: {token!r} -> {matches[0]!r}")
                 else:
                     corrected.append(token)  # keep original
 
@@ -215,7 +219,7 @@ class BM25Retriever:
 
         tokens = tokenize(query)
         if not tokens:
-            print(f"[BM25] WARNING: zero tokens after tokenization: {query!r}")
+            logger.info(f"[BM25] WARNING: zero tokens after tokenization: {query!r}")
             return []
 
         # Typo correction pass

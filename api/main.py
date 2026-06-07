@@ -61,6 +61,18 @@ _tracing_enabled = _LANGSMITH_KEYS["LANGCHAIN_TRACING_V2"].lower() == "true"
 _api_key_present = bool(_LANGSMITH_KEYS["LANGCHAIN_API_KEY"])
 
 import logging
+
+# ── NEW CODE: Configure the root logger ────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+# ───────────────────────────────────────────────────────────────────────────────
+
 logger = logging.getLogger(__name__)
 
 if _tracing_enabled and _api_key_present:
@@ -88,6 +100,7 @@ else:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from models.database import create_tables
+logger.info("Ensuring database tables exist")
 create_tables()
 
 
@@ -159,6 +172,7 @@ def health_check():
 
     curl -s http://localhost:8000/health | python -m json.tool
     """
+    logger.debug("Health check requested")
     status = {
         "service":  "LexShield AI",
         "version":  "1.0.0",
@@ -178,6 +192,7 @@ def health_check():
         count = vectorstore.count()
         status["chromadb"] = f"ok — {count} chunks indexed"
     except Exception as e:
+        logger.exception("Health check failed for ChromaDB")
         status["chromadb"] = f"error: {e}"
 
     try:
@@ -185,6 +200,7 @@ def health_check():
         _ = embedder.embed_single("test")
         status["embedder"] = f"ok — {embedder.model_name}"
     except Exception as e:
+        logger.exception("Health check failed for Embedder")
         status["embedder"] = f"error: {e}"
 
     try:
@@ -192,6 +208,7 @@ def health_check():
         _ = llm.generate("Reply with the single word: ok", max_tokens=5)
         status["llm"] = f"ok — {llm.model}"
     except Exception as e:
+        logger.exception("Health check failed for LLM")
         status["llm"] = f"error: {e}"
 
     all_ok = all(

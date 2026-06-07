@@ -11,6 +11,10 @@ import gc
 import json
 from pathlib import Path
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -98,12 +102,12 @@ def load_samples(samples_dir: Path) -> tuple[list[dict], list[dict]]:
     for idx, category in CATEGORIES.items():
         cat_dir = samples_dir / category
         if not cat_dir.exists():
-            print(f"  WARNING: {cat_dir} not found — run data_generator.py first")
+            logger.warning(f"  WARNING: {cat_dir} not found — run data_generator.py first")
             continue
 
         files = sorted(cat_dir.glob("*.txt"))
         if not files:
-            print(f"  WARNING: No files in {cat_dir}")
+            logger.warning(f"  WARNING: No files in {cat_dir}")
             continue
 
         for fpath in files:
@@ -114,7 +118,7 @@ def load_samples(samples_dir: Path) -> tuple[list[dict], list[dict]]:
             except Exception:
                 continue
 
-        print(f"  {category:30s}: {len(files)} files loaded")
+        logger.info(f"  {category:30s}: {len(files)} files loaded")
 
     # 80/20 split, stratified manually
     from collections import defaultdict
@@ -135,28 +139,28 @@ def load_samples(samples_dir: Path) -> tuple[list[dict], list[dict]]:
     random.shuffle(train)
     random.shuffle(val)
 
-    print(f"\n  Train: {len(train)} samples | Val: {len(val)} samples")
+    logger.info(f"\n  Train: {len(train)} samples | Val: {len(val)} samples")
     return train, val
 
 
 # ── Training loop ─────────────────────────────────────────────────────────────
 
 def train():
-    print("=" * 60)
-    print("LexShield AI — InLegalBERT Fine-Tuning")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info(f"LexShield AI — InLegalBERT Fine-Tuning")
+    logger.info("=" * 60)
 
     # ── Load data ─────────────────────────────────────────────────────────────
-    print("\n[1/5] Loading training data...")
+    logger.info(f"\n[1/5] Loading training data...")
     train_samples, val_samples = load_samples(SAMPLES_DIR)
 
     if len(train_samples) < 15:
-        print("\nERROR: Not enough data. Run first:")
-        print("  python -m models.data_generator --samples 50")
+        logger.info(f"\nERROR: Not enough data. Run first:")
+        logger.info(f"  python -m models.data_generator --samples 50")
         return
 
     # ── Load model ────────────────────────────────────────────────────────────
-    print(f"\n[2/5] Loading {MODEL_NAME}...")
+    logger.info(f"\n[2/5] Loading {MODEL_NAME}...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model     = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
@@ -164,7 +168,7 @@ def train():
         ignore_mismatched_sizes = True,
     )
     model.train()
-    print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # ── DataLoaders ───────────────────────────────────────────────────────────
     train_dataset = LegalDocDataset(train_samples, tokenizer, MAX_LENGTH)
@@ -174,7 +178,7 @@ def train():
     val_loader    = DataLoader(val_dataset,   batch_size=BATCH_SIZE, shuffle=False)
 
     # ── Optimizer + scheduler ─────────────────────────────────────────────────
-    print("\n[3/5] Setting up optimizer...")
+    logger.info(f"\n[3/5] Setting up optimizer...")
     optimizer = AdamW(model.parameters(), lr=LR, weight_decay=0.01)
 
     total_steps   = (len(train_loader) // GRAD_ACCUM) * EPOCHS
@@ -185,10 +189,10 @@ def train():
         num_training_steps = total_steps,
     )
 
-    print(f"  Total steps: {total_steps} | Warmup: {warmup_steps}")
+    logger.info(f"  Total steps: {total_steps} | Warmup: {warmup_steps}")
 
     # ── Training ──────────────────────────────────────────────────────────────
-    print(f"\n[4/5] Training for {EPOCHS} epochs...")
+    logger.info(f"\n[4/5] Training for {EPOCHS} epochs...")
     best_val_acc = 0.0
     best_epoch   = 0
 
@@ -215,7 +219,7 @@ def train():
                 optimizer.zero_grad()
 
             if (step + 1) % 20 == 0:
-                print(f"  Epoch {epoch+1} | Step {step+1}/{len(train_loader)} "
+                logger.info(f"  Epoch {epoch+1} | Step {step+1}/{len(train_loader)} "
                       f"| Loss: {total_loss/(step+1):.4f}")
 
         gc.collect()
@@ -237,8 +241,8 @@ def train():
         val_acc = correct / total if total > 0 else 0
         avg_loss = total_loss / len(train_loader)
 
-        print(f"\n  Epoch {epoch+1}/{EPOCHS} complete")
-        print(f"  Train Loss: {avg_loss:.4f} | Val Accuracy: {val_acc*100:.1f}%")
+        logger.info(f"\n  Epoch {epoch+1}/{EPOCHS} complete")
+        logger.info(f"  Train Loss: {avg_loss:.4f} | Val Accuracy: {val_acc*100:.1f}%")
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -247,14 +251,14 @@ def train():
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             model.save_pretrained(OUTPUT_DIR)
             tokenizer.save_pretrained(OUTPUT_DIR)
-            print(f"  OK Best model saved (val_acc={val_acc*100:.1f}%)")
+            logger.info(f"  OK Best model saved (val_acc={val_acc*100:.1f}%)")
 
         gc.collect()
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    print(f"\n[5/5] Training complete!")
-    print(f"  Best val accuracy : {best_val_acc*100:.1f}% at epoch {best_epoch}")
-    print(f"  Model saved to    : {OUTPUT_DIR}")
+    logger.info(f"\n[5/5] Training complete!")
+    logger.info(f"  Best val accuracy : {best_val_acc*100:.1f}% at epoch {best_epoch}")
+    logger.info(f"  Model saved to    : {OUTPUT_DIR}")
 
     # Save metadata
     meta = {

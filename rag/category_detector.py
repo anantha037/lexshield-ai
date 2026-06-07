@@ -33,6 +33,10 @@ Fallback:
 import re
 import numpy as np
 from typing import Optional
+
+import logging
+
+logger = logging.getLogger(__name__)
  
 # CONFIDENCE_HIGH: use category as a hard ChromaDB filter
 # CONFIDENCE_MED:  must be above semantic noise floor for 10-13 category softmax.
@@ -1221,10 +1225,10 @@ class CategoryDetector:
                 cat: np.array(vec, dtype=np.float32)
                 for cat, vec in zip(_CATEGORIES, vecs)
             }
-            print(f"[CategoryDetector] Category embeddings cached ({len(_CATEGORIES)} categories)")
+            logger.info(f"[CategoryDetector] Category embeddings cached ({len(_CATEGORIES)} categories)")
             return True
         except Exception as e:
-            print(f"[CategoryDetector] Semantic layer unavailable: {e} — using keyword only")
+            logger.info(f"[CategoryDetector] Semantic layer unavailable: {e} — using keyword only")
             self._embedder_available = False
             return False
  

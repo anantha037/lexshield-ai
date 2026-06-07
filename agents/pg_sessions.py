@@ -22,9 +22,12 @@ to standard libpq format (``postgresql://``).
 
 import os
 import re
+import logging
 
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -51,4 +54,5 @@ def get_conn():
         with get_conn() as conn:
             row = conn.execute("SELECT ...").fetchone()
     """
+    logger.debug("Acquiring connection from PostgreSQL pool")
     return pool.connection()

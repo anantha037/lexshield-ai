@@ -27,6 +27,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 from langsmith import traceable
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # ── Structured citation ───────────────────────────────────────────────────────
 

@@ -96,6 +96,10 @@ import gc
 import os
 from pathlib import Path
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -931,9 +935,9 @@ def process_all_statutes(
     for cfg in configs:
         p = Path(cfg["path"])
         if not p.exists():
-            print(f"  [SKIP] {p}")
+            logger.info(f"  [SKIP] {p}")
             continue
-        print(f"  {cfg['source']}", end=" ... ", flush=True)
+        logger.info(f"  {cfg['source']}")
         chunks = contextual_chunk_document(
             text         = extract_text_pymupdf(str(p)),
             source       = cfg["source"],
@@ -943,7 +947,7 @@ def process_all_statutes(
             category     = cfg.get("category", ""),
             era          = cfg.get("era", ""),
         )
-        print(f"{len(chunks)} chunks")
+        logger.info(f"{len(chunks)} chunks")
         all_chunks.extend(chunks)
         idx += len(chunks)
         gc.collect()
@@ -976,7 +980,7 @@ def chunk_judgment_records(
         all_chunks.extend(sub)
         idx += len(sub)
         if i > 0 and i % 100 == 0:
-            print(f"    {i} records -> {len(all_chunks)} chunks")
+            logger.info(f"    {i} records -> {len(all_chunks)} chunks")
             gc.collect()
     return all_chunks
 
@@ -1025,23 +1029,23 @@ def run_full_pipeline(
     category:    str | None = None,
     slugs:       list[str] | None = None,
 ) -> list[dict]:
-    print("=" * 64)
-    print("LexShield AI — Contextual Chunking Pipeline")
-    print(f"Statute configs loaded: {len(STATUTE_CONFIGS)} acts across 10 categories")
-    print("=" * 64)
+    logger.info("=" * 64)
+    logger.info(f"LexShield AI — Contextual Chunking Pipeline")
+    logger.info(f"Statute configs loaded: {len(STATUTE_CONFIGS)} acts across 10 categories")
+    logger.info("=" * 64)
 
     all_chunks: list[dict] = []
 
-    print("\n[1/3] Statute PDFs ...")
+    logger.info(f"\n[1/3] Statute PDFs ...")
     statute_chunks = process_all_statutes(start_index=0, category=category, slugs=slugs)
     all_chunks.extend(statute_chunks)
-    print(f"  Statute total : {len(statute_chunks)}")
+    logger.info(f"  Statute total : {len(statute_chunks)}")
     gc.collect()
 
     if category or slugs:
-        print("\n  [Selective run — skipping judgment datasets]")
+        logger.info(f"\n  [Selective run — skipping judgment datasets]")
     else:
-        print(f"\n[2/3] IL-TUR judgments (max {max_iltur}) ...")
+        logger.info(f"\n[2/3] IL-TUR judgments (max {max_iltur}) ...")
         if Path(iltur_path).exists():
             with open(iltur_path, "r", encoding="utf-8") as f:
                 iltur_recs = json.load(f)
@@ -1051,12 +1055,12 @@ def run_full_pipeline(
                 max_records=max_iltur, start_index=len(all_chunks),
             )
             all_chunks.extend(iltur_chunks)
-            print(f"  IL-TUR total  : {len(iltur_chunks)}")
+            logger.info(f"  IL-TUR total  : {len(iltur_chunks)}")
         else:
-            print(f"  [SKIP] {iltur_path}")
+            logger.info(f"  [SKIP] {iltur_path}")
         gc.collect()
 
-        print(f"\n[3/3] SC judgments (max {max_sc}) ...")
+        logger.info(f"\n[3/3] SC judgments (max {max_sc}) ...")
         if Path(sc_path).exists():
             with open(sc_path, "r", encoding="utf-8") as f:
                 sc_recs = json.load(f)
@@ -1065,26 +1069,26 @@ def run_full_pipeline(
                 max_records=max_sc, start_index=len(all_chunks),
             )
             all_chunks.extend(sc_chunks)
-            print(f"  SC total      : {len(sc_chunks)}")
+            logger.info(f"  SC total      : {len(sc_chunks)}")
         else:
-            print(f"  [SKIP] {sc_path}")
+            logger.info(f"  [SKIP] {sc_path}")
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(all_chunks, f, ensure_ascii=False, indent=2)
 
-    print(f"\n{'='*64}")
-    print(f"DONE  —  Total chunks : {len(all_chunks)}")
-    print(f"Saved -> {output_path}")
+    logger.info(f"\n{'='*64}")
+    logger.info(f"DONE  —  Total chunks : {len(all_chunks)}")
+    logger.info(f"Saved -> {output_path}")
 
     type_counts: dict[str, int] = {}
     for c in all_chunks:
         k = c.get("chunk_type", "unknown")
         type_counts[k] = type_counts.get(k, 0) + 1
-    print("\nchunk_type breakdown:")
+    logger.info(f"\nchunk_type breakdown:")
     for t, n in sorted(type_counts.items(), key=lambda x: -x[1]):
-        print(f"  {t:28s}  {n}")
+        logger.info(f"  {t:28s}  {n}")
 
     return all_chunks
 

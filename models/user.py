@@ -8,6 +8,10 @@ from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.sql import func
 from models.database import Base
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class User(Base):
     __tablename__ = "users"

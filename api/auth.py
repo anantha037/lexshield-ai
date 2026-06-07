@@ -57,7 +57,9 @@ logger = logging.getLogger(__name__)
 
 def _init_auth_tables() -> None:
     """Create users table and add user_id column to sessions if missing."""
+    logger.info("Initializing auth tables in database")
     with get_conn() as conn:
+        logger.debug("Executing CREATE TABLE users if not exists")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id              TEXT    PRIMARY KEY,
@@ -124,7 +126,9 @@ def _decode_token(token: str) -> Optional[dict]:
 
 def _create_user(email: str, password: str, full_name: str) -> dict:
     """Insert a new user. Raises ValueError if email already exists."""
+    logger.info(f"Creating new user with email: {email}")
     with get_conn() as conn:
+        logger.debug("Checking if user email already exists")
         existing = conn.execute(
             "SELECT id FROM users WHERE email = %s", (email.lower(),)
         ).fetchone()
@@ -136,6 +140,7 @@ def _create_user(email: str, password: str, full_name: str) -> dict:
     hashed  = _hash_password(password)
 
     with get_conn() as conn:
+        logger.debug("Inserting new user record into database")
         conn.execute(
             "INSERT INTO users (id, email, hashed_password, full_name, created_at) "
             "VALUES (%s, %s, %s, %s, %s)",
@@ -152,7 +157,9 @@ def _create_user(email: str, password: str, full_name: str) -> dict:
 
 def _authenticate_user(email: str, password: str) -> Optional[dict]:
     """Return user dict on success, None on bad credentials."""
+    logger.info(f"Authenticating user: {email}")
     with get_conn() as conn:
+        logger.debug("Fetching user record by email")
         row = conn.execute(
             "SELECT id, email, hashed_password, full_name, created_at FROM users WHERE email = %s",
             (email.lower(),),
@@ -164,6 +171,7 @@ def _authenticate_user(email: str, password: str) -> Optional[dict]:
 
     # Update last_login
     with get_conn() as conn:
+        logger.debug(f"Updating last_login for user: {row['id']}")
         conn.execute(
             "UPDATE users SET last_login = %s WHERE id = %s",
             (time.time(), row["id"]),
@@ -178,6 +186,7 @@ def _authenticate_user(email: str, password: str) -> Optional[dict]:
 
 
 def _get_user_by_id(user_id: str) -> Optional[dict]:
+    logger.debug(f"Fetching user by id: {user_id}")
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, email, full_name, created_at FROM users WHERE id = %s",
@@ -263,7 +272,8 @@ def get_optional_user(
         return None
     try:
         return get_current_user(credentials)
-    except HTTPException:
+    except HTTPException as e:
+        logger.exception("HTTPException in get_optional_user")
         return None
 
 
@@ -280,8 +290,10 @@ def register(req: RegisterRequest):
       -d '{"email":"user@example.com","password":"secret123","full_name":"Test User"}' | python -m json.tool
     """
     try:
+        logger.info(f"Registering user: {req.email}")
         user = _create_user(req.email, req.password, req.full_name)
     except ValueError as exc:
+        logger.exception(f"Registration failed for {req.email}")
         raise HTTPException(status_code=409, detail=str(exc))
 
     token = _create_token(user["id"], user["email"])
@@ -305,8 +317,10 @@ def login(req: LoginRequest):
       -H "Content-Type: application/json" \\
       -d '{"email":"user@example.com","password":"secret123"}' | python -m json.tool
     """
+    logger.info(f"Login request for email: {req.email}")
     user = _authenticate_user(req.email, req.password)
     if not user:
+        logger.debug(f"Login failed: Invalid credentials for {req.email}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = _create_token(user["id"], user["email"])
@@ -329,6 +343,7 @@ def get_me(current_user: dict = Depends(get_current_user)):
     curl -s http://localhost:8000/api/v1/auth/me \\
       -H "Authorization: Bearer <your_token>" | python -m json.tool
     """
+    logger.info(f"Fetching profile for user: {current_user['email']}")
     return MeResponse(
         id         = current_user["id"],
         email      = current_user["email"],

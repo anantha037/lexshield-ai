@@ -37,6 +37,10 @@ import gc
 import time
 import argparse
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -69,20 +73,20 @@ args = parser.parse_args()
 # Guard: selective flags should always pair with --skip-reset
 # (you don't want to wipe existing embeddings when adding 1 new act)
 if (args.category or args.slugs) and not args.skip_reset and not args.dry_run:
-    print("⚠️  WARNING: --category/--slugs without --skip-reset will wipe "
+    logger.info("⚠️  WARNING: --category/--slugs without --skip-reset will wipe "
           "existing ChromaDB data.")
     ans = input("Continue and reset? [y/N] ").strip().lower()
     if ans != "y":
-        print("Aborted. Re-run with --skip-reset to append instead.")
+        logger.info("Aborted. Re-run with --skip-reset to append instead.")
         sys.exit(0)
 
 
 def separator(title: str = "") -> None:
     line = "=" * 64
     if title:
-        print(f"\n{line}\n  {title}\n{line}")
+        logger.info(f"\n{line}\n  {title}\n{line}")
     else:
-        print(line)
+        logger.info(line)
 
 
 # ── Step 1: Contextual chunking ───────────────────────────────────────────────
@@ -94,11 +98,11 @@ if args.skip_chunk:
     from pathlib import Path
     path = Path("data/processed/chunks.json")
     if not path.exists():
-        print("ERROR: chunks.json not found. Remove --skip-chunk.")
+        logger.info("ERROR: chunks.json not found. Remove --skip-chunk.")
         sys.exit(1)
     with open(path, "r", encoding="utf-8") as f:
         chunks = json.load(f)
-    print(f"Loaded {len(chunks)} existing chunks from {path}")
+    logger.info(f"Loaded {len(chunks)} existing chunks from {path}")
 else:
     separator("Step 1: Contextual chunking")
     from data.preprocessor import run_full_pipeline, STATUTE_CONFIGS
@@ -106,15 +110,15 @@ else:
     # Show what will be processed
     if args.category:
         relevant = [c for c in STATUTE_CONFIGS if c.get("category") == args.category]
-        print(f"Category filter: '{args.category}' -> {len(relevant)} statute(s)")
+        logger.info(f"Category filter: '{args.category}' -> {len(relevant)} statute(s)")
     elif args.slugs:
         relevant = [c for c in STATUTE_CONFIGS if c["slug"] in args.slugs]
-        print(f"Slug filter: {args.slugs} -> {len(relevant)} statute(s)")
+        logger.info(f"Slug filter: {args.slugs} -> {len(relevant)} statute(s)")
         missing = set(args.slugs) - {c["slug"] for c in relevant}
         if missing:
-            print(f"  ⚠️  Unknown slugs (check STATUTE_CONFIGS): {missing}")
+            logger.info(f"  ⚠️  Unknown slugs (check STATUTE_CONFIGS): {missing}")
     else:
-        print(f"Full run: {len(STATUTE_CONFIGS)} statutes configured")
+        logger.info(f"Full run: {len(STATUTE_CONFIGS)} statutes configured")
 
     chunks = run_full_pipeline(
         max_iltur=args.max_iltur,
@@ -124,14 +128,14 @@ else:
     )
 
 if not chunks:
-    print("ERROR: No chunks produced. Aborting.")
+    logger.info("ERROR: No chunks produced. Aborting.")
     sys.exit(1)
 
-print(f"\nChunks ready: {len(chunks)}")
+logger.info(f"\nChunks ready: {len(chunks)}")
 gc.collect()
 
 if args.dry_run:
-    print("\n[DRY RUN] Chunking complete. Skipping DB/BM25 changes.")
+    logger.info("\n[DRY RUN] Chunking complete. Skipping DB/BM25 changes.")
     sys.exit(0)
 
 # ── Step 2: ChromaDB reset + ingestion ───────────────────────────────────────
@@ -140,25 +144,25 @@ separator("Step 2: ChromaDB re-ingestion")
 from rag.vectorstore import vectorstore
 
 if not args.skip_reset:
-    print("Resetting ChromaDB collection ...")
+    logger.info("Resetting ChromaDB collection ...")
     vectorstore.reset_collection()
-    print("Collection cleared.\n")
+    logger.info("Collection cleared.\n")
 else:
     existing = vectorstore.count()
-    print(f"(--skip-reset: keeping {existing} existing docs, appending {len(chunks)} new)\n")
+    logger.info(f"(--skip-reset: keeping {existing} existing docs, appending {len(chunks)} new)\n")
 
 t0 = time.time()
 added = vectorstore.ingest_chunks(chunks, skip_existing=args.skip_reset)
 elapsed = time.time() - t0
-print(f"\nIngestion done in {elapsed/60:.1f} min.")
-print(f"ChromaDB total docs: {vectorstore.count()}")
+logger.info(f"\nIngestion done in {elapsed/60:.1f} min.")
+logger.info(f"ChromaDB total docs: {vectorstore.count()}")
 gc.collect()
 
 # ── Step 3: BM25 rebuild ──────────────────────────────────────────────────────
 separator("Step 3: BM25 index rebuild")
 from rag.bm25_retriever import bm25_retriever
 bm25_retriever.rebuild()
-print(f"BM25 index: {bm25_retriever.count()} docs indexed.")
+logger.info(f"BM25 index: {bm25_retriever.count()} docs indexed.")
 
 # ── Step 4: Quick smoke-test ──────────────────────────────────────────────────
 separator("Step 4: Smoke tests")
@@ -178,18 +182,18 @@ from rag.hybrid_search import hybrid_searcher
 
 for q in test_queries:
     results = hybrid_searcher.search_explain(q, n_results=3)
-    print(f"\nQuery: '{q}'")
+    logger.info(f"\nQuery: '{q}'")
     for r in results:
         src       = r.get("source",         "?")[:50]
         sec       = r.get("section",        "")
         breakdown = r.get("score_breakdown", "")
-        print(f"  {breakdown}  |  {src}  sec={sec}")
+        logger.info(f"  {breakdown}  |  {src}  sec={sec}")
 
 separator("DONE")
 
 if args.category or args.slugs:
-    print("Selective ingestion complete.")
-    print("Tip: run with --skip-chunk --skip-reset if you need to add more acts.")
+    logger.info("Selective ingestion complete.")
+    logger.info("Tip: run with --skip-chunk --skip-reset if you need to add more acts.")
 else:
-    print("Full corpus ingestion complete.")
-print("Run: uvicorn api.main:app --reload")
+    logger.info("Full corpus ingestion complete.")
+logger.info("Run: uvicorn api.main:app --reload")

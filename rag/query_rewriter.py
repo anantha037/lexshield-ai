@@ -26,6 +26,10 @@ import os
 import re
 import json
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -207,17 +211,17 @@ def decompose_query(query: str) -> list[str]:
 
         if len(cleaned) < 2:
             # Decomposition returned garbage — fall back to original
-            print(f"[QueryDecomposer] Decomposition insufficient ({cleaned!r}) — using original")
+            logger.info(f"[QueryDecomposer] Decomposition insufficient ({cleaned!r}) — using original")
             return [query]
 
-        print(f"[QueryDecomposer] Decomposed into {len(cleaned)} sub-queries:")
+        logger.info(f"[QueryDecomposer] Decomposed into {len(cleaned)} sub-queries:")
         for i, sq in enumerate(cleaned, 1):
-            print(f"  [{i}] {sq}")
+            logger.debug(f"  [{i}] {sq}")
 
         return cleaned[:3]   # cap at 3 sub-queries
 
     except Exception as exc:
-        print(f"[QueryDecomposer] Failed ({exc}) — returning original query")
+        logger.info(f"[QueryDecomposer] Failed ({exc}) — returning original query")
         return [query]
 
 
@@ -339,7 +343,7 @@ class QueryRewriter:
                 last_act, last_section = session_memory.get_last_act(session_id)
                 if last_act:
                     injected = f"{query} under {last_act}"
-                    print(
+                    logger.debug(
                         f"[QueryRewriter] act-context injection (score={_followup_score}/3): "
                         f"session={session_id[:8]}… last_act={last_act!r} "
                         f"-> query augmented"
@@ -350,7 +354,7 @@ class QueryRewriter:
                 # into this turn or any subsequent turn.
                 if session_id:
                     session_memory.clear_last_act(session_id)
-                    print(
+                    logger.debug(
                         f"[QueryRewriter] topic-shift detected (score={_followup_score}/3): "
                         f"session={session_id[:8]}… last_act cleared, no injection"
                     )
@@ -376,7 +380,7 @@ class QueryRewriter:
                     seen.add(r.lower())
 
         except Exception as e:
-            print(f"[QueryRewriter] LLM call failed: {e} — using original query only.")
+            logger.info(f"[QueryRewriter] LLM call failed: {e} — using original query only.")
 
         if hint and hint.lower() not in {q.lower() for q in all_queries}:
             all_queries.append(hint)
@@ -385,11 +389,11 @@ class QueryRewriter:
 
     def rewrite_explain(self, query: str) -> None:
         queries = self.rewrite(query)
-        print(f"\n[QueryRewriter] Input: '{query}'")
-        print(f"[QueryRewriter] Generated {len(queries)} queries:")
+        logger.debug(f"\n[QueryRewriter] Input: '{query}'")
+        logger.info(f"[QueryRewriter] Generated {len(queries)} queries:")
         for i, q in enumerate(queries):
             tag = "original" if i == 0 else f"rewrite {i}"
-            print(f"  [{tag}]  {q}")
+            logger.debug(f"  [{tag}]  {q}")
 
 
 # ── Singletons ─────────────────────────────────────────────────────────────────

@@ -197,7 +197,7 @@ class MultiLLMRouter:
             f"[MultiLLMRouter] Initialised with {len(self._available_providers)} provider(s): "
             f"{[p.name for p in self._available_providers]}"
         )
-        print(
+        logger.debug(
             f"[MultiLLMRouter] {len(self._available_providers)} provider(s) ready: "
             f"{' -> '.join(p.name for p in self._available_providers)}"
         )
@@ -405,7 +405,7 @@ class MultiLLMRouter:
 
                     elif any(code in err_str for code in ("500", "502", "503", "504")):
                         # Server error — record failure, may open circuit
-                        logger.warning(f"[MultiLLMRouter] Server error on {cfg.name}: {exc}")
+                        logger.exception(f"[MultiLLMRouter] Server error on {cfg.name}")
                         self._record_failure(cfg, state, exc)
                         continue
 
@@ -491,7 +491,7 @@ class MultiLLMRouter:
         logger.info(
             f"[MultiLLMRouter] RAGAS eval LLM: {target_cfg.name} ({target_cfg.model})"
         )
-        print(f"[MultiLLMRouter] RAGAS eval LLM: {target_cfg.name}")
+        logger.info(f"[MultiLLMRouter] RAGAS eval LLM: {target_cfg.name}")
         return LangchainLLMWrapper(chat_llm)
 
     # ── Diagnostics ────────────────────────────────────────────────────────────

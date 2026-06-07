@@ -42,6 +42,9 @@ Priority order in route_by_intent:
 """
 
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 import re
 from typing import TypedDict, Optional
 
@@ -215,7 +218,7 @@ def classify_intent_node(state: AgentState) -> dict:
 
                     if _CANCEL_RE.search(_q):
                         _da.cancel_draft(_session_id_early)
-                        print("[Graph] AWAITING_CONFIRMATION -> cancel -> clearing draft")
+                        logger.debug("[Graph] AWAITING_CONFIRMATION -> cancel -> clearing draft")
                         return {
                             "intent":          "_draft_handled",
                             "confidence":      1.0,
@@ -228,7 +231,7 @@ def classify_intent_node(state: AgentState) -> dict:
                             ),
                         }
                     elif _CONFIRM_RE.search(_q):
-                        print("[Graph] AWAITING_CONFIRMATION -> confirmed -> draft_node")
+                        logger.debug("[Graph] AWAITING_CONFIRMATION -> confirmed -> draft_node")
                         return {
                             "intent":          "draft_request",
                             "confidence":      1.0,
@@ -238,7 +241,7 @@ def classify_intent_node(state: AgentState) -> dict:
                         }
                     else:
                         # Ambiguous — re-prompt without clearing state
-                        print("[Graph] AWAITING_CONFIRMATION -> ambiguous -> re-prompt")
+                        logger.debug("[Graph] AWAITING_CONFIRMATION -> ambiguous -> re-prompt")
                         return {
                             "intent":          "_draft_handled",
                             "confidence":      1.0,
@@ -253,7 +256,7 @@ def classify_intent_node(state: AgentState) -> dict:
                         }
 
                 # ── MENU_SHOWN / COLLECTING_FIELDS: always route to draft_node ─
-                print(
+                logger.debug(
                     f"[Graph] classify_intent_node -> draft stage={_draft_stage} "
                     f"session={_session_id_early[:8]}… -> short-circuit to draft_request"
                 )
@@ -265,7 +268,7 @@ def classify_intent_node(state: AgentState) -> dict:
                     "scratchpad":      dict(state.get("scratchpad", {})),
                 }
         except Exception as _e:
-            print(f"[Graph] classify_intent_node active-draft check failed (non-fatal): {_e}")
+            logger.exception(f"[Graph] classify_intent_node active-draft check failed (non-fatal)")
     # ── End short-circuit ──────────────────────────────────────────────────────
     
     ui_language = state.get("source_language", "en")
@@ -274,11 +277,11 @@ def classify_intent_node(state: AgentState) -> dict:
     final_language = ui_language if ui_language != "en" else detected_language
 
     if final_language != "en":
-        print(f"[Graph] classify_intent_node -> final language: {final_language!r}")
+        logger.debug(f"[Graph] classify_intent_node -> final language: {final_language!r}")
 
     # Primary: LLM-based classification (with regex override pre-filter + fallback)
     result = intent_classifier.classify_with_llm(query, groq_client)
-    print(
+    logger.debug(
         f"[Graph] classify_intent_node -> intent={result.intent!r} "
         f"conf={result.confidence:.2f} lang={final_language!r}"
     )
@@ -310,7 +313,7 @@ def classify_intent_node(state: AgentState) -> dict:
     scratchpad["intent_reasoning"]        = reasoning   # for JSONL logger
 
     if detected_sections or detected_acts or jurisdiction:
-        print(
+        logger.debug(
             f"[Graph] scratchpad -> sections={detected_sections} "
             f"acts={detected_acts} jurisdiction={jurisdiction!r} "
             f"complexity={complexity!r}"
@@ -346,19 +349,19 @@ def route_by_intent(state: AgentState) -> str:
 
     # Priority 0: response already handled (cancellation / re-prompt)
     if intent == "_draft_handled":
-        print("[Graph] route -> _draft_handled -> general_node (response pre-set)")
+        logger.debug("[Graph] route -> _draft_handled -> general_node (response pre-set)")
         return "general_node"
 
     # Priority 1: active draft
     if session_id and drafting_agent.has_active_draft(session_id):
-        print(f"[Graph] route -> active draft -> draft_node")
+        logger.debug(f"[Graph] route -> active draft -> draft_node")
         return "draft_node"
 
     # Priority 2: non-English auto-detection or EXPLICIT UI selection
     # We check if source_language is NOT 'en' (which will catch 'ml', 'hi', etc. passed from the UI)
     _multilingual_eligible = {"legal_query", "risk_check", "general"}
     if source_language != "en" and intent in _multilingual_eligible:
-        print(
+        logger.debug(
             f"[Graph] route -> non-English {source_language!r} "
             f"intent={intent!r} -> multilingual_node"
         )
@@ -376,7 +379,7 @@ def route_by_intent(state: AgentState) -> str:
         "general":              "general_node",
     }
     node = _map.get(intent, "general_node")
-    print(f"[Graph] route -> intent={intent!r} -> {node}")
+    logger.debug(f"[Graph] route -> intent={intent!r} -> {node}")
     return node
 
 
@@ -416,7 +419,7 @@ def legal_rag_node(state: AgentState) -> dict:
     elif jurisdiction:
         context_block = f"[JURISDICTION CONTEXT: {jurisdiction}]"
 
-    print("[Graph] legal_rag_node -> NER + KG + RAG")
+    logger.debug("[Graph] legal_rag_node -> NER + KG + RAG")
 
 
     # NER
@@ -433,7 +436,7 @@ def legal_rag_node(state: AgentState) -> dict:
                 elif txt:
                     ner_sections.append(txt)
     except Exception as e:
-        print(f"[Graph] legal_rag_node NER warning: {e}")
+        logger.exception(f"[Graph] legal_rag_node NER warning")
 
     # ── Scratchpad writer: merge NER sections ──────────────────────────────
     existing_sections = scratchpad.get(SCRATCH_DETECTED_SECTIONS, [])
@@ -453,9 +456,9 @@ def legal_rag_node(state: AgentState) -> dict:
                 act_hint            = act_hint,
             )
             if kg_chunks:
-                print(f"[Graph] KG: {len(kg_chunks)} extra chunk(s)")
+                logger.debug(f"[Graph] KG: {len(kg_chunks)} extra chunk(s)")
         except Exception as e:
-            print(f"[Graph] legal_rag_node KG warning: {e}")
+            logger.exception(f"[Graph] legal_rag_node KG warning")
 
     # RAG pipeline
     try:
@@ -473,7 +476,7 @@ def legal_rag_node(state: AgentState) -> dict:
                     groq_client     = _groq,
                 )
             except Exception as e:
-                print(f"[Graph] Case law enrichment warning: {e}")
+                logger.exception(f"[Graph] Case law enrichment warning")
 
         scope_status  = "in_scope"
         scope_message = ""
@@ -527,7 +530,7 @@ def legal_rag_node(state: AgentState) -> dict:
             "error":          "",
         }
     except Exception as exc:
-        print(f"[Graph] legal_rag_node ERROR: {exc}")
+        logger.exception(f"[Graph] legal_rag_node ERROR")
         return {
             "rag_result": {},
             "ner_result": {"entities": []},
@@ -552,7 +555,7 @@ def document_analysis_node(state: AgentState) -> dict:
     context_block = state.get("rag_result", {}).get("context_block", "")
     enriched      = f"{context_block}\n\n{query}" if context_block else query
 
-    print("[Graph] document_analysis_node -> RAG + NER")
+    logger.debug("[Graph] document_analysis_node -> RAG + NER")
 
     try:
         answer  = rag_pipeline.query(enriched)
@@ -580,7 +583,7 @@ def document_analysis_node(state: AgentState) -> dict:
             "error":          "",
         }
     except Exception as exc:
-        print(f"[Graph] document_analysis_node ERROR: {exc}")
+        logger.exception(f"[Graph] document_analysis_node ERROR")
         return {
             "rag_result": {},
             "ner_result": {},
@@ -609,7 +612,7 @@ def risk_check_node(state: AgentState) -> dict:
         f"{context_block}\n\n{risk_prefix}{query}"
         if context_block else f"{risk_prefix}{query}"
     )
-    print("[Graph] risk_check_node -> RAG + scorer")
+    logger.debug("[Graph] risk_check_node -> RAG + scorer")
 
     try:
         answer  = rag_pipeline.query(enriched)
@@ -626,7 +629,7 @@ def risk_check_node(state: AgentState) -> dict:
             risk_out  = risk_scorer.score(text=query, doc_type="unknown")
             risk_dict = {"score": risk_out.score, "level": risk_out.level, "factors": risk_out.factors}
         except Exception as e:
-            print(f"[Graph] risk_scorer warning: {e}")
+            logger.exception(f"[Graph] risk_scorer warning")
             risk_dict = {"score": 0.0, "level": "unknown", "factors": []}
 
         return {
@@ -638,7 +641,7 @@ def risk_check_node(state: AgentState) -> dict:
             "error":          "",
         }
     except Exception as exc:
-        print(f"[Graph] risk_check_node ERROR: {exc}")
+        logger.exception(f"[Graph] risk_check_node ERROR")
         return {
             "rag_result":  {},
             "risk_result": {"score": 0.0, "level": "unknown", "factors": []},
@@ -657,7 +660,7 @@ def draft_node(state: AgentState) -> dict:
 
     query      = state.get("query", "")
     session_id = state.get("session_id", "")
-    print(f"[Graph] draft_node -> session={session_id[:8] if session_id else '?'}…")
+    logger.debug(f"[Graph] draft_node -> session={session_id[:8] if session_id else '?'}…")
 
     try:
         result    = drafting_agent.handle(query=query, session_id=session_id)
@@ -708,8 +711,7 @@ def draft_node(state: AgentState) -> dict:
             "validation_status": result.get("validation_status", "not_applicable"),
         }
     except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f"[Graph] draft_node ERROR: {exc}")
+        logger.exception(f"[Graph] draft_node ERROR")
         return {
             "draft_stage": "ERROR",
             "draft_data":  {},
@@ -741,7 +743,7 @@ def multilingual_node(state: AgentState) -> dict:
     source_language = state.get("source_language", "en")
 
     if intent == "translation_request":
-        print("[Graph] multilingual_node -> sub-flow B: explicit translation")
+        logger.debug("[Graph] multilingual_node -> sub-flow B: explicit translation")
         try:
             result = translation_agent.handle(query=query, session_id=session_id)
             return {
@@ -760,11 +762,11 @@ def multilingual_node(state: AgentState) -> dict:
                 "error":          "",
             }
         except Exception as exc:
-            print(f"[Graph] multilingual_node B ERROR: {exc}")
+            logger.exception(f"[Graph] multilingual_node B ERROR")
             return {"source_language": source_language, "rag_result": {},
                     "response": "Translation error. Please try again.", "error": str(exc)}
 
-    print(f"[Graph] multilingual_node -> sub-flow A: auto {source_language!r}")
+    logger.debug(f"[Graph] multilingual_node -> sub-flow A: auto {source_language!r}")
     try:
         result = process_multilingual_query(
             query        = query,
@@ -792,7 +794,7 @@ def multilingual_node(state: AgentState) -> dict:
             "error":          "",
         }
     except Exception as exc:
-        print(f"[Graph] multilingual_node A ERROR: {exc}")
+        logger.exception(f"[Graph] multilingual_node A ERROR")
         return {"source_language": source_language, "rag_result": {},
                 "response": "I encountered an error. Please try again.", "error": str(exc)}
 
@@ -807,7 +809,7 @@ def case_law_node(state: AgentState) -> dict:
     from rag.llm               import llm as groq_client
 
     query = state.get("query", "")
-    print(f"[Graph] case_law_node -> Indian Kanoon: {query[:60]!r}")
+    logger.debug(f"[Graph] case_law_node -> Indian Kanoon: {query[:60]!r}")
 
     # ── Scratchpad reader: enrich search query ───────────────────────────
     scratchpad = state.get("scratchpad", {})
@@ -819,7 +821,7 @@ def case_law_node(state: AgentState) -> dict:
     enriched_query = query
     if extra_terms:
         enriched_query = f"{query} {' '.join(extra_terms)}"
-        print(f"[Graph] case_law_node -> enriched query: {enriched_query[:80]!r}")
+        logger.debug(f"[Graph] case_law_node -> enriched query: {enriched_query[:80]!r}")
 
     try:
         import asyncio
@@ -854,8 +856,7 @@ def case_law_node(state: AgentState) -> dict:
             "error":          "",
         }
     except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f"[Graph] case_law_node ERROR: {exc}")
+        logger.exception(f"[Graph] case_law_node ERROR")
         return {
             "case_law_result": {"query": query, "results": [], "total_found": 0},
             "rag_result":      {},
@@ -893,13 +894,13 @@ def rights_node(state: AgentState) -> dict:
     from rag.pipeline import rag_pipeline
 
     query = state.get("query", "").lower()
-    print(f"[Graph] rights_node -> detecting category from: {query[:60]!r}")
+    logger.debug(f"[Graph] rights_node -> detecting category from: {query[:60]!r}")
 
     # ── Category detection ─────────────────────────────────────────────────────
     category = _detect_rights_category(query)
 
     if category:
-        print(f"[Graph] rights_node -> category={category!r}")
+        logger.debug(f"[Graph] rights_node -> category={category!r}")
         try:
             rights_dict = get_rights_with_rag_enrichment(
                 category     = category,
@@ -927,7 +928,7 @@ def rights_node(state: AgentState) -> dict:
                 "error":          "",
             }
         except Exception as exc:
-            print(f"[Graph] rights_node ERROR for category={category!r}: {exc}")
+            logger.exception(f"[Graph] rights_node ERROR for category={category!r}")
             return {
                 "rights_category": category,
                 "rights_result":   {},
@@ -943,7 +944,7 @@ def rights_node(state: AgentState) -> dict:
             }
 
     # ── No category detected — out of scope ──────────────────────────────────
-    print("[Graph] rights_node -> no category detected, out of scope")
+    logger.debug("[Graph] rights_node -> no category detected, out of scope")
     try:
         categories    = get_all_categories()
         menu_lines    = [
@@ -1037,7 +1038,7 @@ def general_node(state: AgentState) -> dict:
     # ── Early return if response was pre-set (draft cancel / re-prompt) ───────
     existing_response = state.get("response", "")
     if existing_response:
-        print("[Graph] general_node -> returning pre-set response")
+        logger.debug("[Graph] general_node -> returning pre-set response")
         return {
             "response": existing_response,
             "rag_result": {
@@ -1064,7 +1065,7 @@ def general_node(state: AgentState) -> dict:
         "You support queries in Malayalam, Hindi, Tamil, Telugu, and other Indian languages."
     )
     prompt = f"{context_block}\n\nUser: {query}" if context_block else f"User: {query}"
-    print("[Graph] general_node -> direct LLM")
+    logger.debug("[Graph] general_node -> direct LLM")
 
     try:
         answer = llm.generate(prompt=prompt, system_prompt=system_prompt, max_tokens=512)
@@ -1081,7 +1082,7 @@ def general_node(state: AgentState) -> dict:
             "error": "",
         }
     except Exception as exc:
-        print(f"[Graph] general_node ERROR: {exc}")
+        logger.exception(f"[Graph] general_node ERROR")
         return {
             "response":   "Hello! I'm LexShield AI, your Indian legal assistant. How can I help you today?",
             "rag_result": {},

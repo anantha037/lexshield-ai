@@ -31,6 +31,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from rag.synthesizer import Citation, LegalAnswer
 from models.risk_scorer import RiskResult, risk_scorer
 
@@ -330,7 +334,7 @@ def build_structured_response(
             use_llm  = use_llm_risk,
         )
     except Exception as e:
-        print(f"[StructuredOutput] Risk scorer error: {e}")
+        logger.exception(f"[StructuredOutput] Risk scorer error")
         risk_result = RiskResult(
             score               = 0.0,
             level               = "Low",

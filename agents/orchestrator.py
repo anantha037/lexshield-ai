@@ -45,6 +45,8 @@ class MasterOrchestrator:
         session_id: Optional[str] = None,
         language:   Optional[str] = None,
     ) -> LexShieldResponse:
+        logger.info(f"Handling query for session: {session_id}")
+        logger.debug(f"Query text: {query[:100]}..., Language: {language}")
         start_time = time.time()
         session_id = session_memory.ensure_session(session_id)
 
@@ -101,8 +103,7 @@ class MasterOrchestrator:
         # LangGraph config — thread_id links this invocation to its checkpoint
         config = {"configurable": {"thread_id": session_id}}
 
-        print(f"[Orchestrator] graph.invoke — query={query[:60]!r} "
-              f"session={session_id[:8]}…")
+        logger.info(f"Invoking graph for session={session_id[:8]} with query={query[:60]}")
         final_state = agent_graph.invoke(initial_state, config)
 
         # Extract outputs from named state fields
@@ -235,7 +236,7 @@ class MasterOrchestrator:
             with open(os.path.join("logs", "query_metrics.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(metric) + "\n")
         except Exception as e:
-            logger.warning(f"[Orchestrator] Failed to write local metric log: {e}")
+            logger.exception("Failed to write local metric log")
 
         import re
         extracted_entities = []
@@ -281,6 +282,8 @@ class MasterOrchestrator:
         session_id:     Optional[str] = None,
         filename:       Optional[str] = None,
     ) -> LexShieldResponse:
+        logger.info(f"Handling document for session: {session_id}")
+        logger.debug(f"Document extracted text length: {len(extracted_text)}, filename: {filename}")
         session_id = session_memory.ensure_session(session_id)
 
         doc_snippet = extracted_text[:500].strip()
@@ -332,7 +335,7 @@ class MasterOrchestrator:
 
         config = {"configurable": {"thread_id": session_id}}
 
-        print(f"[Orchestrator] Document analysis via graph{label}")
+        logger.info(f"Invoking graph for document analysis: {label}")
         final_state = agent_graph.invoke(initial_state, config)
 
         response   = final_state.get("response",   "")

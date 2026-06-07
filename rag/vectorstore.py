@@ -12,6 +12,10 @@ import time
 import gc
 from typing import Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -197,19 +201,19 @@ class LegalVectorStore:
                 database=database,
                 settings=Settings(anonymized_telemetry=False),
             )
-            print(f"[VectorStore] Mode=cloud  tenant={tenant!r}  db={database!r}")
+            logger.info(f"[VectorStore] Mode=cloud  tenant={tenant!r}  db={database!r}")
         else:
             self.client = chromadb.PersistentClient(
                 path=persist_dir,
                 settings=Settings(anonymized_telemetry=False),
             )
-            print(f"[VectorStore] Mode=local  persist_dir={persist_dir!r}")
+            logger.info(f"[VectorStore] Mode=local  persist_dir={persist_dir!r}")
 
         self.collection = self.client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
-        print(f"[VectorStore] Collection '{COLLECTION_NAME}' — {self.count()} docs")
+        logger.info(f"[VectorStore] Collection '{COLLECTION_NAME}' — {self.count()} docs")
 
     # ── Direct metadata lookup — section fast path ────────────────────────────
 
@@ -259,7 +263,7 @@ class LegalVectorStore:
                 })
             return results[:20]
         except Exception as e:
-            print(f"[VectorStore] get_by_section({section_number!r}) error: {e}")
+            logger.exception(f"[VectorStore] get_by_section({section_number!r}) error")
             return []
 
     # ── Ingest ────────────────────────────────────────────────────────────────
@@ -277,13 +281,13 @@ class LegalVectorStore:
             new_chunks = chunks
 
         if not new_chunks:
-            print("[VectorStore] All chunks already present, skipping.")
+            logger.info("[VectorStore] All chunks already present, skipping.")
             return 0
 
         total   = len(new_chunks)
         added   = 0
         batches = [new_chunks[i : i + INGEST_BATCH] for i in range(0, total, INGEST_BATCH)]
-        print(f"[VectorStore] Ingesting {total} chunks in {len(batches)} batches ...")
+        logger.info(f"[VectorStore] Ingesting {total} chunks in {len(batches)} batches ...")
 
         for batch_idx, batch in enumerate(batches):
             docs      = [c.get("context_text") or c.get("text", "") for c in batch]
@@ -312,16 +316,16 @@ class LegalVectorStore:
                 gc.collect()
             time.sleep(BATCH_SLEEP)
             if (batch_idx + 1) % 10 == 0 or batch_idx == len(batches) - 1:
-                print(f"  batch {batch_idx + 1}/{len(batches)}  ({added}/{total})")
+                logger.info(f"  batch {batch_idx + 1}/{len(batches)}  ({added}/{total})")
 
         gc.collect()
-        print(f"[VectorStore] Done. Added {added}. Total: {self.count()}")
+        logger.info(f"[VectorStore] Done. Added {added}. Total: {self.count()}")
         return added
 
     # ── Reset ─────────────────────────────────────────────────────────────────
 
     def reset_collection(self):
-        print(f"[VectorStore] Deleting '{COLLECTION_NAME}' ...")
+        logger.info(f"[VectorStore] Deleting '{COLLECTION_NAME}' ...")
         try:
             self.client.delete_collection(COLLECTION_NAME)
         except Exception:
@@ -330,7 +334,7 @@ class LegalVectorStore:
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
-        print("[VectorStore] Collection reset.")
+        logger.info("[VectorStore] Collection reset.")
 
     # ── Vector search ─────────────────────────────────────────────────────────
 

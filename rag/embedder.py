@@ -17,6 +17,10 @@ Usage:
 
 
 import os
+
+import logging
+
+logger = logging.getLogger(__name__)
 # --- HARDWARE SAFETY LIMITS ---
 # Force the AI to use only 2 CPU threads to prevent laptop overheating
 os.environ["OMP_NUM_THREADS"] = "2"
@@ -40,12 +44,12 @@ class LegalEmbedder:
     """
 
     def __init__(self, model_name: str = MODEL_NAME):
-        print(f"Loading embedding model: {model_name}")
-        print("(First run downloads ~90MB — subsequent runs load from cache)")
+        logger.info(f"Loading embedding model: {model_name}")
+        logger.info("(First run downloads ~90MB — subsequent runs load from cache)")
         self.model = SentenceTransformer(model_name)
         self.model_name = model_name
         self.vector_dim = self.model.get_embedding_dimension()
-        print(f"Model loaded. Vector dimension: {self.vector_dim}")
+        logger.info(f"Model loaded. Vector dimension: {self.vector_dim}")
 
     def embed(
         self,

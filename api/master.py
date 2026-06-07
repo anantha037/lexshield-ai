@@ -28,6 +28,9 @@ from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Request
 from pydantic import BaseModel
+import logging
+
+logger = logging.getLogger(__name__)
 
 from agents.orchestrator import master_orchestrator
 from agents.memory       import session_memory
@@ -132,6 +135,7 @@ def _extract_text(file_bytes: bytes, filename: str) -> str:
             doc = docx.Document(io.BytesIO(file_bytes))
             return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
         except ImportError:
+            logger.exception("python-docx not installed")
             raise HTTPException(status_code=500, detail="python-docx not installed")
     elif suffix in (".jpg", ".jpeg", ".png", ".tiff", ".bmp"):
         return _extract_image(file_bytes)
@@ -158,6 +162,7 @@ def _extract_pdf(file_bytes: bytes) -> str:
         from cv.pipeline import extract_text_from_pdf_bytes
         return extract_text_from_pdf_bytes(file_bytes)
     except Exception as exc:
+        logger.exception("PDF extraction failed")
         raise HTTPException(status_code=500, detail=f"PDF extraction failed: {exc}")
 
 
@@ -172,6 +177,7 @@ def _extract_image(file_bytes: bytes) -> str:
             raise ValueError("Could not decode image")
         return extract_text_from_image(preprocess_image(image))
     except Exception as exc:
+        logger.exception("Image OCR failed")
         raise HTTPException(status_code=500, detail=f"Image OCR failed: {exc}")
 
 
@@ -250,6 +256,7 @@ def master_query(
       -H "Content-Type: application/json" \\
       -d '{"query":"What is Section 138 NI Act?","session_id":null}' | python -m json.tool
     """
+    logger.info(f"Master query request: {request.query}, session_id: {request.session_id}")
     if not request.query or not request.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
 
@@ -261,6 +268,7 @@ def master_query(
 
     # Link session to user if authenticated
     if current_user:
+        logger.debug(f"Linking session {resp.session_id} to user {current_user['id']}")
         session_memory.link_session_to_user(resp.session_id, current_user["id"])
 
     debug = req.query_params.get("debug", "").lower() == "true" if req else False
@@ -286,6 +294,7 @@ async def master_document(
       -F "file=@rental_agreement.pdf" \\
       -F "session_id=" | python -m json.tool
     """
+    logger.info(f"Master document request for file: {file.filename}, session_id: {session_id}")
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
@@ -316,6 +325,7 @@ async def master_document(
 
     # Link session to user if authenticated
     if current_user:
+        logger.debug(f"Linking session {resp.session_id} to user {current_user['id']}")
         session_memory.link_session_to_user(resp.session_id, current_user["id"])
 
     debug = req.query_params.get("debug", "").lower() == "true"
@@ -332,6 +342,7 @@ def get_session_history(session_id: str):
 
     curl -s http://localhost:8000/api/v1/master/session/<session_id>/history | python -m json.tool
     """
+    logger.info(f"Fetching session history for: {session_id}")
     if not session_memory.session_exists(session_id):
         raise HTTPException(
             status_code=404,
@@ -353,6 +364,7 @@ def delete_session(session_id: str):
 
     curl -s -X DELETE http://localhost:8000/api/v1/master/session/<session_id>
     """
+    logger.info(f"Deleting session: {session_id}")
     deleted = session_memory.delete_session(session_id)
     if not deleted:
         raise HTTPException(
@@ -379,6 +391,7 @@ def get_user_sessions(request: Request, current_user: dict = Depends(get_current
     curl -s http://localhost:8000/api/v1/master/sessions \\
       -H "Authorization: Bearer <your_token>" | python -m json.tool
     """
+    logger.info(f"Fetching user sessions for user: {current_user['id']}")
     sessions = session_memory.get_user_sessions(current_user["id"])
 
     # BUG FIX 5: filter by ?type= query parameter
@@ -427,4 +440,5 @@ def new_session_id():
     Returns: {"session_id": "LX-XXXXXXXX"}
     """
     fresh_id = "LX-" + uuid.uuid4().hex[:8].upper()
+    logger.info(f"Generated new session id: {fresh_id}")
     return {"session_id": fresh_id}

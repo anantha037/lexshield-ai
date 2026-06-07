@@ -28,6 +28,10 @@ import re
 import argparse
 from pathlib import Path
 from dotenv import load_dotenv
+
+import logging
+
+logger = logging.getLogger(__name__)
 load_dotenv()
 
 OUTPUT_DIR   = Path("data/classifier_samples")
@@ -250,10 +254,10 @@ def _build_providers(preferred: str) -> list:
             continue
         try:
             providers.append(cls())
-            print(f"[Generator] OK {name} ready")
+            logger.info(f"[Generator] OK {name} ready")
         except Exception as e:
             errors.append(f"{name}: {e}")
-            print(f"[Generator] FAIL {name} failed: {e}")
+            logger.info(f"[Generator] FAIL {name} failed: {e}")
 
     if not providers:
         raise RuntimeError(
@@ -282,7 +286,7 @@ class SyntheticDataGenerator:
     def _next_provider(self) -> bool:
         if self._idx + 1 < len(self.providers):
             self._idx += 1
-            print(f"\n  [Provider] Switched -> {self.provider.name}")
+            logger.info(f"\n  [Provider] Switched -> {self.provider.name}")
             return True
         return False
 
@@ -331,7 +335,7 @@ class SyntheticDataGenerator:
                     # RPM limit — short wait, retry SAME provider
                     wait = self._parse_wait_seconds(err_str)
                     wait = min(wait, 70)   # RPM resets in <60s always
-                    print(f"\n  [!] {self.provider.name} RPM limit. "
+                    logger.warning(f"\n  [!] {self.provider.name} RPM limit. "
                           f"Waiting {wait}s then retrying...")
                     time.sleep(wait)
                     # Don't increment providers_tried — retry same provider
@@ -339,14 +343,14 @@ class SyntheticDataGenerator:
 
                 elif is_daily or is_quota:
                     # Daily limit hit — switch provider permanently
-                    print(f"\n  [!] {self.provider.name} daily limit exhausted.")
+                    logger.info(f"\n  [!] {self.provider.name} daily limit exhausted.")
                     if self._next_provider():
                         providers_tried += 1
                         continue
                     else:
                         # All providers daily-limited — parse longest wait
                         wait = self._parse_wait_seconds(err_str)
-                        print(f"  All providers exhausted. "
+                        logger.warning(f"  All providers exhausted. "
                               f"Waiting {wait}s for reset...")
                         time.sleep(wait)
                         self._reset_providers()
@@ -354,20 +358,20 @@ class SyntheticDataGenerator:
 
                 elif is_rate:
                     # Generic rate limit — try next provider
-                    print(f"\n  [!] {self.provider.name} rate limited.")
+                    logger.info(f"\n  [!] {self.provider.name} rate limited.")
                     if self._next_provider():
                         providers_tried += 1
                         continue
                     else:
                         wait = self._parse_wait_seconds(err_str)
-                        print(f"  Waiting {wait}s...")
+                        logger.info(f"  Waiting {wait}s...")
                         time.sleep(wait)
                         self._reset_providers()
                         return None
 
                 else:
                     # Non-rate-limit error (auth, network, etc.)
-                    print(f"\n  [ERROR] {self.provider.name}: {e}")
+                    logger.exception(f"{self.provider.name} failed")
                     if self._next_provider():
                         providers_tried += 1
                         continue
@@ -388,10 +392,10 @@ class SyntheticDataGenerator:
         start_from = len(existing) if resume else 0
 
         if resume and start_from >= n_samples:
-            print(f"  [{category}] Already complete ({start_from}). Skipping.")
+            logger.info(f"  [{category}] Already complete ({start_from}). Skipping.")
             return start_from
 
-        print(f"  [{category}] {start_from} done, need "
+        logger.info(f"  [{category}] {start_from} done, need "
               f"{n_samples - start_from} more...")
 
         generated = start_from
@@ -402,32 +406,32 @@ class SyntheticDataGenerator:
                     text, encoding="utf-8"
                 )
                 generated += 1
-                print(f"    {i+1}/{n_samples} OK "
+                logger.info(f"    {i+1}/{n_samples} OK "
                       f"({len(text)} chars) [{self.provider.name}]")
             else:
-                print(f"    {i+1}/{n_samples} FAIL skipped")
+                logger.info(f"    {i+1}/{n_samples} FAIL skipped")
 
         return generated
 
     def generate_all(self, n_samples: int = 50, resume: bool = True) -> dict:
-        print("=" * 60)
-        print("LexShield AI — Synthetic Data Generator v3")
-        print(f"Target: {n_samples} × {len(CATEGORY_PROMPTS)} categories")
-        print(f"Output: {OUTPUT_DIR.resolve()}")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info(f"LexShield AI — Synthetic Data Generator v3")
+        logger.info(f"Target: {n_samples} × {len(CATEGORY_PROMPTS)} categories")
+        logger.info(f"Output: {OUTPUT_DIR.resolve()}")
+        logger.info("=" * 60)
 
         results = {}
         for category in CATEGORY_PROMPTS:
-            print(f"\n[{category}]")
+            logger.info(f"\n[{category}]")
             results[category] = self.generate_category(
                 category, n_samples, resume
             )
 
-        print("\n" + "=" * 60)
+        logger.info("\n" + "=" * 60)
         total = sum(results.values())
-        print(f"DONE. Total: {total}")
+        logger.info(f"DONE. Total: {total}")
         for cat, c in results.items():
-            print(f"  {cat:30s} "
+            logger.info(f"  {cat:30s} "
                   f"{'OK' if c >= n_samples else f'FAIL ({c}/{n_samples})'}")
 
         with open(OUTPUT_DIR / "manifest.json", "w") as f:

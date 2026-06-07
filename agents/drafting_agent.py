@@ -25,6 +25,9 @@ LLM:
 """
 
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 import os
 import re
 import time
@@ -1508,7 +1511,7 @@ class DraftingAgent:
             )
 
         except Exception as e:
-            print(f"[DraftingAgent] Fact extraction failed (non-fatal): {e}")
+            logger.exception("[DraftingAgent] Fact extraction failed (non-fatal)")
             # Fallback: all fields missing
             return FactExtractionResult(
                 extracted_facts={},
@@ -1589,7 +1592,7 @@ class DraftingAgent:
                 "draft":    "",
             }
 
-        print(f"[DraftingAgent] Menu selection -> category={category!r}")
+        logger.info(f"[DraftingAgent] Menu selection -> category={category!r}")
 
         # Build initial draft_data and immediately start field collection
         # Treat the selection query as an empty description (no facts to extract)
@@ -1652,26 +1655,25 @@ class DraftingAgent:
         required   = REQUIRED_FIELDS.get(category, [])
 
         # ── Attempt dynamic fact extraction ────────────────────────────────────
-        extraction = self._extract_facts(description, category)
+        res = self._extract_facts(description, category)
 
-        if extraction.confidence >= 0.5 and extraction.extracted_facts:
-            n_extracted = len(extraction.extracted_facts)
-            n_missing   = len(extraction.missing_fields)
-            print(
-                f"[DraftingAgent] Extracted {n_extracted} facts, "
-                f"{n_missing} fields missing for {category}"
+        if res.confidence >= 0.5 and res.extracted_facts:
+            logger.debug(
+                f"[DraftingAgent] session={session_id[:8]} "
+                f"-> extracted {len(res.extracted_facts)} facts. "
+                f"missing={len(res.missing_fields)} conf={res.confidence:.2f}"
             )
 
             draft_data = {
-                "answers":                  dict(extraction.extracted_facts),
+                "answers":                  dict(res.extracted_facts),
                 "current_q_index":          0,
-                "missing_fields":           list(extraction.missing_fields),
+                "missing_fields":           list(res.missing_fields),
                 "use_dynamic":              True,
                 "applicable_sections_text": "",
                 "authority":                "",
             }
 
-            if not extraction.missing_fields:
+            if not res.missing_fields:
                 # All facts extracted — advance straight to AWAITING_CONFIRMATION
                 self._save(session_id, DraftStage.RETRIEVE_SECTIONS, category, draft_data)
                 return self._retrieve_sections(
@@ -1679,7 +1681,7 @@ class DraftingAgent:
                 )
 
             # Some fields missing — persist COLLECTING_FIELDS, ask the first one
-            first_field = extraction.missing_fields[0]
+            first_field = res.missing_fields[0]
             first_q     = _field_question(first_field, category)
             self._save(session_id, DraftStage.COLLECTING_FIELDS, category, draft_data)
 
@@ -1687,7 +1689,7 @@ class DraftingAgent:
                 "answer": (
                     f"I will help you draft a **{label}**.\n\n"
                     f"I've noted the details you provided. I just need a few more:\n\n"
-                    f"**Question 1 of {n_missing}:**\n{first_q}"
+                    f"**Question 1 of {len(res.missing_fields)}:**\n{first_q}"
                 ),
                 "stage":    DraftStage.COLLECTING_FIELDS,
                 "doc_type": category,
@@ -1696,9 +1698,9 @@ class DraftingAgent:
             }
 
         # ── Fallback: no extraction — sequential questioning ───────────────────
-        print(
-            f"[DraftingAgent] Extracted 0 facts, "
-            f"{len(required)} fields missing for {category}"
+        logger.debug(
+            f"[DraftingAgent] fact extraction fall-through: "
+            f"extracted={len(res.extracted_facts)} missing={len(res.missing_fields)}"
         )
 
         # BUG1 fix: use _field_question so the shown question matches required[0],
@@ -1811,7 +1813,7 @@ class DraftingAgent:
             section_text = answer.answer_text[:1500] if answer.answer_text else ""
             draft_data["applicable_sections_text"] = section_text
         except Exception as e:
-            print(f"[DraftingAgent] RAG retrieval failed (non-fatal): {e}")
+            logger.exception("[DraftingAgent] RAG retrieval failed (non-fatal)")
             draft_data["applicable_sections_text"] = ""
 
         self._save(session_id, DraftStage.IDENTIFY_AUTHORITY, category, draft_data)
@@ -1903,7 +1905,7 @@ class DraftingAgent:
         category   = row["category"]
         draft_data = row["draft_data"]
 
-        print(f"[DraftingAgent] Generating {category} draft for session {session_id[:8]}…")
+        logger.info(f"[DraftingAgent] Generating {category} draft for session {session_id[:8]}…")
 
         validation_status = "passed"
         try:
@@ -1913,7 +1915,7 @@ class DraftingAgent:
             val_result = self._validate_draft(draft_text, category)
             if not val_result.get("passed", True):
                 missing_items = val_result.get("missing", [])
-                print(f"[DraftingAgent] Validation failed. Missing: {missing_items}. Regenerating...")
+                logger.warning(f"[DraftingAgent] Validation failed. Missing: {missing_items}. Regenerating...")
                 
                 draft_data["missing_elements_to_inject"] = missing_items
                 draft_text_2 = self._call_llm(category, draft_data)
@@ -1921,17 +1923,17 @@ class DraftingAgent:
                 # Validate second attempt
                 val_result_2 = self._validate_draft(draft_text_2, category)
                 if not val_result_2.get("passed", True):
-                    print(f"[DraftingAgent] Second attempt failed validation. Returning as-is.")
+                    logger.warning("[DraftingAgent] Second attempt failed validation. Returning as-is.")
                     validation_status = "failed_returned"
                 else:
-                    print(f"[DraftingAgent] Second attempt passed validation.")
+                    logger.info("[DraftingAgent] Second attempt passed validation.")
                     validation_status = "failed_regenerated"
                 
                 draft_text = draft_text_2
                 draft_data["missing_elements"] = missing_items
 
         except Exception as e:
-            print(f"[DraftingAgent] LLM generation failed: {e}")
+            logger.exception("[DraftingAgent] LLM generation failed")
             draft_text = f"[Draft generation failed: {e}. Please try again.]"
             validation_status = "failed_returned"
 
@@ -1990,7 +1992,7 @@ Draft to validate:
             clean_json = response.strip().strip('`').replace('json', '').strip()
             return json.loads(clean_json)
         except Exception as e:
-            print(f"[DraftingAgent] Validation parse error: {e}")
+            logger.exception("[DraftingAgent] Validation parse error")
             return {"passed": True}
 
     # ── LLM call ───────────────────────────────────────────────────────────────
@@ -2004,7 +2006,7 @@ Draft to validate:
             try:
                 return self._via_gemini(prompt, gemini_key)
             except Exception as e:
-                print(f"[DraftingAgent] Gemini failed ({e}), trying Groq")
+                logger.warning(f"[DraftingAgent] Gemini failed ({e}), trying Groq")
 
         # Fallback: Groq LLaMA 3.3 70B
         from rag.llm import llm

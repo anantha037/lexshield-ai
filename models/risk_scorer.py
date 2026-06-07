@@ -623,7 +623,7 @@ class RiskScorer:
                 score = float(data.get("risk_score", 0.5))
                 return max(0.0, min(1.0, score))
         except Exception as e:
-            logger.warning("LLM risk scoring failed: %s", e)
+            logger.exception("LLM risk scoring failed")
         return None
 
 
@@ -1001,7 +1001,7 @@ class RiskScorer:
                 score = float(data.get("risk_score", 0.5))
                 return max(0.0, min(1.0, score))
         except Exception as e:
-            logger.warning("LLM risk scoring failed: %s", e)
+            logger.exception("LLM risk scoring failed")
         return None
 
 

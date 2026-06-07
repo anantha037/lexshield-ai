@@ -187,7 +187,7 @@ def _get_surya_predictors():
             _surya_rec_predictor = _SuryaRecognitionPredictor()
             logger.info("[CV] Surya predictors loaded successfully.")
         except Exception as e:
-            logger.error(f"[CV] Surya predictor load failed: {e}")
+            logger.exception(f"[CV] Surya predictor load failed")
             _surya_det_predictor = None
             return None, None
 
@@ -314,7 +314,7 @@ def _extract_tables_pdfplumber(pdf_path: str) -> list[dict]:
                             "text": f"[TABLE — Page {page_num}]\n{tbl_text}",
                         })
     except Exception as e:
-        logger.warning(f"[CV] pdfplumber warning: {e}")
+        logger.exception(f"[CV] pdfplumber warning")
     if tables:
         logger.info(f"[CV] pdfplumber: {len(tables)} table(s) extracted")
     return tables
@@ -335,7 +335,7 @@ def _extract_tables_pdfplumber_bytes(pdf_bytes: bytes) -> list[dict]:
                             "text": f"[TABLE — Page {page_num}]\n{tbl_text}",
                         })
     except Exception as e:
-        logger.warning(f"[CV] pdfplumber bytes warning: {e}")
+        logger.exception(f"[CV] pdfplumber bytes warning")
     return tables
 
 
@@ -370,7 +370,7 @@ def _extract_digital_pdf(pdf_path: str) -> Optional[str]:
         logger.info(f"[CV] PyMuPDF: {len(pages_text)} page(s), {total_chars} chars (digital PDF)")
         return "\n\n".join(pages_text)
     except Exception as e:
-        logger.warning(f"[CV] PyMuPDF error: {e}")
+        logger.exception(f"[CV] PyMuPDF error")
         return None
 
 
@@ -394,7 +394,7 @@ def _extract_digital_pdf_bytes(pdf_bytes: bytes) -> Optional[str]:
             return None
         return "\n\n".join(pages_text)
     except Exception as e:
-        logger.warning(f"[CV] PyMuPDF bytes error: {e}")
+        logger.exception(f"[CV] PyMuPDF bytes error")
         return None
 
 
@@ -463,7 +463,7 @@ def _surya_ocr_image(
         return "\n".join(text_lines), round(avg_confidence, 3)
 
     except Exception as e:
-        logger.warning(f"[CV] Surya OCR error: {e}")
+        logger.exception(f"[CV] Surya OCR error")
         return "", 0.0
 
 
@@ -553,7 +553,7 @@ def _surya_ocr_pdf(
                         all_confs.extend(page_confs)
 
             except Exception as e:
-                logger.warning(f"[CV] Surya: page {page_num + 1} failed: {e}")
+                logger.exception(f"[CV] Surya: page {page_num + 1} failed")
             finally:
                 del img, pix
                 gc.collect()
@@ -572,7 +572,7 @@ def _surya_ocr_pdf(
         return text, round(avg_confidence, 3)
 
     except Exception as e:
-        logger.error(f"[CV] Surya PDF OCR error: {e}")
+        logger.exception(f"[CV] Surya PDF OCR error")
         return "", 0.0
 
 
@@ -641,7 +641,7 @@ def _tesseract_ocr_image(image: np.ndarray, lang_code: str = "en") -> str:
         return "\n".join(lines)
     except Exception as e:
         err_str = str(e).lower()
-        logger.warning(f"[CV] Tesseract error (lang={tess_lang}): {e}")
+        logger.exception(f"[CV] Tesseract error (lang={tess_lang})")
 
         # Detect missing language pack
         if "failed loading language" in err_str or "not found" in err_str:
@@ -659,7 +659,7 @@ def _tesseract_ocr_image(image: np.ndarray, lang_code: str = "en") -> str:
                 logger.info("[CV] Tesseract: fell back to eng-only")
                 return "\n".join(lines)
             except Exception as e2:
-                logger.error(f"[CV] Tesseract eng fallback failed: {e2}")
+                logger.exception(f"[CV] Tesseract eng fallback failed")
         return ""
 
 
@@ -754,7 +754,7 @@ def extract_text_from_pdf_path(
         logger.error("[CV] pdf2image not available for Tesseract fallback")
         return ""
     except Exception as e:
-        logger.error(f"[CV] Tesseract PDF fallback error: {e}")
+        logger.exception(f"[CV] Tesseract PDF fallback error")
         return ""
 
 
