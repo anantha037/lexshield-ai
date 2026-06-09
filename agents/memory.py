@@ -36,6 +36,7 @@ import json
 from contextvars import ContextVar
 from typing import Optional
 import logging
+import psycopg
 
 from agents.pg_sessions import get_conn
 
@@ -207,12 +208,21 @@ class SessionMemory:
         """Generate a new UUID session and persist it."""
         sid = str(uuid.uuid4())
         logger.info(f"Creating new session: {sid}")
-        with get_conn() as conn:
-            conn.execute(
-                "INSERT INTO sessions (session_id, created_ts) VALUES (%s, %s) "
-                "ON CONFLICT (session_id) DO NOTHING",
-                (sid, time.time()),
-            )
+        try:
+            with get_conn() as conn:
+                conn.execute(
+                    "INSERT INTO sessions (session_id, created_ts) VALUES (%s, %s) "
+                    "ON CONFLICT (session_id) DO NOTHING",
+                    (sid, time.time()),
+                )
+        except psycopg.OperationalError:
+            logger.warning("Database connection failed. Reopening connection and retrying...")
+            with get_conn() as conn:
+                conn.execute(
+                    "INSERT INTO sessions (session_id, created_ts) VALUES (%s, %s) "
+                    "ON CONFLICT (session_id) DO NOTHING",
+                    (sid, time.time()),
+                )
         return sid
 
     def session_exists(self, session_id: str) -> bool:

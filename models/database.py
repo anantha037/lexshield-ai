@@ -29,7 +29,14 @@ if DATABASE_URL.startswith("postgresql://"):
 # For SQLite, we need check_same_thread=False
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(
+    DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=5,
+    max_overflow=0
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

@@ -42,6 +42,8 @@ pool = ConnectionPool(
     conninfo=_conninfo,
     min_size=2,
     max_size=10,
+    reconnect_timeout=10,
+    max_waiting=5,
     kwargs={"autocommit": True, "row_factory": dict_row},
 )
 
