@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import logging
 
@@ -260,11 +261,18 @@ def master_query(
     if not request.query or not request.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
 
-    resp = master_orchestrator.handle_query(
-        query      = request.query.strip(),
-        session_id = request.session_id,
-        language   = request.language,
-    )
+    try:
+        resp = master_orchestrator.handle_query(
+            query      = request.query.strip(),
+            session_id = request.session_id,
+            language   = request.language,
+        )
+    except Exception as e:
+        logger.exception("[API] master_query unhandled exception")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "An internal error occurred. Please try again."}
+        )
 
     # Link session to user if authenticated
     if current_user:
@@ -317,11 +325,18 @@ async def master_document(
             ),
         )
 
-    resp = master_orchestrator.handle_document(
-        extracted_text = extracted_text.strip(),
-        session_id     = session_id,
-        filename       = file.filename,
-    )
+    try:
+        resp = master_orchestrator.handle_document(
+            extracted_text = extracted_text.strip(),
+            session_id     = session_id,
+            filename       = file.filename,
+        )
+    except Exception as e:
+        logger.exception("[API] master_document unhandled exception")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "An internal error occurred. Please try again."}
+        )
 
     # Link session to user if authenticated
     if current_user:
