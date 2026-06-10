@@ -512,14 +512,17 @@ class RAGPipeline:
                 decomposed_chunks = deduplicate_chunks([decomposed_chunks])
                 logger.info(f"[Pipeline] decomposed pool: {len(decomposed_chunks)} unique chunks")
 
+        # search_query: history-free, used for entity extraction in hybrid search
+        search_query = latest_expanded
+
         # ═══════════════════════════════════════════════════════════════════════
         # STEP 2: Query rewriting (moderate + complex only)
         # ═══════════════════════════════════════════════════════════════════════
         if complexity in ("moderate", "complex") and self.enable_rewriting:
             rewritten   = query_rewriter.rewrite(expanded)
-            all_queries = [expanded] + [q for q in rewritten if q != expanded]
+            all_queries = [search_query] + [q for q in rewritten if q != expanded]
         else:
-            all_queries = [expanded]
+            all_queries = [search_query]
 
         # ═══════════════════════════════════════════════════════════════════════
         # STEP 3: Hybrid retrieval
