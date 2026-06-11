@@ -74,6 +74,12 @@ class MasterOrchestrator:
             import re
             words = re.sub(r"[^\w\s]", "", q.lower()).split()
             pronouns = {"that", "it", "this", "those", "its", "them", "same"}
+            
+            # Topic-shift guard
+            topic_shift_keywords = {"cocaine", "drugs", "narcotic", "property", "contract", "divorce", "cheque", "cyber", "tax"}
+            if any(w in topic_shift_keywords for w in words):
+                return False
+                
             return len(words) < 10 and any(p in words for p in pronouns)
 
         if _is_vague_followup(query):
@@ -238,19 +244,36 @@ class MasterOrchestrator:
         except Exception as e:
             logger.exception("Failed to write local metric log")
 
-        import re
         extracted_entities = []
-        final_query = final_state.get("query", query)
-        sec_matches = re.findall(r"Section \d+", final_query, re.IGNORECASE)
-        if sec_matches:
-            extracted_entities.extend(sec_matches)
         
-        for act in ["IPC", "BNS", "CrPC", "BNSS", "IEA", "CPC"]:
-            if re.search(rf"\b{act}\b", final_query, re.IGNORECASE):
+        # 1. Read NER result from state
+        ner_res = final_state.get("ner_result", {})
+        for ent in ner_res.get("entities", []):
+            label = ent.get("label", "")
+            text = ent.get("text", "").strip()
+            if label in ("ACT", "LEGISLATION", "SECTION", "LEGAL_SECTION") and text:
+                if text not in extracted_entities:
+                    extracted_entities.append(text)
+                    
+        # 2. Read Scratchpad (contains intent classifier and regex fallback entities)
+        scratchpad = final_state.get("scratchpad", {})
+        for sec in scratchpad.get("detected_sections", []):
+            sec_str = sec if str(sec).lower().startswith("section") else f"Section {sec}"
+            if sec_str not in extracted_entities:
+                extracted_entities.append(sec_str)
+        for act in scratchpad.get("detected_acts", []):
+            if act not in extracted_entities:
                 extracted_entities.append(act)
                 
-        if extracted_entities:
-            session_memory.store_last_entities(session_id, extracted_entities)
+        # 3. Read RAG result for explicit sections used
+        rag_res = final_state.get("rag_result", {})
+        for sec in rag_res.get("kg_sections_used", []):
+            sec_str = sec if str(sec).lower().startswith("section") else f"Section {sec}"
+            if sec_str not in extracted_entities:
+                extracted_entities.append(sec_str)
+        
+        # Unconditional store to explicitly clear memory when empty
+        session_memory.store_last_entities(session_id, extracted_entities)
 
         return build_structured_response(
             answer_text       = answer,
