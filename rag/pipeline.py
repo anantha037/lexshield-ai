@@ -42,7 +42,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 from rag.llm               import llm
 from rag.hybrid_search     import hybrid_searcher, extract_sections_and_sources, extract_act_hint
-from rag.query_rewriter    import query_rewriter, decompose_query
+from rag.query_rewriter    import query_rewriter, decompose_query, rewrite_for_retrieval
 from rag.reranker          import reranker
 from rag.vectorstore       import vectorstore
 from rag.act_resolver      import act_resolver
@@ -373,6 +373,15 @@ class RAGPipeline:
         # Extract acts/sections ONLY from the latest user_query to avoid hard-pinning 
         # chunks based on the assistant's previous answers in the context block.
         latest_expanded = preprocess_query(user_query)
+
+        # ── Conversational query rewriting ─────────────────────────────────────
+        # If the current query has no section numbers and no act keywords,
+        # and context_block is non-empty (there is prior conversation),
+        # rewrite the query into a standalone form before retrieval.
+        search_query_raw = rewrite_for_retrieval(user_query, context_block)
+        if search_query_raw != user_query:
+            latest_expanded = preprocess_query(search_query_raw)
+
         paired_source = detect_paired_act(latest_expanded.lower())
         original_act_hint = extract_act_hint(latest_expanded)
 

@@ -396,5 +396,113 @@ class QueryRewriter:
             logger.debug(f"  [{tag}]  {q}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONVERSATIONAL QUERY REFORMULATOR  (replaces orchestrator entity injection)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Section-number detection ──────────────────────────────────────────────────
+_SECTION_NUM_RE = re.compile(r'\bsection\s+\d+', re.IGNORECASE)
+
+# ── Broad act-name detection (covers all major Indian statutes) ───────────────
+_REWRITE_ACT_RE = re.compile(
+    r'\b(?:IPC|BNS|CrPC|BNSS|NDPS|IT\s*Act|Companies\s+Act'
+    r'|Hindu\s+Marriage\s+Act|CPC|IEA|BSA|POCSO|PMLA|UAPA'
+    r'|RERA|FEMA|SEBI|POSH|GST|CGST|IGST'
+    r'|Indian\s+Penal\s+Code|Bharatiya\s+Nyaya\s+Sanhita'
+    r'|Code\s+of\s+Criminal\s+Procedure|Indian\s+Evidence\s+Act'
+    r'|Consumer\s+Protection\s+Act|Motor\s+Vehicles?\s+Act'
+    r'|Negotiable\s+Instruments?\s+Act|Information\s+Technology\s+Act'
+    r'|Narcotic\s+Drugs|Transfer\s+of\s+Property\s+Act'
+    r'|Indian\s+Contract\s+Act|Insolvency\s+and\s+Bankruptcy'
+    r'|Prevention\s+of\s+Corruption|Domestic\s+Violence'
+    r'|Right\s+to\s+Information|NI\s*Act|MV\s*Act|DV\s*Act)\b',
+    re.IGNORECASE,
+)
+
+_REWRITE_PROMPT = """You are a legal query reformulator.
+Given a conversation history and a follow-up question, rewrite the follow-up as a complete, self-contained legal search query.
+Output ONLY the rewritten query. No explanation. No preamble.
+
+Conversation history:
+{last_2_turns}
+
+Follow-up question: {query}
+
+Rewritten query:"""
+
+
+def _extract_last_2_turns(context_block: str) -> str:
+    """Extract the last 2 user/assistant turn pairs from context_block."""
+    lines = context_block.strip().splitlines()
+    turns: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line.startswith(("User:", "Assistant:", "[USER]", "[ASSISTANT]")):
+            if current:
+                turns.append("\n".join(current))
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        turns.append("\n".join(current))
+    # last 2 pairs = up to 4 entries (user+assistant, user+assistant)
+    return "\n".join(turns[-4:])
+
+
+def rewrite_for_retrieval(query: str, context_block: str) -> str:
+    """
+    Rewrite a vague follow-up query into a self-contained search query
+    using the last 2 conversation turns from context_block.
+
+    Conditions for rewriting (ALL must be true):
+      1. context_block is non-empty (there is prior conversation)
+      2. query has no section number (no digits after "section")
+      3. query has no act name from the broad coverage list
+
+    Returns the original query unchanged if any condition is false,
+    or if the LLM call fails for any reason — a rewriter failure must
+    never block retrieval.
+
+    Token cost: one Groq call with max_tokens=100.
+    """
+    logger.debug(f"[QueryRewriter] rewrite_for_retrieval called: query={query!r}, "
+                 f"context_empty={not bool(context_block and context_block.strip())}")
+
+    # Condition 1: must have conversation history
+    if not context_block or not context_block.strip():
+        logger.debug("[QueryRewriter] rewrite_for_retrieval: no context — skipping")
+        return query
+
+    # Condition 2: skip if query has section number
+    if _SECTION_NUM_RE.search(query):
+        logger.debug("[QueryRewriter] rewrite_for_retrieval: section number found — skipping")
+        return query
+
+    # Condition 3: skip if query has an act name
+    if _REWRITE_ACT_RE.search(query):
+        logger.debug("[QueryRewriter] rewrite_for_retrieval: act name found — skipping")
+        return query
+
+    # All conditions met — rewrite via LLM
+    try:
+        last_2 = _extract_last_2_turns(context_block)
+        prompt = _REWRITE_PROMPT.format(last_2_turns=last_2, query=query)
+        rewritten = llm.generate(
+            prompt=prompt,
+            system_prompt="",
+            temperature=0.0,
+            max_tokens=100,
+        )
+        rewritten = rewritten.strip().strip('"').strip("'").strip()
+        if rewritten and len(rewritten) > 5:
+            logger.info(f"[QueryRewriter] rewrite_for_retrieval: {query!r} -> {rewritten!r}")
+            return rewritten
+        logger.debug("[QueryRewriter] rewrite_for_retrieval: LLM returned empty/short — using original")
+        return query
+    except Exception as exc:
+        logger.warning(f"[QueryRewriter] rewrite_for_retrieval failed ({exc}) — using original")
+        return query
+
+
 # ── Singletons ─────────────────────────────────────────────────────────────────
 query_rewriter = QueryRewriter()
