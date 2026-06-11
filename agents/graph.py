@@ -314,7 +314,12 @@ def classify_intent_node(state: AgentState) -> dict:
         complexity        = "complex" if (len(detected_sections) > 1 or len(detected_acts) > 1) else "simple"
 
     # ── Scratchpad population ──────────────────────────────────────────────────
-    scratchpad = dict(state.get("scratchpad", {}))
+    # IMPORTANT: always start with a FRESH scratchpad.  Do NOT read from
+    # state.get("scratchpad", {}) — the PostgresSaver checkpointer persists
+    # AgentState across invoke() calls on the same thread_id, so stale
+    # detected_sections / detected_acts from a previous turn would bleed
+    # into the current turn's retrieval and cause cross-query contamination.
+    scratchpad = {}
 
     scratchpad[SCRATCH_DETECTED_SECTIONS] = detected_sections
     scratchpad[SCRATCH_DETECTED_ACTS]     = detected_acts
@@ -421,7 +426,8 @@ def legal_rag_node(state: AgentState) -> dict:
     if session_id:
         session_memory.set_session_context(session_id)
 
-    # ── Scratchpad reader: jurisdiction hint ───────────────────────────────────
+    # ── Scratchpad reader: use current turn's scratchpad (set by classify_intent_node)
+    # Copy it so mutations in this node don't affect the upstream state dict.
     scratchpad = dict(state.get("scratchpad", {}))
     jurisdiction = scratchpad.get(SCRATCH_JURISDICTION, "")
     if jurisdiction and context_block:
@@ -448,9 +454,14 @@ def legal_rag_node(state: AgentState) -> dict:
     except Exception as e:
         logger.exception(f"[Graph] legal_rag_node NER warning")
 
-    # ── Scratchpad writer: merge NER sections ──────────────────────────────
-    existing_sections = scratchpad.get(SCRATCH_DETECTED_SECTIONS, [])
-    merged = list(set(existing_sections + ner_sections))
+    # ── Scratchpad writer: overwrite with current-turn NER sections ────────
+    # IMPORTANT: do NOT merge with existing_sections from the scratchpad.
+    # classify_intent_node already wrote its regex/LLM detections into the
+    # scratchpad; those are from the CURRENT query and are fine.  NER sections
+    # are additive to those.  We combine them but never carry over from a
+    # previous turn — classify_intent_node now starts with a fresh scratchpad.
+    intent_sections = scratchpad.get(SCRATCH_DETECTED_SECTIONS, [])
+    merged = list(set(intent_sections + ner_sections))
     scratchpad[SCRATCH_DETECTED_SECTIONS] = merged
 
     # KG enrichment
