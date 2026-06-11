@@ -504,7 +504,7 @@ class RAGPipeline:
 
         if complexity == "complex":
             logger.info("[Pipeline] complex path — decomposing query")
-            sub_queries = decompose_query(expanded)
+            sub_queries = decompose_query(latest_expanded)
 
             if len(sub_queries) >= 2:
                 for i, sq in enumerate(sub_queries, 1):
@@ -528,8 +528,8 @@ class RAGPipeline:
         # STEP 2: Query rewriting (moderate + complex only)
         # ═══════════════════════════════════════════════════════════════════════
         if complexity in ("moderate", "complex") and self.enable_rewriting:
-            rewritten   = query_rewriter.rewrite(expanded)
-            all_queries = [search_query] + [q for q in rewritten if q != expanded]
+            rewritten   = query_rewriter.rewrite(latest_expanded)
+            all_queries = [search_query] + [q for q in rewritten if q != latest_expanded]
         else:
             all_queries = [search_query]
 
@@ -651,7 +651,7 @@ class RAGPipeline:
                 # Marginal retrieval — rewrite and re-retrieve once
                 logger.info("[Pipeline] CRAG: rewrite triggered — re-retrieving")
                 crag_triggered = True
-                extra_rewrites = query_rewriter.rewrite(expanded)
+                extra_rewrites = query_rewriter.rewrite(latest_expanded)
                 extra_queries  = [q for q in extra_rewrites if q not in all_queries]
                 if extra_queries:
                     extra_chunks = _hybrid_search_multi(
@@ -708,13 +708,13 @@ class RAGPipeline:
         final_chunks = final_chunks[:n_final]
 
         # Section safety fallback (unchanged)
-        section_match = re.search(r'\bSection\s+(\d+[A-Z]?)\b', expanded, re.IGNORECASE)
+        section_match = re.search(r'\bSection\s+(\d+[A-Z]?)\b', latest_expanded, re.IGNORECASE)
         if section_match:
             target = section_match.group(1)
             if not any(c.get("section", "") == target for c in final_chunks):
                 from rag.bm25_retriever import bm25_retriever
                 extra = bm25_retriever.search(
-                    expanded, n_results=3, category_filter=effective_filter
+                    latest_expanded, n_results=3, category_filter=effective_filter
                 )
                 for e in extra:
                     if e.get("section", "") == target:
