@@ -447,7 +447,7 @@ class RAGPipeline:
             logger.info("[Pipeline] simple path — using section fast-path only")
             # Still inject KG context and paired act if available
             if KG_INJECTION_ENABLED:
-                self._inject_kg(pinned_chunks, expanded)
+                self._inject_kg(pinned_chunks, expanded, latest_expanded)
             else:
                 logger.info("[Pipeline] KG injection disabled — skipping")
             soft_pinned = []
@@ -469,7 +469,7 @@ class RAGPipeline:
 
         # ── Knowledge Graph injection ─────────────────────────────────────────
         if KG_INJECTION_ENABLED:
-            self._inject_kg(pinned_chunks, expanded)
+            self._inject_kg(pinned_chunks, expanded, latest_expanded)
         else:
             logger.info("[Pipeline] KG injection disabled — skipping")
 
@@ -780,7 +780,8 @@ class RAGPipeline:
 
     # ── KG injection helper ────────────────────────────────────────────────────
 
-    def _inject_kg(self, pinned_chunks: list[dict], expanded: str) -> None:
+    def _inject_kg(self, pinned_chunks: list[dict], expanded: str,
+                   latest_expanded: str = "") -> None:
         """Inject Knowledge Graph context when section fast-path fired."""
         if not pinned_chunks:
             return
@@ -788,7 +789,8 @@ class RAGPipeline:
             from rag.knowledge_graph import get_kg
             kg    = get_kg()
             notes = []
-            for sec, hint in extract_sections_and_sources(expanded):
+            query_for_sections = latest_expanded if latest_expanded else expanded
+            for sec, hint in extract_sections_and_sources(query_for_sections):
                 related = kg.query_related_sections(sec, source_hint=hint)
                 if related:
                     notes.append(kg.format_context(sec, hint, related))
