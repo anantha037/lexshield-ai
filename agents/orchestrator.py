@@ -34,6 +34,32 @@ from rag.structured_output import build_structured_response, LexShieldResponse
 logger = logging.getLogger(__name__)
 
 
+# ── Tool-calling bound LLM (for classify_with_tool_calls in intent_classifier) ─
+# langchain_llm is a ChatGroq instance; ALL_TOOLS are 8 @tool routing functions.
+# bound_llm = langchain_llm.bind_tools(ALL_TOOLS) enables the LLM to select an
+# agent via tool-calling.  If langchain_llm is None (e.g. GROQ_API_KEY missing,
+# langchain-groq not installed), bound_llm is None and the system falls back to
+# classify_with_llm() automatically.
+
+def _create_bound_llm():
+    """Bind ALL_TOOLS to the LangChain ChatGroq instance. Returns None on failure."""
+    try:
+        from rag.llm       import langchain_llm
+        from agents.tools  import ALL_TOOLS
+        if langchain_llm is None:
+            logger.warning("[Orchestrator] langchain_llm is None — bound_llm disabled.")
+            return None
+        _bound = langchain_llm.bind_tools(ALL_TOOLS)
+        logger.info(f"[Orchestrator] bound_llm ready: {len(ALL_TOOLS)} tools bound.")
+        return _bound
+    except Exception as e:
+        logger.warning(f"[Orchestrator] Failed to create bound_llm ({e}) — fallback to classifier.")
+        return None
+
+
+bound_llm = _create_bound_llm()
+
+
 class MasterOrchestrator:
 
     # ── Query flow ─────────────────────────────────────────────────────────────

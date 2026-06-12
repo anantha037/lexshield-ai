@@ -826,6 +826,100 @@ Respond ONLY with valid JSON matching this exact schema. No markdown, no explana
 
         return LLMIntentResult(**parsed)
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # TOOL-CALLING CLASSIFICATION  (new primary path, with fallback)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # Valid intent names (must match route_by_intent's _map keys exactly)
+    _VALID_INTENTS = frozenset(INTENTS)
+
+    def classify_with_tool_calls(
+        self,
+        query: str,
+        session_id: str = "",
+    ) -> "LLMIntentResult | None":
+        """
+        Attempt intent classification via LLM tool-calling.
+
+        Uses the orchestrator's bound_llm (ChatGroq + bind_tools with 8 routing
+        tools) to let the LLM select the correct agent by invoking a tool.
+
+        Returns:
+            LLMIntentResult with confidence=0.95 if the LLM invoked a valid tool.
+            None if:
+              - bound_llm is not available (not imported, not configured)
+              - the LLM returned no tool_calls
+              - the tool name doesn't map to a valid intent
+              - any exception occurred during the call
+
+        The caller (classify_intent_node in graph.py) treats None as a signal to
+        fall back to classify_with_llm().  A tool-calling failure must NEVER
+        crash the classify_intent_node.
+        """
+        try:
+            # Lazy import to avoid circular dependency:
+            #   intent_classifier.py -> orchestrator.py -> graph.py -> intent_classifier.py
+            from agents.orchestrator import bound_llm
+
+            if bound_llm is None:
+                _llm_clf_logger.debug(
+                    "[Classifier] bound_llm is None — skipping tool-calling path"
+                )
+                return None
+
+            # Invoke the bound LLM — it will choose to call one of the 8 tools
+            response = bound_llm.invoke(query)
+
+            # Extract tool_calls from the AIMessage
+            tool_calls = getattr(response, "tool_calls", None)
+            if not tool_calls:
+                _llm_clf_logger.debug(
+                    "[Classifier] tool-calling returned no tool_calls — fallback"
+                )
+                return None
+
+            # Use the first tool call's name to determine intent
+            tool_name = tool_calls[0].get("name", "") if isinstance(tool_calls[0], dict) else getattr(tool_calls[0], "name", "")
+            if not tool_name:
+                _llm_clf_logger.debug(
+                    "[Classifier] tool_calls[0] has no name — fallback"
+                )
+                return None
+
+            # Strip "tool_" prefix to get the intent string
+            # e.g. "tool_legal_query" -> "legal_query"
+            intent = tool_name
+            if intent.startswith("tool_"):
+                intent = intent[len("tool_"):]
+
+            # Validate against known intents
+            if intent not in self._VALID_INTENTS:
+                _llm_clf_logger.warning(
+                    f"[Classifier] tool-calling returned unknown intent "
+                    f"{intent!r} from tool {tool_name!r} — fallback"
+                )
+                return None
+
+            _llm_clf_logger.debug(
+                f"[Classifier] tool-calling -> intent={intent!r} "
+                f"(tool={tool_name!r}, confidence=0.95)"
+            )
+            return LLMIntentResult(
+                intent            = intent,
+                confidence        = 0.95,
+                detected_sections = [],
+                detected_acts     = [],
+                jurisdiction      = "",
+                query_complexity  = "simple",
+                reasoning         = f"LLM tool-calling selected {tool_name}.",
+            )
+
+        except Exception as exc:
+            _llm_clf_logger.warning(
+                f"[Classifier] tool-calling failed ({exc}) — fallback to classify_with_llm()"
+            )
+            return None
+
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
 intent_classifier = IntentClassifier()

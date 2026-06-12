@@ -94,3 +94,47 @@ def _create_llm():
 
 
 llm = _create_llm()
+
+
+# ── LangChain ChatGroq instance (for .bind_tools() in tool-calling routing) ───
+# This is a SEPARATE instance from `llm` above.  It is used exclusively by
+# agents/orchestrator.py to create a bound_llm for intent routing via
+# LLM tool-calling.  The existing `llm` singleton is NOT modified.
+
+def _create_langchain_llm():
+    """
+    Create a LangChain ChatGroq instance for tool-calling support.
+    Returns None if langchain_groq is not installed or GROQ_API_KEY is missing.
+    """
+    try:
+        from langchain_groq import ChatGroq
+        api_key = os.getenv("GROQ_API_KEY", "")
+        if not api_key:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[LLM] GROQ_API_KEY not set — langchain_llm will be None. "
+                "Tool-calling routing will fall back to classify_with_llm()."
+            )
+            return None
+        return ChatGroq(
+            api_key=api_key,
+            model="llama-3.3-70b-versatile",
+            temperature=0,
+            max_tokens=256,
+        )
+    except ImportError:
+        import logging
+        logging.getLogger(__name__).warning(
+            "[LLM] langchain-groq not installed — langchain_llm will be None. "
+            "Run: pip install langchain-groq  to enable tool-calling routing."
+        )
+        return None
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[LLM] ChatGroq init failed ({e}) — langchain_llm will be None."
+        )
+        return None
+
+
+langchain_llm = _create_langchain_llm()

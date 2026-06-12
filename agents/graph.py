@@ -279,18 +279,23 @@ def classify_intent_node(state: AgentState) -> dict:
     if final_language != "en":
         logger.debug(f"[Graph] classify_intent_node -> final language: {final_language!r}")
 
-    # Primary: LLM-based classification (with regex override pre-filter + fallback)
-    try:
-        result = intent_classifier.classify_with_llm(query, groq_client)
-    except Exception as e:
-        logger.exception("[Graph] classify_intent_node LLM call failed, falling back to general")
-        return {
-            "intent": "general",
-            "confidence": 0.0,
-            "detected_sections": [],
-            "detected_acts": [],
-            "source_language": final_language,
-        }
+    # Primary: Tool-calling classification (new) -> LLM classification (existing fallback)
+    # Step 1: Try tool-calling via bound_llm (returns None on failure/no tool_calls)
+    result = intent_classifier.classify_with_tool_calls(query, state.get("session_id", ""))
+
+    # Step 2: If tool-calling didn't produce a result, fall back to existing LLM classifier
+    if result is None:
+        try:
+            result = intent_classifier.classify_with_llm(query, groq_client)
+        except Exception as e:
+            logger.exception("[Graph] classify_intent_node LLM call failed, falling back to general")
+            return {
+                "intent": "general",
+                "confidence": 0.0,
+                "detected_sections": [],
+                "detected_acts": [],
+                "source_language": final_language,
+            }
     logger.debug(
         f"[Graph] classify_intent_node -> intent={result.intent!r} "
         f"conf={result.confidence:.2f} lang={final_language!r}"
