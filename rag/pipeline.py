@@ -382,6 +382,8 @@ class RAGPipeline:
         if search_query_raw != user_query:
             latest_expanded = preprocess_query(search_query_raw)
 
+        logger.info(f"[DEBUG] latest_expanded='{latest_expanded}'")
+
         paired_source = detect_paired_act(latest_expanded.lower())
         original_act_hint = extract_act_hint(latest_expanded)
 
@@ -414,6 +416,7 @@ class RAGPipeline:
         pinned_chunks:      list[dict] = []
         section_candidates: list[dict] = []
 
+        logger.info(f"[DEBUG] extract_sections input='{latest_expanded}'")
         for sec, hint in extract_sections_and_sources(latest_expanded):
             hits = vectorstore.get_by_section(sec, hint)
             if hits and effective_filter:
