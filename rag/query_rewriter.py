@@ -339,7 +339,17 @@ class QueryRewriter:
 
             _followup_score = int(_sig_short) + int(_sig_ref) + int(_sig_bare_section)
 
-            if _followup_score >= 2 and session_id:
+            # Topic-shift guard: if query contains domain-shift keywords,
+            # treat as new topic regardless of followup score
+            _TOPIC_SHIFT_RE = re.compile(
+                r'\b(cocaine|drug|narcotic|ndps|drunk|alcohol|drive|driving'
+                r'|property|contract|divorce|cheque|cyber|tax|gst|fir'
+                r'|rape|theft|fraud|cheating|bail|arrest|warrant)\b',
+                re.IGNORECASE,
+            )
+            is_topic_shift = bool(_TOPIC_SHIFT_RE.search(query))
+
+            if _followup_score >= 2 and session_id and not is_topic_shift:
                 last_act, last_section = session_memory.get_last_act(session_id)
                 if last_act:
                     injected = f"{query} under {last_act}"
@@ -355,7 +365,7 @@ class QueryRewriter:
                 if session_id:
                     session_memory.clear_last_act(session_id)
                     logger.debug(
-                        f"[QueryRewriter] topic-shift detected (score={_followup_score}/3): "
+                        f"[QueryRewriter] topic-shift detected (score={_followup_score}/3, explicit_shift={is_topic_shift}): "
                         f"session={session_id[:8]}… last_act cleared, no injection"
                     )
 
