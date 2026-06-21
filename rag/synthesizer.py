@@ -152,6 +152,7 @@ def build_synthesis_prompt(query: str, chunks: list[dict], intent: str = "legal_
     When paired act chunks are present, injects an era context note
     before the sources block so the LLM knows what it's looking at.
     """
+    logger.debug("[DIAGNOSE] SYNTHESIS TRIGGERED")
     # Era context note — only injected when paired chunks are present
     era_note = ""
     if _has_paired_context(chunks):
