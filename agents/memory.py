@@ -39,6 +39,7 @@ import logging
 import psycopg
 
 from agents.pg_sessions import get_conn
+from rag.embedder import embedder
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ def _init_db() -> None:
         # Idempotent migrations (no-ops on fresh DBs, safe on older schemas)
         conn.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_id TEXT")
         conn.execute("ALTER TABLE turns ADD COLUMN IF NOT EXISTS citation_status TEXT")
+        conn.execute("ALTER TABLE turns ADD COLUMN IF NOT EXISTS embedding vector(384)")
 
 
 _init_db()
@@ -320,6 +322,16 @@ class SessionMemory:
         Append a turn.  Auto-creates session row if missing.
         Trims to MAX_TURNS_STORED (FIFO) after insert.
         """
+        # Best-effort embedding — NULL on any failure
+        emb_str = None
+        try:
+            if content and content.strip():
+                vec = embedder.embed_single(content)
+                emb_str = '[' + ','.join(map(str, vec)) + ']'
+        except Exception:
+            logger.warning("Failed to embed turn content; storing with embedding=NULL",
+                           exc_info=True)
+
         with get_conn() as conn:
             # Ensure session row exists (idempotent)
             conn.execute(
@@ -328,9 +340,9 @@ class SessionMemory:
                 (session_id, time.time()),
             )
             conn.execute(
-                "INSERT INTO turns (session_id, role, content, intent, ts, citation_status) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (session_id, role, content, intent, time.time(), citation_status),
+                "INSERT INTO turns (session_id, role, content, intent, ts, citation_status, embedding) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (session_id, role, content, intent, time.time(), citation_status, emb_str),
             )
 
         self._trim(session_id)
@@ -462,40 +474,90 @@ class SessionMemory:
         return "\n".join(lines)
 
     def get_relevant_context(
-        self,
-        session_id:    str,
-        current_query: str,
-        top_k:         int = 5,
-    ) -> str:
+            self,
+            session_id:    str,
+            current_query: str,
+            top_k:         int = 5,
+        ) -> str:
         """
-        BM25-scored context retrieval.  Selects the top_k most relevant
-        past turns for `current_query`, re-sorted chronologically.
+        Semantic context retrieval via pgvector cosine similarity.
+        Falls back to BM25 keyword scoring on any failure.
 
-        Fallback to get_context_block() when:
-          - fewer than top_k turns exist
+        Fallback to recency-based context when:
           - query tokenizes to <=2 tokens (trivial / greeting)
-          - any exception during BM25 scoring
+          - any exception during pgvector or BM25 scoring
         """
-        try:
-            from rag.bm25_retriever import tokenize
-            from rank_bm25 import BM25Okapi
+        from rag.bm25_retriever import tokenize
 
-            query_tokens = tokenize(current_query)
-            if len(query_tokens) <= 2:
-                with get_conn() as conn:
-                    rows = conn.execute(
-                        "SELECT role, content FROM turns "
-                        "WHERE session_id = %s ORDER BY id DESC LIMIT %s",
-                        (session_id, GENERAL_INTENT_TURNS),
+        query_tokens = tokenize(current_query)
+        if len(query_tokens) <= 2:
+            with get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT role, content FROM turns "
+                    "WHERE session_id = %s ORDER BY id DESC LIMIT %s",
+                    (session_id, GENERAL_INTENT_TURNS),
+                ).fetchall()
+            if not rows:
+                return ""
+            lines = ["[CONVERSATION HISTORY]"]
+            for row in reversed(rows):
+                label = "User" if row["role"] == "user" else "Assistant"
+                lines.append(f"{label}: {row['content']}")
+            lines.append("[END HISTORY]")
+            return "\n".join(lines)
+
+        # ── Primary: pgvector cosine similarity ───────────────────────────
+        # Rank by USER-turn distance only (not individual rows), then attach
+        # each matched user turn's paired assistant reply (the next row by id
+        # in the same session). This avoids stitching together unrelated
+        # user/assistant rows from different exchanges into a single,
+        # incoherent printed pair.
+        try:
+            query_vec = embedder.embed_single(current_query)
+            query_emb_str = '[' + ','.join(map(str, query_vec)) + ']'
+
+            with get_conn() as conn:
+                user_rows = conn.execute(
+                    "SELECT id, role, content FROM turns "
+                    "WHERE session_id = %s AND role = 'user' AND embedding IS NOT NULL "
+                    "ORDER BY embedding <=> %s "
+                    "LIMIT %s",
+                    (session_id, query_emb_str, top_k),
+                ).fetchall()
+
+                exchange_rows = []
+                if user_rows:
+                    matched_ids = [r["id"] for r in user_rows]
+                    reply_ids = [i + 1 for i in matched_ids]
+                    reply_rows = conn.execute(
+                        "SELECT id, role, content FROM turns "
+                        "WHERE session_id = %s AND id = ANY(%s) AND role = 'assistant'",
+                        (session_id, reply_ids),
                     ).fetchall()
-                if not rows:
-                    return ""
+                    replies_by_id = {r["id"]: r for r in reply_rows}
+
+                    for u in user_rows:
+                        exchange_rows.append(u)
+                        reply = replies_by_id.get(u["id"] + 1)
+                        if reply:
+                            exchange_rows.append(reply)
+
+            if exchange_rows:
+                # Re-sort chronologically (oldest first) to match BM25 output
+                exchange_rows.sort(key=lambda r: r["id"])
                 lines = ["[CONVERSATION HISTORY]"]
-                for row in reversed(rows):
-                    label = "User" if row["role"] == "user" else "Assistant"
-                    lines.append(f"{label}: {row['content']}")
+                for r in exchange_rows:
+                    label = "User" if r["role"] == "user" else "Assistant"
+                    lines.append(f"{label}: {r['content']}")
                 lines.append("[END HISTORY]")
                 return "\n".join(lines)
+        except Exception:
+            logger.debug("pgvector retrieval failed; falling back to BM25",
+                         exc_info=True)
+
+        # ── Fallback: BM25 keyword scoring (byte-identical to original) ──
+        try:
+            from rank_bm25 import BM25Okapi
 
             with get_conn() as conn:
                 rows = conn.execute(
