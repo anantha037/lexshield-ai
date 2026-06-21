@@ -191,7 +191,7 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
             prompt=prompt,
             system_prompt=_SYSTEM,
             temperature=0.0,   # deterministic evaluation
-            max_tokens=120,    # score + reason + action fits in ~80 tokens
+            max_tokens=180,    # score + reason + action fits in ~80 tokens
         )
         result = _parse_crag_response(raw)
         # Stamp fallback flag so pipeline can read it without inspecting action string.

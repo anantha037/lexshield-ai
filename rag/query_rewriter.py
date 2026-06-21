@@ -278,96 +278,17 @@ class QueryRewriter:
           If the query explicitly names a different act, set_last_act is updated
           so the new act takes precedence from this turn onwards.
         """
-        # Late import avoids circular dependency (memory -> llm -> memory).
-        from agents.memory import session_memory
-
         query = query.strip()
         if not query:
             return [query]
 
-        # ── Act-context injection ──────────────────────────────────────────
-        session_id = session_memory.get_session_context()
-        query_explicit_act = _query_has_act(query)
-
-        if query_explicit_act:
-            # User named an act explicitly — update last_act so future
-            # follow-ups inherit the new act correctly.
-            # Extract the first matched act name and persist it.
-            m = _ACT_PRESENT_RE.search(query)
-            if m and session_id:
-                session_memory.set_last_act(session_id, m.group(0))
-        else:
-            # No act in the current query — check whether this is a genuine
-            # contextual follow-up before inheriting last_act from the session.
-            #
-            # ── Two-signal follow-up guard ────────────────────────────────────
-            # Score three binary signals; inject only when score >= 2.
-            # Signal 1: query is short (< 10 words)
-            # Signal 2: contains a pronoun or demonstrative reference
-            # Signal 3: bare section reference with no act name in the query
-            #
-            # When score < 2 the query is treated as a topic shift — last_act
-            # is cleared so it does not persist into subsequent turns either.
-
-            _words = query.split()
-
-            # Signal 1: short query
-            _sig_short = len(_words) < 10
-
-            # Signal 2: pronoun / demonstrative reference
-            _FOLLOWUP_REF_RE = re.compile(
-                r'\b(it|its|this|that|these|those|the\s+same|such|thereof|therein)\b',
-                re.IGNORECASE,
-            )
-            _sig_ref = bool(_FOLLOWUP_REF_RE.search(query))
-
-            # Signal 3: bare section reference — digits/letters after section
-            # markers with no act name anywhere in the query.
-            # Matches: "section 8", "s.8", "s 8", "u/s 8", "sec. 12A"
-            _BARE_SECTION_RE = re.compile(
-                r'\b(?:section|sec\.?|u/s|u\.s\.)\s*\.?\s*\d{1,4}[A-Za-z]?\b',
-                re.IGNORECASE,
-            )
-            # Also catch standalone numbers in very short queries where users
-            # drop the "section" keyword entirely: "how about 54", "and 54?"
-            _STANDALONE_NUM_RE = re.compile(
-                r'(?<!\d)\b\d{1,4}[A-Za-z]?\b(?!\d)',
-            )
-            _sig_bare_section = bool(_BARE_SECTION_RE.search(query)) or (
-                _sig_short and len(_words) <= 6 and bool(_STANDALONE_NUM_RE.search(query))
-            )
-
-            _followup_score = int(_sig_short) + int(_sig_ref) + int(_sig_bare_section)
-
-            # Topic-shift guard: if query contains domain-shift keywords,
-            # treat as new topic regardless of followup score
-            _TOPIC_SHIFT_RE = re.compile(
-                r'\b(cocaine|drug|narcotic|ndps|drunk|alcohol|drive|driving'
-                r'|property|contract|divorce|cheque|cyber|tax|gst|fir'
-                r'|rape|theft|fraud|cheating|bail|arrest|warrant)\b',
-                re.IGNORECASE,
-            )
-            is_topic_shift = bool(_TOPIC_SHIFT_RE.search(query))
-
-            if _followup_score >= 2 and session_id and not is_topic_shift:
-                last_act, last_section = session_memory.get_last_act(session_id)
-                if last_act:
-                    injected = f"{query} under {last_act}"
-                    logger.debug(
-                        f"[QueryRewriter] act-context injection (score={_followup_score}/3): "
-                        f"session={session_id[:8]}… last_act={last_act!r} "
-                        f"-> query augmented"
-                    )
-                    query = injected   # rewriter + hint logic operate on augmented query
-            else:
-                # Topic shift detected — clear last_act so it does not bleed
-                # into this turn or any subsequent turn.
-                if session_id:
-                    session_memory.clear_last_act(session_id)
-                    logger.debug(
-                        f"[QueryRewriter] topic-shift detected (score={_followup_score}/3, explicit_shift={is_topic_shift}): "
-                        f"session={session_id[:8]}… last_act cleared, no injection"
-                    )
+        # Act-context injection removed. This responsibility now belongs
+        # solely to rewrite_for_retrieval() in this module, which is called
+        # earlier in rag/pipeline.py with full 2-turn conversation context
+        # instead of a single persisted last_act string. Two independent
+        # follow-up-resolution heuristics caused the section fast-path to
+        # fire on stale entities; rewrite() now only generates angle-diverse
+        # rewrites of whatever query it is given.
 
         all_queries: list[str] = [query]
         hint = _get_statutory_hint(query)
@@ -504,11 +425,31 @@ def rewrite_for_retrieval(query: str, context_block: str) -> str:
             max_tokens=100,
         )
         rewritten = rewritten.strip().strip('"').strip("'").strip()
-        if rewritten and len(rewritten) > 5:
-            logger.info(f"[QueryRewriter] rewrite_for_retrieval: {query!r} -> {rewritten!r}")
-            return rewritten
-        logger.debug("[QueryRewriter] rewrite_for_retrieval: LLM returned empty/short — using original")
-        return query
+
+        # ── Output validation guard ──────────────────────────────────────
+        # The LLM occasionally echoes the prompt or context_block instead of
+        # producing a clean rewrite (observed: full [CONVERSATION HISTORY]
+        # block returned verbatim, poisoning downstream section extraction).
+        _invalid_markers = (
+            "[CONVERSATION HISTORY]", "[USER PROFILE]", "[END HISTORY]",
+            "[END PROFILE]", "[CONVERSATION SUMMARY]",
+            "Rewritten query:", "Follow-up question:", "Conversation history:",
+        )
+        is_invalid = (
+            not rewritten
+            or len(rewritten) <= 5
+            or len(rewritten) > max(len(query) * 4, 200)
+            or any(marker in rewritten for marker in _invalid_markers)
+        )
+        if is_invalid:
+            logger.warning(
+                f"[QueryRewriter] rewrite_for_retrieval: rejected invalid output "
+                f"(len={len(rewritten)}) — using original query"
+            )
+            return query
+
+        logger.info(f"[QueryRewriter] rewrite_for_retrieval: {query!r} -> {rewritten!r}")
+        return rewritten
     except Exception as exc:
         logger.warning(f"[QueryRewriter] rewrite_for_retrieval failed ({exc}) — using original")
         return query

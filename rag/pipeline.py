@@ -172,7 +172,7 @@ QUERY_EXPANSIONS: dict[str, str] = {
 
 _MVA_RE    = re.compile(r'\bmotor\s+vehicles?\s+act\b|\bmv\s?act\b|\bmva\b', re.IGNORECASE)
 SECTION_RE = re.compile(
-    r'\b(\d{1,4}[A-Z]?)\s*'
+    r'\b(?:section\s+)?(\d{1,4}[A-Z]?)\s*'
     r'(ipc|bns|bnss|bsa|crpc|cpc|ni\s?act|it\s?act|pocso|pmla|ndps|uapa'
     r'|rera|ibc|cgst|igst|fema|sebi|posh|rti|dpdp|mv\s?act'
     r'|consumer|contract\s+act|companies\s+act|dv\s+act|llp\s+act)\b',
