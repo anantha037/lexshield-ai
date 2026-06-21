@@ -509,7 +509,8 @@ def legal_rag_node(state: AgentState) -> dict:
         if answer.sources_consulted == 0:
             scope_status  = "out_of_scope"
             scope_message = "No relevant Indian legal provisions could be found for this query."
-            rag_answer_text = ""
+            if not getattr(answer, "fallback", False):
+                rag_answer_text = ""
             ner_sections = []
             # Clear stale act context — no valid retrieval means no act to persist.
             if session_id:
@@ -543,6 +544,7 @@ def legal_rag_node(state: AgentState) -> dict:
                 "grounding_warning": answer.grounding_warning or "",
                 "rewritten_queries": answer.rewritten_queries or [],
                 "reranker_used":     answer.reranker_used,
+                "fallback":          getattr(answer, "fallback", False),
                 "mode":              "legal_rag_node",
                 "kg_sections_used":  ner_sections,
             },
@@ -592,6 +594,7 @@ def document_analysis_node(state: AgentState) -> dict:
             "grounding_warning": answer.grounding_warning or "",
             "rewritten_queries": answer.rewritten_queries or [],
             "reranker_used":     answer.reranker_used,
+            "fallback":          getattr(answer, "fallback", False),
             "mode":              "document_analysis_node",
         }
         doc_body = query.split("\n\n", 1)[-1][:3000]
@@ -649,6 +652,7 @@ def risk_check_node(state: AgentState) -> dict:
             "grounding_warning": answer.grounding_warning or "",
             "rewritten_queries": answer.rewritten_queries or [],
             "reranker_used":     answer.reranker_used,
+            "fallback":          getattr(answer, "fallback", False),
             "mode":              "risk_check_node",
         }
         try:
