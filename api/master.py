@@ -92,6 +92,7 @@ class StructuredResponse(BaseModel):
     intent:            str
     session_id:        str
     confidence:        float
+    fallback:          bool
     mode:              str
     sources_consulted: int
     synthesis_note:    str
@@ -214,6 +215,7 @@ def _build_structured_response(resp, debug_scratchpad=None) -> StructuredRespons
         intent            = resp.intent,
         session_id        = resp.session_id,
         confidence        = resp.confidence,
+        fallback          = resp.fallback,
         mode              = resp.mode,
         citation_status   = getattr(resp, "citation_status", "unverified"),
         validation_status = getattr(resp, "validation_status", "not_applicable"),
