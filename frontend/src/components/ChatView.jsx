@@ -90,6 +90,27 @@ function CopyBtn({ text }) {
   );
 }
 
+function FallbackBanner() {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'flex-start', gap: 8,
+      background: 'rgba(245, 158, 11, 0.08)',
+      color: '#F59E0B',
+      padding: '10px 14px', borderRadius: 8, fontSize: 13,
+      border: '1px solid rgba(245, 158, 11, 0.2)', marginBottom: 12
+    }}>
+      <IconWarning size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+      <div>
+        <strong style={{ display: 'block', marginBottom: 2 }}>
+          Outside Knowledge Base
+        </strong>
+        This query could not be matched to any provision in our legal corpus.
+        The response below is a general suggestion only — not legal advice.
+      </div>
+    </div>
+  );
+}
+
 function TrustBadge({ status }) {
   if (status === 'cited') {
     return (
@@ -310,7 +331,8 @@ export default function ChatView() {
       if (!sessionRef.current && r.sessionId) { setActiveSession(r.sessionId); refreshSessions(); }
       setChatMessages(m => [...m, {
         role: 'assistant',
-        content: r.answer || r.draft || r.summary || 'No response received.',
+        content: r.answer || r.draft || r.summary || '',
+        fallback: raw.fallback || false,
         intent: r.intent,
         riskLevel: r.riskLevel,
         riskScore: r.riskScore,
@@ -484,9 +506,10 @@ export default function ChatView() {
               <div style={{ position: 'relative', background: 'var(--c-surface)', border: `1px solid ${isCaseLaw ? 'rgba(6,182,212,0.15)' : 'var(--c-border)'}`, borderRadius: '4px 16px 16px 16px', padding: '16px 20px', flex: 1 }} className="msg-bubble-wrap">
                 <style>{`.msg-bubble-wrap:hover .copy-btn { opacity: 1 !important; }`}</style>
 
-                {isLegalIntent && cStatus === 'unverified' && m.source !== 'llm_only' && <UnverifiedBanner />}
-                {isLegalIntent && cStatus !== 'unverified' && m.source !== 'llm_only' && <TrustBadge status={cStatus} />}
-                {m.source === 'llm_only' && <LLMBadge />}
+                {m.fallback && <FallbackBanner />}
+                {!m.fallback && isLegalIntent && cStatus === 'unverified' && m.source !== 'llm_only' && <UnverifiedBanner />}
+                {!m.fallback && isLegalIntent && cStatus !== 'unverified' && m.source !== 'llm_only' && <TrustBadge status={cStatus} />}
+                {!m.fallback && m.source === 'llm_only' && <LLMBadge />}
 
                 {isCaseLaw ? (
                   <CaseLawCards cases={m.caseLawResults} />
