@@ -129,8 +129,10 @@ class MasterOrchestrator:
         rag_result = final_state.get("rag_result", {})
         risk_result = final_state.get("risk_result", {})
 
-        answer = response or rag_result.get("answer", "") or \
-                 "I was unable to process your request. Please try again."
+        answer = response or rag_result.get("answer", "")
+        if not rag_result.get("fallback"):
+            if not answer or answer.strip() == "":
+                answer = "I was unable to process your request. Please try again."
 
         # Pull draft text out of rag_result (set by draft_node)
         draft = rag_result.get("draft", "")
@@ -269,6 +271,7 @@ class MasterOrchestrator:
             citations         = rag_result.get("citations", []),
             draft             = draft,
             sources_consulted = rag_result.get("sources_consulted", 0),
+            fallback          = rag_result.get("fallback",          False),
             synthesis_note    = rag_result.get("synthesis_note",    ""),
             grounding_warning = rag_result.get("grounding_warning", ""),
             rewritten_queries = rag_result.get("rewritten_queries", []),
