@@ -64,6 +64,7 @@ class LexShieldResponse:
     intent:            str
     session_id:        str
     confidence:        float
+    fallback:          bool
     mode:              str
     citation_status:   str
 
@@ -124,6 +125,7 @@ class LexShieldResponse:
             "intent":            s(self.intent),
             "session_id":        s(self.session_id),
             "confidence":        self.confidence,
+            "fallback":          self.fallback,
             "mode":              s(self.mode),
             "citation_status":   s(self.citation_status),
             "validation_status": s(self.validation_status),
@@ -263,6 +265,7 @@ def build_structured_response(
     session_id:        str,
     confidence:        float,
     mode:              str,
+    fallback:          bool                = False,
     citations:         list[Citation]      = None,
     draft:             str                 = "",
     sources_consulted: int                 = 0,
@@ -371,6 +374,7 @@ def build_structured_response(
         intent            = intent,
         session_id        = session_id,
         confidence        = confidence,
+        fallback          = fallback,
         mode              = mode,
         citation_status   = citation_status,
         validation_status = validation_status,
