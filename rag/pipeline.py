@@ -402,6 +402,9 @@ class RAGPipeline:
         """
         if not chunks:
             return False
+        
+        if all(c.get("retrieval_source") in ("metadata", "section_candidate") for c in chunks[:3]):
+            return True
 
         import numpy as np
         query_embedding = embedder.embed_single(query)
@@ -480,7 +483,7 @@ class RAGPipeline:
         effective_filter: Optional[str] = category_filter
 
         if category_filter is None:
-            auto_category, auto_confidence = category_detector.detect(expanded)
+            auto_category, auto_confidence = category_detector.detect(latest_expanded)
             if auto_category and auto_confidence >= CONFIDENCE_HIGH:
                 effective_filter = auto_category
                 logger.info(f"[Pipeline] Auto-category HIGH: {auto_category!r} conf={auto_confidence:.2f} -> filter")

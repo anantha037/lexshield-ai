@@ -69,6 +69,9 @@ def _extract_act_hint(query: str) -> Optional[str]:
     # Evidence Act / BSA
     if any(x in q for x in ['evidence act', 'bsa', 'bharatiya sakshya']):
         return 'Indian Evidence Act'
+    
+    if any(x in q for x in ['wildlife act', 'wild life act', 'wildlife protection','wild life protection', 'wpa', 'wlpa']):
+        return 'Wildlife (Protection) Act'
 
     return None  # unknown — no act filter applied
 

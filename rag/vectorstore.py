@@ -145,6 +145,8 @@ SOURCE_KEYWORDS: dict[str, str] = {
     "forest act":                       "Indian Forest Act",
     "wildlife":                         "Wildlife (Protection) Act",
     "wildlife protection":              "Wildlife (Protection) Act",
+    "wild life":                        "Wildlife (Protection) Act",
+    "wild life protection":             "Wildlife (Protection) Act",
     "water pollution":                  "Water (Prevention and Control of Pollution)",
     "air pollution":                    "Air (Prevention and Control of Pollution)",
     # Technology, Media & IP
