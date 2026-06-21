@@ -45,6 +45,7 @@ from rag.hybrid_search     import hybrid_searcher, extract_sections_and_sources,
 from rag.query_rewriter    import query_rewriter, decompose_query, rewrite_for_retrieval
 from rag.reranker          import reranker
 from rag.vectorstore       import vectorstore
+from rag.embedder          import embedder
 from rag.act_resolver      import act_resolver
 from rag.category_detector import category_detector, CONFIDENCE_HIGH, CONFIDENCE_MED
 from rag.adaptive_router   import classify_query_complexity
@@ -343,6 +344,82 @@ class RAGPipeline:
         self.enable_rewriting = enable_rewriting
         self.enable_reranking = enable_reranking
 
+    @traceable(name="rag_pipeline.fallback", run_type="chain")
+    def _generate_fallback_response(
+        self, user_query: str, all_queries: list[str], complexity: str, crag_score: int
+    ) -> LegalAnswer:
+        logger.debug("[DIAGNOSE] FALLBACK TRIGGERED")
+        fallback_prompt = (
+            f"User Query: {user_query}\n\n"
+            "Write a clean, honest, plain-language fallback message (1-2 sentences) "
+            "stating that you couldn't find specific legal provisions in your corpus that directly address this query. "
+            "Briefly mention the user's specific topic. "
+            "Suggest they consult a qualified legal professional.\n"
+            "Do not cite any law or section number. Do not use structured headers. Just write the message."
+        )
+        
+        try:
+            raw_answer = llm.generate(
+                prompt=fallback_prompt,
+                system_prompt="You are LexShield, an AI legal assistant. Provide helpful, honest fallback messages when you lack relevant information.",
+                temperature=0.3,
+                max_tokens=150,
+            )
+        except Exception as e:
+            logger.exception("[Pipeline] Fallback generation failed")
+            raw_answer = (
+                "I couldn't find specific legal provisions in my corpus that directly address this query. "
+                "You may want to consult a qualified legal professional for advice specific to your situation."
+            )
+            
+        rt = get_current_run_tree()
+        if rt:
+            rt.add_metadata({"fallback": True, "crag_action": "insufficient"})
+            
+        return LegalAnswer(
+            answer_text=raw_answer.strip(),
+            citations=[],
+            sources_consulted=0,
+            synthesis_note=f"[complexity={complexity} crag_score={crag_score}] CRAG fallback triggered.",
+            grounding_warning="Retrieval confidence too low; fallback activated.",
+            rewritten_queries=all_queries,
+            reranker_used=False,
+            confidence="low",
+            fallback=True
+        )
+
+    def _is_retrieval_relevant(
+        self,
+        query: str,
+        chunks: list,
+        threshold: float = 0.35
+    ) -> bool:
+        """
+        Lightweight pre-synthesis relevance gate.
+        Uses the existing embedder (already loaded) to compute cosine similarity
+        between the query and the top retrieved chunks.
+        Returns False if no chunk clears the threshold — meaning retrieval failed.
+        """
+        if not chunks:
+            return False
+
+        import numpy as np
+        query_embedding = embedder.embed_single(query)
+        
+        for chunk in chunks[:5]:  # only check top 5 for speed
+            chunk_text = chunk.get("text", "") if isinstance(chunk, dict) else (chunk.page_content if hasattr(chunk, "page_content") else str(chunk))
+            chunk_embedding = embedder.embed_single(chunk_text)
+            
+            # cosine similarity
+            similarity = np.dot(query_embedding, chunk_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(chunk_embedding) + 1e-9
+            )
+            logger.debug(f"[Pipeline] Relevance Gate - Chunk: {chunk.get('source', '')[:20]} | Sim: {similarity:.3f}")
+            if similarity >= threshold:
+                return True
+        
+        return False
+
     @traceable(name="rag_pipeline.query", run_type="chain")
     def query(
         self,
@@ -459,6 +536,18 @@ class RAGPipeline:
                 if paired_all:
                     soft_pinned = [paired_all[0]]
             final_chunks = (pinned_chunks + soft_pinned)[:n_final]
+
+            # ── PRE-SYNTHESIS RELEVANCE GATE (simple path) ──────────────────
+            if not self._is_retrieval_relevant(user_query, final_chunks):
+                logger.info("Pre-synthesis gate: no relevant chunks found. Triggering fallback.")
+                return self._generate_fallback_response(
+                    user_query=user_query,
+                    all_queries=[latest_expanded],
+                    complexity=complexity,
+                    crag_score=0,
+                )
+            # ────────────────────────────────────────────────────────────────
+
             system_prompt = get_system_prompt(final_chunks)
             prompt        = build_synthesis_prompt(expanded, final_chunks)
             raw_answer    = llm.generate(
@@ -583,6 +672,7 @@ class RAGPipeline:
         combined_free = section_candidates + merged_free
         combined_free.sort(key=lambda x: x.get("hybrid_score", 0.0), reverse=True)
         merged = pinned_chunks + combined_free
+        logger.debug(f"[DIAGNOSE] Hybrid retrieval returned {len(merged)} chunks. Top scores: {[c.get('hybrid_score', 0) for c in merged[:3]]}")
 
         # Out-of-corpus warning
         q_lower = user_query.lower()
@@ -600,16 +690,11 @@ class RAGPipeline:
             })
 
         if not merged and not soft_pinned:
-            return LegalAnswer(
-                answer_text=(
-                    "The retrieved legal sections do not contain sufficient information "
-                    "to answer this question. Please consult a qualified legal professional."
-                ),
-                sources_consulted=0,
-                synthesis_note="No sources retrieved.",
-                grounding_warning="No chunks matched the query.",
-                rewritten_queries=all_queries,
-                reranker_used=False,
+            return self._generate_fallback_response(
+                user_query=user_query,
+                all_queries=all_queries,
+                complexity=complexity,
+                crag_score=0,
             )
 
         # ═══════════════════════════════════════════════════════════════════════
@@ -635,22 +720,26 @@ class RAGPipeline:
                     eval_chunks.append(c)
                     _crag_ids.add(cid)
             crag_result = evaluate_retrieval(latest_expanded, eval_chunks)
+            logger.debug(f"[DIAGNOSE] CRAG result: action={crag_result.get('action')}, score={crag_result.get('score')}, reason={crag_result.get('reason')}")
             rag_grade   = "good" if crag_result["score"] >= 4 else "poor"
             crag_fallback = crag_result.get("fallback", False)
 
             if crag_result["action"] == "insufficient":
-                # Retrieval quality is insufficient, but we still synthesize
-                # using available chunks — the hard-failure decision belongs to
-                # the pipeline caller, not CRAG.  We mark the answer with
-                # confidence="low" and fallback=True so the frontend can label
-                # it without any synthesizer changes.
+                logger.debug("[DIAGNOSE] Branch taken: insufficient")
+                crag_fallback = True
                 logger.warning(
-                    "[Pipeline] CRAG: insufficient — continuing with fallback synthesis "
+                    "[Pipeline] CRAG: insufficient — short-circuiting to fallback message "
                     f"(score={crag_result['score']}, reason={crag_result['reason'][:80]!r})"
                 )
-                # Do NOT return early; fall through to reranker + synthesizer.
+                return self._generate_fallback_response(
+                    user_query=user_query,
+                    all_queries=all_queries,
+                    complexity=complexity,
+                    crag_score=crag_result["score"],
+                )
 
             elif crag_result["action"] == "rewrite" and not crag_triggered:
+                logger.debug("[DIAGNOSE] Branch taken: rewrite")
                 # Marginal retrieval — rewrite and re-retrieve once
                 logger.info("[Pipeline] CRAG: rewrite triggered — re-retrieving")
                 crag_triggered = True
@@ -668,7 +757,9 @@ class RAGPipeline:
                     logger.info(f"[Pipeline] CRAG rewrite added {len(new_chunks)} new chunks")
                     all_queries  = all_queries + extra_queries
 
-            # else: action == "proceed" — continue normally
+            else:
+                logger.debug("[DIAGNOSE] Branch taken: proceed")
+                # else: action == "proceed" — continue normally
 
 
         # ═══════════════════════════════════════════════════════════════════════
@@ -730,6 +821,16 @@ class RAGPipeline:
         # ═══════════════════════════════════════════════════════════════════════
         # STEP 6: Build prompt (labeled for complex, standard otherwise)
         # ═══════════════════════════════════════════════════════════════════════
+        # PRE-SYNTHESIS RELEVANCE GATE (runs for simple, moderate, complex)
+        if not self._is_retrieval_relevant(user_query, final_chunks):
+            logger.info("Pre-synthesis gate: no relevant chunks found. Triggering fallback.")
+            return self._generate_fallback_response(
+                user_query=user_query,
+                all_queries=all_queries,
+                complexity=complexity,
+                crag_score=0
+            )
+
         system_prompt = get_system_prompt(final_chunks)
 
         if complexity == "complex" and subquery_pools:
@@ -753,11 +854,7 @@ class RAGPipeline:
             rewritten_queries=all_queries, reranker_used=reranker_used,
         )
 
-        # Stamp fallback flags when CRAG scored retrieval as insufficient.
-        # The synthesizer is not changed — we set these fields after the fact.
-        if crag_fallback:
-            answer.confidence = "low"
-            answer.fallback   = True
+        # crag_fallback short-circuits earlier, so it is no longer checked here.
 
         # Attach rag_grade so graph.py node can store it in AgentState
         answer.synthesis_note = (
