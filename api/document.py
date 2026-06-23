@@ -575,6 +575,84 @@ async def analyze_document(
     )
     doc_type = classification.label_name
 
+    # ── LLM fallback for low-confidence classification ────────────────────────
+    _CLF_CONFIDENCE_THRESHOLD = 0.20
+    if (
+        classification.confidence < _CLF_CONFIDENCE_THRESHOLD
+        or doc_type in ("unknown", "non_legal")
+    ):
+        try:
+            from rag.llm import llm
+            from models.classifier import CATEGORIES
+
+            original_confidence = classification.confidence
+            _valid_labels = set(CATEGORIES.values())
+
+            llm_prompt = (
+                "You are a legal document classifier for Indian law.\n\n"
+                "Classify the following document into exactly ONE of these categories:\n"
+                "rental_agreement, fir, court_notice_summons, employment_contract, "
+                "property_deed, sc_judgment, hc_judgment, legal_notice, affidavit, "
+                "power_of_attorney, cheque_bounce_notice, bail_application, "
+                "consumer_complaint, loan_agreement, police_complaint\n\n"
+                "If none of these categories match, return: unknown\n\n"
+                "Respond with ONLY the category label, nothing else.\n\n"
+                f"Document:\n{text[:2000]}"
+            )
+
+            llm_label = llm.generate(
+                prompt=llm_prompt,
+                system_prompt="You are a document classifier. Return only the category label.",
+                max_tokens=20,
+                temperature=0.0,
+            ).strip().lower()
+
+            if llm_label in _valid_labels:
+                # Find the matching integer key for the label
+                llm_label_key = next(
+                    k for k, v in CATEGORIES.items() if v == llm_label
+                )
+                doc_type = llm_label
+                classification = ClassificationResult(
+                    label      = llm_label_key,
+                    label_name = llm_label,
+                    confidence = 0.85,
+                    all_scores = clf_result.get("all_scores", {}),
+                    warning    = (
+                        f"InLegalBERT confidence was low ({original_confidence:.2f}). "
+                        f"Classification via LLM."
+                    ),
+                )
+                logger.info(
+                    f"[Analyze] LLM classification override: {llm_label!r} "
+                    f"(original confidence: {original_confidence:.2f})"
+                )
+            elif llm_label == "unknown":
+                doc_type = "unknown"
+                classification = ClassificationResult(
+                    label      = -1,
+                    label_name = "unknown",
+                    confidence = 0.0,
+                    all_scores = clf_result.get("all_scores", {}),
+                    warning    = "Document does not appear to be a legal document (confirmed by LLM).",
+                )
+                logger.info(
+                    "[Analyze] LLM confirmed non-legal document; "
+                    "overriding InLegalBERT label"
+                )
+            else:
+                logger.warning(
+                    f"[Analyze] LLM returned invalid label {llm_label!r}; "
+                    f"keeping original classification {doc_type!r}"
+                )
+
+        except Exception as e:
+            logger.warning(
+                f"[Analyze] LLM classification fallback failed: {e}; "
+                f"keeping original classification {doc_type!r}",
+                exc_info=True,
+            )
+
     # ── Step 3: NER ───────────────────────────────────────────────────────────
     from nlp.ner_pipeline import extract_entities
     ent_result = extract_entities(text)
@@ -709,6 +787,18 @@ def document_query(req: DocQueryRequest):
 
     doc_excerpt = _build_ephemeral_context(req.doc_text, question_en)
 
+    # ── Fetch conversation history for cross-turn context ─────────────────────
+    history = ""
+    try:
+        from agents.memory import session_memory
+        history = session_memory.get_context_block(req.session_id)
+    except Exception:
+        logger.debug("Failed to fetch document chat history; proceeding without it", exc_info=True)
+        history = ""
+
+    # ── Build prompt with optional history injection ──────────────────────────
+    history_block = f"Conversation so far:\n{history}\n\n" if history else ""
+
     prompt = (
         "You are LexShield AI, an expert in Indian law.\n\n"
         "The user has uploaded the following legal document. "
@@ -716,6 +806,7 @@ def document_query(req: DocQueryRequest):
         "Be specific, cite the relevant clauses from the document where applicable, "
         "and mention any relevant Indian law sections.\n\n"
         f"Document:\n{doc_excerpt}\n\n"
+        f"{history_block}"
         f"Question: {question_en}\n\n"
         "Provide:\n"
         "1. A clear answer to the question\n"
