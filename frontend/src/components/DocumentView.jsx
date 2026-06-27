@@ -149,9 +149,9 @@ export default function DocumentView() {
   };
 
   return (
-    <div className="view-enter" style={{ display: 'flex', height: '100%' }}>
+    <div className="view-enter doc-panels" style={{ height: '100%' }}>
       {/* LEFT PANEL */}
-      <div style={{ borderRight: '1px solid var(--c-border2)', overflowY: 'auto', padding: '32px 28px', minWidth: 320, maxWidth: 400 }}>
+      <div className="doc-left" style={{ overflowY: 'auto', padding: '32px 28px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
           <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
           <span style={{ fontFamily: 'var(--f-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '0.2em', color: 'var(--c-gold)', textTransform: 'uppercase' }}>
@@ -332,7 +332,7 @@ export default function DocumentView() {
       </div>
 
       {/* RIGHT PANEL */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--c-bg)' }}>
+      <div className="doc-right" style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--c-bg)' }}>
         <div style={{ borderBottom: '1px solid var(--c-border2)', display: 'flex', position: 'relative', padding: '0 10px' }}>
           {[
             { key: 'text', label: 'Extracted Text' },
