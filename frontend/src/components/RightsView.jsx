@@ -83,7 +83,7 @@ export default function RightsView() {
       </div>
 
       <div style={{ padding: '32px 40px' }}>
-        <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
           {CATEGORIES.map(({ id, Icon, label }) => (
             <div key={id} id={`rights-cat-${id}`}
               style={{
