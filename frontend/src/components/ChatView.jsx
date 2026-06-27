@@ -399,13 +399,11 @@ export default function ChatView() {
               {emptySubtitle}
             </p>
             <motion.div
+              className="quick-grid"
               initial="hidden"
               animate="visible"
               variants={{ visible: { transition: { staggerChildren: 0.08 } } }}
               style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
-                gap: 16,
                 marginTop: 8,
                 maxWidth: 600,
                 width: '100%',
