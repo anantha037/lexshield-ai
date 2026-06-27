@@ -52,7 +52,7 @@ function parseText(text) {
 
 function CategorySelector({ onSelect }) {
   return (
-    <div className="view-enter" style={{ padding: '48px 40px', maxWidth: 960, margin: '0 auto', overflowY: 'auto', height: '100%' }}>
+    <div className="view-enter draft-category-screen" style={{ margin: '0 auto', overflowY: 'auto', height: '100%' }}>
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
           <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
@@ -66,10 +66,11 @@ function CategorySelector({ onSelect }) {
         </p>
       </div>
       <motion.div
+        className="draft-cat-grid"
         initial="hidden"
         animate="visible"
         variants={{ visible: { transition: { staggerChildren: 0.06 } } }}
-        style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20, marginTop: 40 }}
+        style={{ marginTop: 40 }}
       >
         {DRAFT_CATEGORIES.map((cat, i) => (
           <motion.div
