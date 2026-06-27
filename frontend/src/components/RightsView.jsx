@@ -130,10 +130,11 @@ export default function RightsView() {
           <div className="fade-in">
             <motion.div
               key={selected}
+              className="rights-grid"
               initial="hidden"
               animate="visible"
               variants={{ visible: { transition: { staggerChildren: 0.08 } } }}
-              style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 28 }}
+              style={{ marginTop: 28 }}
             >
               {cards.map((r, i) => (
                 <motion.div
