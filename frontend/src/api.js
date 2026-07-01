@@ -85,6 +85,26 @@ export const saveDocumentSession = (payload) =>
     headers: { 'Content-Type': 'application/json' },
   });
 
+// PDF Export — returns a Blob (binary), not JSON
+export async function exportPdf(session_id) {
+  const token = getToken();
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}/api/v1/master/export-pdf`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ session_id }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `PDF export failed (HTTP ${res.status})`);
+  }
+
+  return res.blob();
+}
+
 export const checkHealth = () => request('/health');
 
 // ── Response adapters ────────────────────────────────────────────────────────
@@ -106,6 +126,15 @@ export function adaptQueryResponse(raw) {
     url:      c.url      || '',
     summary:  c.summary  || '',
   }));
+
+  // The backend StructuredResponse has no explicit 'stage' field.
+  // However, for draft requests, graph.py encodes the stage into the mode field
+  // as 'draft_node_DONE', 'draft_node_COLLECTING_FIELDS', 'draft_node_CONFIRM', etc.
+  // Extract the stage from mode to enable DraftView stage-based rendering.
+  let stage = raw.stage || null;
+  if (!stage && typeof raw.mode === 'string' && raw.mode.startsWith('draft_node_')) {
+    stage = raw.mode.replace('draft_node_', '');
+  }
 
   return {
     answer: raw.answer_text || raw.answer || '',
@@ -133,7 +162,7 @@ export function adaptQueryResponse(raw) {
     keyClauses: raw.key_clauses || [],
     suggestions: raw.suggestions || [],
     draft: raw.draft || '',
-    stage: raw.stage || null,
+    stage,
     outline: raw.outline || null,
     supportingDocuments: raw.supporting_documents || [],
     filingAuthority: raw.filing_authority || '',
