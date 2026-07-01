@@ -227,19 +227,47 @@ function CaseLawCards({ cases }) {
   );
 }
 
-function TypewriterText({ content = '', isNew }) {
+function TypewriterText({ content = '', isNew, onProgress }) {
   const safeContent = content || '';
   const [displayed, setDisplayed] = useState(isNew ? '' : safeContent);
   const [done, setDone] = useState(!isNew);
+  const startTimeRef = useRef(null);
 
   useEffect(() => {
     if (!isNew || done) return;
-    if (displayed.length >= safeContent.length) { setDone(true); return; }
-    const timeout = setTimeout(() => {
-      setDisplayed(safeContent.slice(0, displayed.length + 2));
-    }, 8);
-    return () => clearTimeout(timeout);
-  }, [displayed, safeContent, isNew, done]);
+    
+    if (!startTimeRef.current) {
+      startTimeRef.current = performance.now();
+    }
+
+    const updateDisplay = () => {
+      if (done) return;
+      const elapsedMs = performance.now() - startTimeRef.current;
+      const targetLength = Math.floor(elapsedMs / 4);
+
+      if (targetLength >= safeContent.length) {
+        setDisplayed(safeContent);
+        setDone(true);
+      } else {
+        setDisplayed(safeContent.slice(0, targetLength));
+      }
+      if (onProgress) onProgress();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        updateDisplay();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    const timeout = setTimeout(updateDisplay, 8);
+    
+    return () => {
+      clearTimeout(timeout);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [displayed, safeContent, isNew, done, onProgress]);
 
   return (
     <div style={{ fontSize: 14, color: 'var(--c-text2)', lineHeight: 1.75 }}>
@@ -271,17 +299,21 @@ export default function ChatView() {
   // BUG2 fix: keep ref in sync with latest handleSend so prefillInput effect is never stale
   useEffect(() => { handleSendRef.current = handleSend; });
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
-  useEffect(() => {
+  const handleTypewriterProgress = useCallback(() => {
     if (!areaRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = areaRef.current;
     if (scrollHeight - scrollTop - clientHeight < 150) {
       scrollToBottom();
     }
-  }, [chatMessages, loading]);
+  }, [scrollToBottom]);
+
+  useEffect(() => {
+    handleTypewriterProgress();
+  }, [chatMessages, loading, handleTypewriterProgress]);
 
   const handleScroll = (e) => {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
@@ -523,6 +555,7 @@ export default function ChatView() {
                   <TypewriterText
                     content={m.content}
                     isNew={m.isNew && !isCaseLaw}
+                    onProgress={handleTypewriterProgress}
                   />
                 )}
 
