@@ -330,7 +330,15 @@ export default function DraftView() {
                 </div>
                 <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
                   <button className="btn-gold" onClick={() => handleSend("Looks good, please generate the draft.")}>✓ Confirm & Generate</button>
-                  <button className="btn-ghost" onClick={() => handleSend("I'd like to make some changes.")}>✗ Make Changes</button>
+                  <button className="btn-ghost" onClick={() => {
+                    setInput('');
+                    inputValRef.current = '';
+                    const ta = document.querySelector('.chat-input-area textarea');
+                    if (ta) {
+                      ta.placeholder = "What would you like to change?";
+                      ta.focus();
+                    }
+                  }}>✗ Make Changes</button>
                 </div>
               </div>
             );
