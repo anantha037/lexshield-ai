@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowUpRight } from 'lucide-react';
 import { useStore } from '../store';
 import { sendQuery, adaptQueryResponse } from '../api';
+import { DraftComplete } from './DraftComplete';
 import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown, IconGavel, IconExternalLink, IconCheckCircle, IconWarning, IconXCircle } from '../icons';
 
 // const LANGS = [
@@ -342,6 +343,9 @@ export default function ChatView() {
         scopeStatus: r.scopeStatus || 'in_scope',
         scopeMessage: r.scopeMessage || '',
         source: raw.source || 'default',
+        draft: r.draft,
+        supportingDocuments: r.supportingDocuments,
+        filingAuthority: r.filingAuthority,
         ts: Date.now() / 1000,
         isNew: true,
       }]);
@@ -493,6 +497,12 @@ export default function ChatView() {
                   </div>
                 </div>
               </div>
+            );
+          }
+
+          if (m.draft && m.draft.length > 200) {
+            return (
+              <DraftComplete key={i} msg={m} sessionId={activeSession} toast={toast} />
             );
           }
 
