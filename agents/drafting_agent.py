@@ -1421,8 +1421,8 @@ class DraftingAgent:
             return False
             
         # Heuristic for DONE stage: differentiate correction vs new question
-        q_lower = query.lower()
-        is_question = bool(re.search(r'\b(what|how|why|who|when|can|is|does)\b', q_lower) or '?' in q_lower)
+        q_lower = query.lower().strip()
+        is_question = bool(re.match(r'^(what|how|why|who|when|can)\b', q_lower) or '?' in q_lower)
         correction_keywords = ["change", "update", "fix", "instead", "add", "remove", "typo", "mistake", "wrong", "draft", "document", "address", "name", "rent", "salary"]
         has_keyword = any(kw in q_lower for kw in correction_keywords)
         
@@ -1490,6 +1490,7 @@ class DraftingAgent:
             
             # Apply correction
             draft_data = self._apply_correction(draft_data, query, category)
+            row["draft_data"] = draft_data
             
             # Regenerate draft
             return self._generate_draft(session_id, row)

@@ -373,7 +373,7 @@ def route_by_intent(state: AgentState) -> str:
         return "general_node"
 
     # Priority 1: active draft
-    if session_id and drafting_agent.has_active_draft(session_id):
+    if session_id and drafting_agent.has_active_draft(session_id, state.get("query", "")):
         logger.debug(f"[Graph] route -> active draft -> draft_node")
         return "draft_node"
 
