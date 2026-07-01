@@ -1408,12 +1408,31 @@ class DraftingAgent:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def has_active_draft(self, session_id: str) -> bool:
-        """True if this session has a draft in any stage except DONE."""
+    def has_active_draft(self, session_id: str, query: str = "") -> bool:
+        """True if this session has a draft. For DONE stage, use heuristic to distinguish correction vs new query."""
         row = self._load(session_id)
         if row is None:
             return False
-        return row["stage"] != DraftStage.DONE
+            
+        if row["stage"] != DraftStage.DONE:
+            return True
+            
+        if not query:
+            return False
+            
+        # Heuristic for DONE stage: differentiate correction vs new question
+        q_lower = query.lower()
+        is_question = bool(re.search(r'\b(what|how|why|who|when|can|is|does)\b', q_lower) or '?' in q_lower)
+        correction_keywords = ["change", "update", "fix", "instead", "add", "remove", "typo", "mistake", "wrong", "draft", "document", "address", "name", "rent", "salary"]
+        has_keyword = any(kw in q_lower for kw in correction_keywords)
+        
+        # Very short phrases (e.g. "Mumbai", "Rent was 5000") are usually corrections
+        is_short = len(query.split()) <= 6
+        
+        if (has_keyword or is_short) and not is_question:
+            return True
+            
+        return False
 
     def handle(self, query: str, session_id: str) -> dict:
         """
@@ -1463,6 +1482,16 @@ class DraftingAgent:
             return self._handle_confirm(session_id, query, row)
 
         if stage == DraftStage.GENERATE:
+            return self._generate_draft(session_id, row)
+
+        if stage == DraftStage.DONE:
+            category = row["category"]
+            draft_data = row["draft_data"]
+            
+            # Apply correction
+            draft_data = self._apply_correction(draft_data, query, category)
+            
+            # Regenerate draft
             return self._generate_draft(session_id, row)
 
         # Unexpected state
