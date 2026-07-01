@@ -701,7 +701,16 @@ def draft_node(state: AgentState) -> dict:
         complete  = result.get("complete", False)
         doc_type  = result.get("doc_type", "")
         draft_txt = result.get("draft", "")
-        
+
+        # ── Persist completed draft text into draft_data for PDF export ────────
+        # drafting_agent._save() already wrote draft_data at DONE stage, but the
+        # final draft_text is only returned transiently.  Re-save with the text
+        # so the /export-pdf endpoint can retrieve it by session_id.
+        if complete and draft_txt:
+            _persisted = dict(result.get("draft_data", {}))
+            _persisted["completed_draft"] = draft_txt
+            drafting_agent._save(session_id, "DONE", doc_type, _persisted)
+
         scope_status = "in_scope"
         scope_message = ""
         if stage_str == "0" or (stage_str == "INIT" and not doc_type) or (stage_str == 0):
