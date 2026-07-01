@@ -457,10 +457,8 @@ export default function ChatView() {
                 <div style={{ display: 'flex', gap: 12 }}>
                   <button className="btn-gold" onClick={() => setActiveView(m.redirect.view)}>Go to {m.redirect.label} →</button>
                   <button className="btn-ghost" onClick={() => {
-                    setChatMessages(msgs => msgs.filter((_, j) => j !== i));
-                    const originalQ = m.content.replace("(legal question)", "").trim();
-                    inputValRef.current = originalQ;
-                    handleSend(originalQ, true);
+                    setChatMessages(msgs => msgs.filter((_, j) => j !== i && j !== i - 1));
+                    handleSend(m.content.trim(), true);
                   }}>I have a legal question instead</button>
                 </div>
               </div>
