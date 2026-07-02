@@ -428,8 +428,8 @@ export default function ChatView() {
 
       <div className="messages-area" ref={areaRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', scrollBehavior: 'smooth' }}>
         {(!chatMessages || chatMessages.length === 0) && !loading && (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '0 40px', minHeight: 0 }}>
-            <EmptyIcon size={48} color="var(--c-gold-dim)" />
+          <div className="chat-empty-state" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, minHeight: 0 }}>
+            <EmptyIcon size={48} color="var(--c-gold-dim)" className="empty-icon" />
             <h2 style={{ fontFamily: 'var(--f-head)', fontSize: 28, fontWeight: 600, color: 'var(--c-text)', margin: 0 }}>{emptyTitle}</h2>
             <p style={{ fontSize: 14, color: 'var(--c-text2)', textAlign: 'center', maxWidth: 400, margin: 0 }}>
               {emptySubtitle}
