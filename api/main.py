@@ -126,7 +126,7 @@ app = FastAPI(
 # Falls back to both common dev ports if env var is absent.
 _raw_origins   = os.getenv(
     "ALLOWED_ORIGINS", 
-    "http://localhost:3000,http://localhost:5173,https://lexshield-ai-prod.web.app,https://lexshieldai.in"
+    "http://localhost:3000,http://localhost:5173,https://lexshield-ai-prod.web.app,https://lexshield.co.in,https://www.lexshield.co.in"
 )
 _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 

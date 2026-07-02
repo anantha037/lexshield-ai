@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import logging
 
@@ -52,6 +52,10 @@ class QueryRequest(BaseModel):
     session_id: Optional[str] = None
     language:   Optional[str] = None   # e.g. "ml", "hi" — passed for multilingual routing
     run_rag:    Optional[bool] = True   # accepted but handled by graph node selection
+
+
+class ExportPdfRequest(BaseModel):
+    session_id: str
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -459,3 +463,70 @@ def new_session_id():
     fresh_id = "LX-" + uuid.uuid4().hex[:8].upper()
     logger.info(f"Generated new session id: {fresh_id}")
     return {"session_id": fresh_id}
+
+
+@router.post("/export-pdf")
+def export_pdf(body: ExportPdfRequest):
+    """
+    Generate and download a PDF version of a completed legal draft.
+
+    Body: { "session_id": "..." }
+
+    Returns: application/pdf attachment if the session has a completed draft.
+    Returns 404 if session not found, draft incomplete, or no draft text stored.
+    Returns 500 if PDF rendering fails.
+
+    curl -s -X POST http://localhost:8000/api/v1/master/export-pdf \\
+      -H "Content-Type: application/json" \\
+      -d '{"session_id":"<session_id>"}' --output draft.pdf
+    """
+    from agents.drafting_agent import drafting_agent
+
+    logger.info(f"Export PDF request for session: {body.session_id}")
+
+    # ── Load draft from PostgreSQL ─────────────────────────────────────────
+    row = drafting_agent._load(body.session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No draft found for this session")
+
+    if row["stage"] != "DONE":
+        raise HTTPException(
+            status_code=404,
+            detail="No completed draft found for this session (draft is still in progress)",
+        )
+
+    draft_data = row.get("draft_data", {})
+    draft_text = draft_data.get("completed_draft", "")
+    if not draft_text:
+        raise HTTPException(
+            status_code=404,
+            detail="No completed draft text found for this session",
+        )
+
+    doc_type = row.get("category", "legal_document")
+    complainant_name = draft_data.get("answers", {}).get("complainant_name", "Complainant")
+
+    # ── Generate PDF ───────────────────────────────────────────────────────
+    try:
+        from services.pdf_export import generate_complaint_pdf
+
+        pdf_bytes = generate_complaint_pdf(
+            draft_text=draft_text,
+            doc_type=doc_type,
+            complainant_name=complainant_name,
+        )
+    except Exception as e:
+        logger.exception(f"[API] PDF generation failed for session {body.session_id}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to generate PDF. Please try again.",
+        )
+
+    filename = f"{doc_type}_complaint_{body.session_id[:8]}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )

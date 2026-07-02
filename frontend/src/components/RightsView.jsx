@@ -83,7 +83,7 @@ export default function RightsView() {
       </div>
 
       <div style={{ padding: '32px 40px' }}>
-        <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
           {CATEGORIES.map(({ id, Icon, label }) => (
             <div key={id} id={`rights-cat-${id}`}
               style={{
@@ -130,10 +130,11 @@ export default function RightsView() {
           <div className="fade-in">
             <motion.div
               key={selected}
+              className="rights-grid"
               initial="hidden"
               animate="visible"
               variants={{ visible: { transition: { staggerChildren: 0.08 } } }}
-              style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 28 }}
+              style={{ marginTop: 28 }}
             >
               {cards.map((r, i) => (
                 <motion.div

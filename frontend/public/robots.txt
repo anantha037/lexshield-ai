@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Allow: /$
+Disallow: /dashboard
+Disallow: /chat
+Disallow: /draft
+Disallow: /document
+Disallow: /rights
+
+Sitemap: https://lexshield.co.in/sitemap.xml

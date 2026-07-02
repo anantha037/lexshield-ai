@@ -130,9 +130,19 @@ class MasterOrchestrator:
         risk_result = final_state.get("risk_result", {})
 
         answer = response or rag_result.get("answer", "")
+        fallback_used = False
         if not rag_result.get("fallback"):
             if not answer or answer.strip() == "":
-                answer = "I was unable to process your request. Please try again."
+                # Prefer the node's scope_message (e.g. rights_node category
+                # menu) over a generic string — scope_message is set when a
+                # node intentionally returns empty answer + out_of_scope.
+                _scope_status = final_state.get("scope_status", "in_scope")
+                _scope_msg    = final_state.get("scope_message", "") or ""
+                if _scope_status == "out_of_scope" and _scope_msg.strip():
+                    answer = _scope_msg
+                else:
+                    answer = "I was unable to process your request. Please try again."
+                    fallback_used = True
 
         # Pull draft text out of rag_result (set by draft_node)
         draft = rag_result.get("draft", "")
@@ -271,7 +281,7 @@ class MasterOrchestrator:
             citations         = rag_result.get("citations", []),
             draft             = draft,
             sources_consulted = rag_result.get("sources_consulted", 0),
-            fallback          = rag_result.get("fallback",          False),
+            fallback          = rag_result.get("fallback", False) or fallback_used,
             synthesis_note    = rag_result.get("synthesis_note",    ""),
             grounding_warning = rag_result.get("grounding_warning", ""),
             rewritten_queries = rag_result.get("rewritten_queries", []),

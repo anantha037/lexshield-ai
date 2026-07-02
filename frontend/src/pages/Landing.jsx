@@ -47,8 +47,8 @@ export default function Landing() {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh' }}>
-      <div style={{ flex: '0 0 55%', background: 'var(--c-bg)', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 80px', position: 'relative', overflow: 'hidden' }}>
+    <div className="landing-root">
+      <div className="landing-hero-panel" style={{ background: 'var(--c-bg)', position: 'relative', overflow: 'hidden' }}>
         <motion.div
           animate={{
             background: [
@@ -96,7 +96,7 @@ export default function Landing() {
             <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--c-gold)', textTransform: 'uppercase' }}>INDIAN LEGAL INTELLIGENCE PLATFORM</div>
           </div>
-          <h1 style={{ fontFamily: 'var(--f-head)', fontSize: 64, fontWeight: 700, lineHeight: 1.05, letterSpacing: '-0.02em', color: 'var(--c-text)' }}>
+          <h1 style={{ fontFamily: 'var(--f-head)', fontWeight: 700, lineHeight: 1.05, letterSpacing: '-0.02em', color: 'var(--c-text)' }}>
             <div style={{ display: 'flex', flexWrap: 'nowrap', gap: '16px' }}>
               {['Legal', 'Intelligence'].map((w, i) => (
                 <motion.span
@@ -167,12 +167,13 @@ export default function Landing() {
         </div>
       </div>
 
-      <div style={{ flex: '0 0 45%', background: 'var(--c-bg2)', borderLeft: '1px solid var(--c-border2)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 48 }}>
+      <div className="landing-auth-panel">
         <motion.div
+          className="landing-auth-card"
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
-          style={{ width: '100%', maxWidth: 380, background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-lg)', padding: 36, transition: 'border-color 300ms, box-shadow 300ms' }}
+          style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-lg)', padding: 36, transition: 'border-color 300ms, box-shadow 300ms' }}
           onHoverStart={e => {
             e.currentTarget.style.borderColor = 'rgba(196,149,42,0.35)';
             e.currentTarget.style.boxShadow = '0 0 40px rgba(196,149,42,0.08)';

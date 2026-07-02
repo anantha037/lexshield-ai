@@ -119,18 +119,41 @@ export default function Dashboard() {
       {showSidebar && <DragHandle onDragStart={startSidebarDrag} />}
 
       {/* Main Content */}
-      <div className="view-container" style={{ flex: 1, position: 'relative' }}>
+      <div className="view-container" style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {!showSidebar && (
-          <button 
-            style={{ position: 'absolute', top: 24, left: 16, zIndex: 30, background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-sm)', padding: 6, color: 'var(--c-text)', cursor: 'pointer' }}
-            onClick={() => setMobileMenuOpen(true)}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="3" y1="12" x2="21" y2="12"></line>
-              <line x1="3" y1="6" x2="21" y2="6"></line>
-              <line x1="3" y1="18" x2="21" y2="18"></line>
-            </svg>
-          </button>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '12px 16px',
+            borderBottom: '1px solid var(--c-border2)',
+            background: 'var(--c-bg2)',
+            flexShrink: 0
+          }}>
+            <button
+              style={{
+                background: 'var(--c-surface)',
+                border: '1px solid var(--c-border)',
+                borderRadius: 'var(--r-sm)',
+                padding: 6,
+                color: 'var(--c-text)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              onClick={() => setMobileMenuOpen(true)}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
+            </button>
+            <span style={{ fontFamily: 'var(--f-head)', fontSize: 15, fontWeight: 700, color: 'var(--c-text)' }}>
+              Lex<span style={{ color: 'var(--c-gold)' }}>Shield</span> AI
+            </span>
+          </div>
         )}
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
@@ -139,7 +162,7 @@ export default function Dashboard() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-            style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+            style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
           >
             <View />
           </motion.div>

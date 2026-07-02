@@ -23,9 +23,12 @@ Provider priority (first available wins, proactively switches before rate limit)
 """
 
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 # ── Keep LegalLLM as a reference implementation (not used in production) ──────
@@ -78,15 +81,13 @@ def _create_llm():
         router = MultiLLMRouter()
         return router
     except ImportError:
-        import logging
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "[LLM] openai package not installed — falling back to single-provider LegalLLM. "
             "Run: pip install openai  to enable multi-provider failover."
         )
         return LegalLLM()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(
+        logger.warning(
             f"[LLM] MultiLLMRouter init failed ({e}) — "
             "falling back to single-provider LegalLLM."
         )
@@ -110,8 +111,7 @@ def _create_langchain_llm():
         from langchain_groq import ChatGroq
         api_key = os.getenv("GROQ_API_KEY", "")
         if not api_key:
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "[LLM] GROQ_API_KEY not set — langchain_llm will be None. "
                 "Tool-calling routing will fall back to classify_with_llm()."
             )
@@ -123,15 +123,13 @@ def _create_langchain_llm():
             max_tokens=256,
         )
     except ImportError:
-        import logging
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "[LLM] langchain-groq not installed — langchain_llm will be None. "
             "Run: pip install langchain-groq  to enable tool-calling routing."
         )
         return None
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(
+        logger.warning(
             f"[LLM] ChatGroq init failed ({e}) — langchain_llm will be None."
         )
         return None

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowUpRight } from 'lucide-react';
 import { useStore } from '../store';
 import { sendQuery, adaptQueryResponse } from '../api';
+import { DraftComplete } from './DraftComplete';
 import { IconScale, IconSend, IconCopy, IconCheck, IconArrowDown, IconGavel, IconExternalLink, IconCheckCircle, IconWarning, IconXCircle } from '../icons';
 
 // const LANGS = [
@@ -226,19 +227,47 @@ function CaseLawCards({ cases }) {
   );
 }
 
-function TypewriterText({ content = '', isNew }) {
+function TypewriterText({ content = '', isNew, onProgress }) {
   const safeContent = content || '';
   const [displayed, setDisplayed] = useState(isNew ? '' : safeContent);
   const [done, setDone] = useState(!isNew);
+  const startTimeRef = useRef(null);
 
   useEffect(() => {
     if (!isNew || done) return;
-    if (displayed.length >= safeContent.length) { setDone(true); return; }
-    const timeout = setTimeout(() => {
-      setDisplayed(safeContent.slice(0, displayed.length + 2));
-    }, 8);
-    return () => clearTimeout(timeout);
-  }, [displayed, safeContent, isNew, done]);
+    
+    if (!startTimeRef.current) {
+      startTimeRef.current = performance.now();
+    }
+
+    const updateDisplay = () => {
+      if (done) return;
+      const elapsedMs = performance.now() - startTimeRef.current;
+      const targetLength = Math.floor(elapsedMs / 4);
+
+      if (targetLength >= safeContent.length) {
+        setDisplayed(safeContent);
+        setDone(true);
+      } else {
+        setDisplayed(safeContent.slice(0, targetLength));
+      }
+      if (onProgress) onProgress();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        updateDisplay();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    const timeout = setTimeout(updateDisplay, 8);
+    
+    return () => {
+      clearTimeout(timeout);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [displayed, safeContent, isNew, done, onProgress]);
 
   return (
     <div style={{ fontSize: 14, color: 'var(--c-text2)', lineHeight: 1.75 }}>
@@ -270,17 +299,21 @@ export default function ChatView() {
   // BUG2 fix: keep ref in sync with latest handleSend so prefillInput effect is never stale
   useEffect(() => { handleSendRef.current = handleSend; });
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
-  useEffect(() => {
+  const handleTypewriterProgress = useCallback(() => {
     if (!areaRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = areaRef.current;
     if (scrollHeight - scrollTop - clientHeight < 150) {
       scrollToBottom();
     }
-  }, [chatMessages, loading]);
+  }, [scrollToBottom]);
+
+  useEffect(() => {
+    handleTypewriterProgress();
+  }, [chatMessages, loading, handleTypewriterProgress]);
 
   const handleScroll = (e) => {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
@@ -342,6 +375,9 @@ export default function ChatView() {
         scopeStatus: r.scopeStatus || 'in_scope',
         scopeMessage: r.scopeMessage || '',
         source: raw.source || 'default',
+        draft: r.draft,
+        supportingDocuments: r.supportingDocuments,
+        filingAuthority: r.filingAuthority,
         ts: Date.now() / 1000,
         isNew: true,
       }]);
@@ -399,13 +435,11 @@ export default function ChatView() {
               {emptySubtitle}
             </p>
             <motion.div
+              className="quick-grid"
               initial="hidden"
               animate="visible"
               variants={{ visible: { transition: { staggerChildren: 0.08 } } }}
               style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
-                gap: 16,
                 marginTop: 8,
                 maxWidth: 600,
                 width: '100%',
@@ -455,10 +489,8 @@ export default function ChatView() {
                 <div style={{ display: 'flex', gap: 12 }}>
                   <button className="btn-gold" onClick={() => setActiveView(m.redirect.view)}>Go to {m.redirect.label} →</button>
                   <button className="btn-ghost" onClick={() => {
-                    setChatMessages(msgs => msgs.filter((_, j) => j !== i));
-                    const originalQ = m.content.replace("(legal question)", "").trim();
-                    inputValRef.current = originalQ;
-                    handleSend(originalQ, true);
+                    setChatMessages(msgs => msgs.filter((_, j) => j !== i && j !== i - 1));
+                    handleSend(m.content.trim(), true);
                   }}>I have a legal question instead</button>
                 </div>
               </div>
@@ -498,6 +530,12 @@ export default function ChatView() {
             );
           }
 
+          if (m.draft && m.draft.length > 200) {
+            return (
+              <DraftComplete key={i} msg={m} sessionId={activeSession} toast={toast} />
+            );
+          }
+
           return (
             <div key={i} className="msg-enter" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', alignSelf: 'flex-start', maxWidth: '88%' }}>
               <div style={{ background: isCaseLaw ? 'rgba(6,182,212,0.10)' : 'var(--c-gold-dim)', border: `1px solid ${isCaseLaw ? 'rgba(6,182,212,0.25)' : 'var(--c-gold)'}`, color: isCaseLaw ? '#06B6D4' : 'var(--c-gold)', fontSize: 16, borderRadius: '50%', width: 32, height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -517,6 +555,7 @@ export default function ChatView() {
                   <TypewriterText
                     content={m.content}
                     isNew={m.isNew && !isCaseLaw}
+                    onProgress={handleTypewriterProgress}
                   />
                 )}
 

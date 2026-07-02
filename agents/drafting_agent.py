@@ -161,37 +161,43 @@ REQUIRED_FIELDS: dict[str, list[str]] = {
     "wage_theft": [
         "complainant_name", "employer_name", "employer_address",
         "unpaid_amount", "unpaid_period", "jurisdiction",
-        "documentary_proof",   # always-ask — never extracted from query
+        "documentary_proof", "complainant_address", "complainant_contact", "designation", "date_of_joining",
     ],
     "illegal_eviction": [
         "complainant_name", "landlord_name", "property_address",
         "monthly_rent", "jurisdiction", "eviction_date",
+        "complainant_address", "complainant_contact", "tenancy_duration",
     ],
     "cheque_bounce": [
         "complainant_name", "accused_name", "cheque_number",
         "cheque_amount", "dishonour_date", "dishonour_reason",
+        "complainant_address", "complainant_contact", "accused_address", "complainant_bank",
     ],
     "consumer_complaint": [
         "complainant_name", "respondent_name", "product_service",
         "defect_description", "relief_sought", "jurisdiction",
+        "complainant_address", "complainant_contact", "respondent_address",
     ],
     "fir_complaint": [
         "complainant_name", "accused_name_or_description",
         "incident_description", "incident_date",
         "incident_location", "sections_applicable",
+        "complainant_address", "complainant_contact",
     ],
     "domestic_violence": [
         "complainant_name", "respondent_name", "relationship",
         "violence_type", "jurisdiction",
-        "supporting_evidence",  # always-ask — never extracted from query
+        "supporting_evidence", "complainant_address", "complainant_contact", "complainant_father_or_husband_name", "respondent_address", "relationship_start_year",
     ],
     "employment_termination": [
         "complainant_name", "employer_name", "jurisdiction",
         "termination_reason", "service_period", "last_salary",
+        "complainant_address", "complainant_contact", "designation", "date_of_joining", "date_of_termination",
     ],
     "loan_default": [
         "complainant_name", "lender_name", "loan_amount",
         "loan_type", "defaulted_emis", "outstanding_amount",
+        "complainant_address", "complainant_contact", "lender_address", "loan_date",
     ],
 }
 
@@ -279,6 +285,10 @@ _FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
         "unpaid_amount":      "What is the total amount of unpaid wages/salary? (e.g., ₹45,000)",
         "unpaid_period":      "For which period are the wages unpaid? (e.g., April–June 2024)",
         "documentary_proof":  "Do you have any documentary proof? (e.g., appointment letter, salary slips, bank statement showing last salary credited, Form 16, or any written communication from employer)",
+        "complainant_address": "What is your current residential address?",
+        "complainant_contact": "What is your contact phone number or email?",
+        "designation":         "What was your job title / designation?",
+        "date_of_joining":     "On what date did you join this employer? (DD.MM.YYYY, or approximate if unsure)",
     },
     "illegal_eviction": {
         "jurisdiction":       "In which State and District is the property located?",
@@ -287,6 +297,9 @@ _FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
         "property_address":   "Is the property residential or commercial? Please provide its full address.",
         "monthly_rent":       "What is the monthly rent amount and how was it paid? (cash / bank transfer / cheque — and do you have receipts?)",
         "eviction_date":      "Did the landlord give any written notice before eviction? If yes, what reason was stated and on what date?",
+        "complainant_address": "What is your current residential address?",
+        "complainant_contact": "What is your contact phone number or email?",
+        "tenancy_duration":    "How long have you been a tenant at this property? (in years/months)",
     },
     "cheque_bounce": {
         "complainant_name":   "What is your full name? (the payee — person/company to whom the cheque was issued)",
@@ -295,6 +308,10 @@ _FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
         "cheque_amount":      "What is the cheque amount (₹) and the date written on the cheque?",
         "dishonour_date":     "On what date was the cheque dishonoured (returned by the bank)?",
         "dishonour_reason":   "What reason did the bank give for dishonour? (e.g., 'funds insufficient', 'account closed', 'signature mismatch')",
+        "complainant_address": "What is your current residential address?",
+        "complainant_contact": "What is your contact phone number or email?",
+        "accused_address":     "What is the full address of the cheque issuer (accused)?",
+        "complainant_bank":    "What is the name of your bank where the cheque was deposited?",
     },
     "consumer_complaint": {
         "complainant_name":   "What is your full name? (as it should appear on the complaint)",
@@ -303,6 +320,9 @@ _FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
         "defect_description": "Describe the specific defect in the product or deficiency in the service clearly.",
         "relief_sought":      "Have you already lodged a complaint with the company? If yes, on what date and what was their response?",
         "jurisdiction":       "In which State and District did you purchase the product / receive the service?",
+        "complainant_address": "What is your current residential address?",
+        "complainant_contact": "What is your contact phone number or email?",
+        "respondent_address":  "What is the full address of the company / seller / service provider?",
     },
     "fir_complaint": {
         "complainant_name":          "What is your full name and contact address?",
@@ -311,6 +331,8 @@ _FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
         "incident_date":             "What was the date, time, and exact location of the incident?",
         "accused_name_or_description": "Please provide the names and addresses of the accused, if known. (Write 'Not identified' if unknown.)",
         "sections_applicable":       "Do you know which IPC/BNS sections apply? (Leave blank if unsure — we will identify them for you.)",
+        "complainant_address":       "What is your current residential address?",
+        "complainant_contact":       "What is your contact phone number or email?",
     },
     "domestic_violence": {
         "complainant_name":  "What is your full name? (as it should appear on the application)",
@@ -319,6 +341,11 @@ _FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
         "relationship":      "What is your relationship with the respondent? (e.g., husband, father-in-law, mother-in-law, brother-in-law)",
         "violence_type":     "What type of violence have you experienced? (physical / emotional / verbal / economic / sexual — you may specify more than one)",
         "supporting_evidence": "Do you have any supporting evidence? (e.g., medical reports, photographs of injuries, witness names, police diary entries, written communications)",
+        "complainant_address": "What is your current residential address?",
+        "complainant_contact": "What is your contact phone number or email?",
+        "complainant_father_or_husband_name": "What is the name of your father or husband? (Please specify which)",
+        "respondent_address":  "What is the full address of the respondent?",
+        "relationship_start_year": "In which year did your marriage or domestic relationship begin?",
     },
     "employment_termination": {
         "complainant_name":    "What is your full name? (as it should appear on the complaint)",
@@ -327,6 +354,11 @@ _FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
         "termination_reason":  "What reason, if any, was given for your termination? Was it communicated orally or in writing?",
         "service_period":      "What was your total period of service and your designation?",
         "last_salary":         "What was your last drawn monthly salary (₹)?",
+        "complainant_address": "What is your current residential address?",
+        "complainant_contact": "What is your contact phone number or email?",
+        "designation":         "What was your job title / designation?",
+        "date_of_joining":     "On what date did you join this employer? (DD.MM.YYYY, or approximate if unsure)",
+        "date_of_termination": "On what date were you terminated? (DD.MM.YYYY, or approximate if unsure)",
     },
     "loan_default": {
         "complainant_name":    "What is your full name? (as it should appear on the complaint)",
@@ -335,6 +367,10 @@ _FIELD_QUESTION_MAP: dict[str, dict[str, str]] = {
         "loan_type":           "What type of loan is it? (home / personal / business / vehicle / gold / other)",
         "defaulted_emis":      "How many EMIs have been defaulted, and from which month?",
         "outstanding_amount":  "What is the total outstanding amount as of today (₹)?",
+        "complainant_address": "What is your current residential address?",
+        "complainant_contact": "What is your contact phone number or email?",
+        "lender_address":      "What is the full address of the lender / branch?",
+        "loan_date":           "On what date was the loan sanctioned or disbursed?",
     },
 }
 
@@ -716,6 +752,7 @@ Always use:
 - "Respectfully Sheweth" or "Most Respectfully Sheweth" for complaints to courts
 - "Submitted for your kind perusal and necessary action" for complaints to authorities
 - Proper verification clause: "VERIFICATION: I, [name], the above-named Complainant, do hereby verify that the contents of paragraphs __ to __ above are true and correct to the best of my knowledge and belief, and that nothing material has been concealed therefrom. Verified at [place] on this __ day of __, 20__."
+- When filling the VERIFICATION clause, always use the exact Current Date value provided in the facts — never invent or guess a date.
 
 Do not add disclaimers inside the document body."""
 
@@ -729,6 +766,9 @@ def _build_generation_prompt(
     draft_data: dict,
 ) -> str:
     """Build a highly specific, professional prompt for each complaint type."""
+
+    from datetime import datetime
+    current_date_str = datetime.now().strftime("%d.%m.%Y")
 
     answers      = draft_data.get("answers", {})
     authority    = draft_data.get("authority", _FILING_AUTHORITY.get(category, "Competent Authority"))
@@ -749,6 +789,8 @@ def _build_generation_prompt(
             f"Q{i+1}: {q}\nA{i+1}: {answers.get(str(i), 'Not provided')}"
             for i, q in enumerate(questions)
         )
+
+    facts_block += f"\n\nCurrent Date (use this for verification clause): {current_date_str}"
 
     missing = draft_data.get("missing_elements_to_inject", [])
     if missing:
@@ -1307,6 +1349,21 @@ LIST OF ENCLOSURES: [numbered]""",
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# HELPER: DETECT CORRECTION CONTENT IN A "CONFIRM" MESSAGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _looks_like_correction(query: str) -> bool:
+    """True if the query contains correction content beyond just 'confirm'."""
+    # Remove the confirm word and check if meaningful content remains
+    stripped = re.sub(
+        r'\b(confirm|yes|proceed|ok|okay|go ahead)\b', '', query,
+        flags=re.IGNORECASE
+    ).strip()
+    # If more than 5 words remain after removing confirm, it's likely a correction
+    return len(stripped.split()) >= 5
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DRAFTING AGENT CLASS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1351,12 +1408,31 @@ class DraftingAgent:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def has_active_draft(self, session_id: str) -> bool:
-        """True if this session has a draft in any stage except DONE."""
+    def has_active_draft(self, session_id: str, query: str = "") -> bool:
+        """True if this session has a draft. For DONE stage, use heuristic to distinguish correction vs new query."""
         row = self._load(session_id)
         if row is None:
             return False
-        return row["stage"] != DraftStage.DONE
+            
+        if row["stage"] != DraftStage.DONE:
+            return True
+            
+        if not query:
+            return False
+            
+        # Heuristic for DONE stage: differentiate correction vs new question
+        q_lower = query.lower().strip()
+        is_question = bool(re.match(r'^(what|how|why|who|when|can)\b', q_lower) or '?' in q_lower)
+        correction_keywords = ["change", "update", "fix", "instead", "add", "remove", "typo", "mistake", "wrong", "draft", "document", "address", "name", "rent", "salary"]
+        has_keyword = any(kw in q_lower for kw in correction_keywords)
+        
+        # Very short phrases (e.g. "Mumbai", "Rent was 5000") are usually corrections
+        is_short = len(query.split()) <= 6
+        
+        if (has_keyword or is_short) and not is_question:
+            return True
+            
+        return False
 
     def handle(self, query: str, session_id: str) -> dict:
         """
@@ -1406,6 +1482,17 @@ class DraftingAgent:
             return self._handle_confirm(session_id, query, row)
 
         if stage == DraftStage.GENERATE:
+            return self._generate_draft(session_id, row)
+
+        if stage == DraftStage.DONE:
+            category = row["category"]
+            draft_data = row["draft_data"]
+            
+            # Apply correction
+            draft_data = self._apply_correction(draft_data, query, category)
+            row["draft_data"] = draft_data
+            
+            # Regenerate draft
             return self._generate_draft(session_id, row)
 
         # Unexpected state
@@ -1572,7 +1659,27 @@ class DraftingAgent:
                     break
 
         if category is None:
-            # Could not parse — re-prompt
+            # Could not parse — check attempts and re-prompt or exit
+            draft_data = row.get("draft_data", {})
+            attempts = draft_data.get("menu_attempts", 0) + 1
+            if attempts >= 2:
+                self._delete(session_id)
+                return {
+                    "answer": (
+                        "I'm only able to help draft the 8 specific complaint types listed above "
+                        "— I can't draft general documents like emails or letters outside these "
+                        "categories. If your situation doesn't match any of them, let me know more "
+                        "details and I'll tell you if there's a related legal remedy."
+                    ),
+                    "stage": 0,
+                    "doc_type": "",
+                    "complete": False,
+                    "draft": "",
+                }
+            
+            draft_data["menu_attempts"] = attempts
+            self._save(session_id, DraftStage.MENU_SHOWN, "__menu__", draft_data)
+
             return {
                 "answer": (
                     "Sorry, I didn't catch that. Please reply with the number (1–8) "
@@ -1828,7 +1935,7 @@ class DraftingAgent:
         authority = _FILING_AUTHORITY.get(category, "Competent Authority as per applicable law")
         draft_data["authority"] = authority
 
-        self._save(session_id, DraftStage.AWAITING_CONFIRMATION, category, draft_data)
+        self._save(session_id, DraftStage.CONFIRM, category, draft_data)
         return self._confirm_draft(session_id, {"category": category, "draft_data": draft_data})
 
     # ── STAGE: CONFIRM ─────────────────────────────────────────────────────────
@@ -1876,28 +1983,110 @@ class DraftingAgent:
             "draft":    "",
         }
 
+    def _apply_correction(self, draft_data: dict, correction_text: str, category: str) -> dict:
+        """Helper to apply a correction to a specific field via LLM."""
+        required = REQUIRED_FIELDS.get(category, [])
+        current_answers = draft_data.get("answers", {})
+        
+        # Build prompt with current fields and values
+        fields_context = "\n".join([f"- {f}: {current_answers.get(f, 'Not provided')}" for f in required])
+        
+        system_prompt = (
+            f"You are a legal data correction assistant.\n"
+            f"The user is correcting one or more fields in their complaint draft.\n\n"
+            f"Current field values:\n{fields_context}\n\n"
+            f"User correction: \"{correction_text}\"\n\n"
+            f"Identify which field the user wants to update, and what the new value should be.\n"
+            f"Respond ONLY with valid JSON:\n"
+            f"{{\"field_to_update\": \"field_name\", \"new_value\": \"value\", \"found\": true}}\n"
+            f"If you cannot confidently determine which field to update, return {{\"found\": false}}.\n"
+            f"The 'field_to_update' MUST be exactly one of the fields listed above."
+        )
+        
+        try:
+            import os
+            from groq import Groq
+
+            api_key = os.getenv("GROQ_API_KEY", "")
+            if not api_key:
+                raise RuntimeError("GROQ_API_KEY not set")
+
+            client = Groq(api_key=api_key)
+            resp = client.chat.completions.create(
+                model           = "llama-3.3-70b-versatile",
+                messages        = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": correction_text},
+                ],
+                temperature     = 0,
+                max_tokens      = 128,
+                response_format = {"type": "json_object"},
+                timeout         = 5,
+            )
+            raw = resp.choices[0].message.content.strip()
+            
+            # Parse JSON
+            parsed = json.loads(raw)
+            if parsed.get("found") is True:
+                field = parsed.get("field_to_update")
+                val = parsed.get("new_value")
+                if field in required and val:
+                    # Successfully mapped to a specific field
+                    draft_data["answers"][field] = val
+                    return draft_data
+
+        except Exception as e:
+            logger.exception("[DraftingAgent] Correction application failed, falling back")
+            
+        # Fallback: just store under "correction"
+        draft_data["answers"]["correction"] = correction_text
+        return draft_data
+
     def _handle_confirm(self, session_id: str, query: str, row: dict) -> dict:
-        """Check if user confirmed or wants to make changes."""
-        if re.search(r'\b(confirm|yes|proceed|generate|draft it|go ahead|ok|okay|yes please)\b',
-                     query, re.IGNORECASE):
-            self._save(session_id, DraftStage.GENERATE, row["category"], row["draft_data"])
-            return self._generate_draft(session_id, row)
-        else:
-            # User wants to correct something — treat as a correction
-            draft_data = row["draft_data"]
-            draft_data["answers"]["correction"] = query
-            self._save(session_id, DraftStage.CONFIRM, row["category"], draft_data)
+        """Check if user confirmed, cancelled, or wants to make changes.
+
+        Any message that is NOT a clear confirmation or cancellation is
+        treated as a potential correction and routed to _apply_correction()
+        so the LLM can map freeform text (e.g. "the property is in Delhi")
+        to the correct field without requiring trigger words.
+        """
+        category = row["category"]
+        draft_data = row["draft_data"]
+
+        is_confirm = re.search(
+            r'\b(confirm|yes|proceed|generate|draft it|go ahead|ok|okay|yes please)\b',
+            query, re.IGNORECASE
+        )
+        is_cancel = re.search(
+            r'\b(cancel|stop|abort|quit|start over|restart)\b',
+            query, re.IGNORECASE
+        )
+
+        if is_cancel:
+            self._delete(session_id)
             return {
-                "answer": (
-                    f"Noted: *{query[:200]}*\n\n"
-                    "I have recorded your correction. Reply **'confirm'** to generate the draft "
-                    "with this update, or continue making corrections."
-                ),
-                "stage":    DraftStage.CONFIRM,
-                "doc_type": row["category"],
-                "complete": False,
-                "draft":    "",
+                "answer": "Your draft session has been cancelled. You can start a new draft anytime.",
+                "stage": 0, "doc_type": "", "complete": False, "draft": "",
             }
+
+        if is_confirm and not _looks_like_correction(query):
+            # Pure confirmation with no correction content — generate immediately
+            self._save(session_id, DraftStage.GENERATE, category, draft_data)
+            return self._generate_draft(session_id, row)
+
+        # Everything else: treat as potential correction
+        # (includes "the property is in delhi", "change salary to 60000",
+        #  "her name is Priya", or any freeform correction)
+        draft_data = self._apply_correction(draft_data, query, category)
+
+        # After correction, check if they also said confirm in the same message
+        if is_confirm:
+            self._save(session_id, DraftStage.GENERATE, category, draft_data)
+            return self._generate_draft(session_id, row)
+
+        # Correction applied, re-show updated summary for user to verify
+        self._save(session_id, DraftStage.CONFIRM, category, draft_data)
+        return self._confirm_draft(session_id, {"category": category, "draft_data": draft_data})
 
     # ── STAGE: GENERATE ────────────────────────────────────────────────────────
 

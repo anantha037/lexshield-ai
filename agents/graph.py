@@ -196,12 +196,12 @@ def classify_intent_node(state: AgentState) -> dict:
     if _session_id_early:
         try:
             from agents.drafting_agent import drafting_agent as _da
-            if _da.has_active_draft(_session_id_early):
+            if _da.has_active_draft(_session_id_early, query):
                 _row = _da._load(_session_id_early)
                 _draft_stage = _row["stage"] if _row else ""
 
                 # ── AWAITING_CONFIRMATION: detect cancel / confirm / ambiguous ─
-                if _draft_stage in ("AWAITING_CONFIRMATION", "CONFIRM"):
+                if _draft_stage == "AWAITING_CONFIRMATION":
                     _CANCEL_RE = re.compile(
                         r'\b(cancel|don\'t\s+confirm|do\s+not\s+confirm|'
                         r'stop|abort|discard|never\s*mind|forget\s*it|'
@@ -373,7 +373,7 @@ def route_by_intent(state: AgentState) -> str:
         return "general_node"
 
     # Priority 1: active draft
-    if session_id and drafting_agent.has_active_draft(session_id):
+    if session_id and drafting_agent.has_active_draft(session_id, state.get("query", "")):
         logger.debug(f"[Graph] route -> active draft -> draft_node")
         return "draft_node"
 
@@ -701,7 +701,16 @@ def draft_node(state: AgentState) -> dict:
         complete  = result.get("complete", False)
         doc_type  = result.get("doc_type", "")
         draft_txt = result.get("draft", "")
-        
+
+        # ── Persist completed draft text into draft_data for PDF export ────────
+        # drafting_agent._save() already wrote draft_data at DONE stage, but the
+        # final draft_text is only returned transiently.  Re-save with the text
+        # so the /export-pdf endpoint can retrieve it by session_id.
+        if complete and draft_txt:
+            _persisted = dict(result.get("draft_data", {}))
+            _persisted["completed_draft"] = draft_txt
+            drafting_agent._save(session_id, "DONE", doc_type, _persisted)
+
         scope_status = "in_scope"
         scope_message = ""
         if stage_str == "0" or (stage_str == "INIT" and not doc_type) or (stage_str == 0):
@@ -1013,8 +1022,13 @@ def _detect_rights_category(query_lower: str) -> str:
     Detect rights category from query text.
 
     Returns category key or empty string if ambiguous.
-    Detection order matters — "domestic violence" should hit "women",
-    not "bail" even though arrest is mentioned in the same query.
+
+    Strategy:
+      1. Fast regex keyword scan (zero-cost, handles explicit keywords).
+      2. If regex returns empty, fallback to a cheap LLM classification call
+         that maps natural-language queries to one of the 5 valid categories
+         or "none".  Follows the same Groq JSON-mode pattern used by
+         IntentClassifier._call_groq_json().
     """
     import re
 
@@ -1057,7 +1071,87 @@ def _detect_rights_category(query_lower: str) -> str:
         if pattern.search(query_lower):
             return category
 
-    return ""
+    # ── LLM fallback: classify paraphrased queries into a rights category ─────
+    return _llm_classify_rights_category(query_lower)
+
+
+def _llm_classify_rights_category(query: str) -> str:
+    """
+    LLM-based fallback for rights category detection.
+
+    Uses a single cheap Groq JSON-mode call (same pattern as
+    IntentClassifier._call_groq_json) to classify the query into one of
+    the 5 valid categories or "none".
+
+    Returns category key ("tenant"/"employee"/"consumer"/"women"/"bail")
+    or empty string if the query doesn't fit any category.
+    """
+    import os
+    import json
+
+    _VALID = {"tenant", "employee", "consumer", "women", "bail"}
+
+    _SYSTEM = (
+        "You are a legal rights category classifier for an Indian legal AI platform.\n\n"
+        "Given a user query, classify it into exactly ONE of these 5 rights categories:\n"
+        "- tenant: Issues about rent, eviction, landlord disputes, security deposits, lease agreements\n"
+        "- employee: Issues about salary, wages, termination, workplace rights, provident fund, gratuity\n"
+        "- consumer: Issues about defective products, poor services, refunds, subscriptions, "
+        "e-commerce disputes, unfair trade practices\n"
+        "- women: Issues about domestic violence, dowry, sexual harassment, maternity rights, "
+        "protection orders\n"
+        "- bail: Issues about arrest, detention, bail rights, custody, police station rights, "
+        "rights of accused\n\n"
+        "If the query does NOT fit any of these 5 categories, return \"none\".\n\n"
+        "Respond ONLY with this JSON (no markdown, no extra text):\n"
+        "{\"category\": \"<one of: tenant, employee, consumer, women, bail, none>\", "
+        "\"reasoning\": \"one sentence explanation\"}"
+    )
+
+    try:
+        api_key = os.getenv("GROQ_API_KEY", "")
+        if not api_key:
+            logger.warning("[Graph] _llm_classify_rights_category: GROQ_API_KEY not set")
+            return ""
+
+        from groq import Groq
+        client = Groq(api_key=api_key)
+        resp = client.chat.completions.create(
+            model           = "llama-3.3-70b-versatile",
+            messages        = [
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user",   "content": query},
+            ],
+            temperature     = 0,
+            max_tokens      = 100,
+            response_format = {"type": "json_object"},
+            timeout         = 6,
+        )
+        raw = resp.choices[0].message.content.strip()
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        data = json.loads(raw)
+        category = data.get("category", "none").strip().lower()
+        reasoning = data.get("reasoning", "")
+
+        if category in _VALID:
+            logger.info(
+                f"[Graph] LLM rights category fallback -> {category!r} "
+                f"reasoning={reasoning!r}"
+            )
+            return category
+
+        logger.debug(
+            f"[Graph] LLM rights category fallback -> none "
+            f"(raw={category!r}, reasoning={reasoning!r})"
+        )
+        return ""
+
+    except Exception as exc:
+        logger.exception("[Graph] _llm_classify_rights_category failed (non-fatal)")
+        return ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

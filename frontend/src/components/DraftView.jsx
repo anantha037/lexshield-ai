@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useStore } from '../store';
-import { sendQuery, adaptQueryResponse, deleteSession } from '../api';
+import { sendQuery, adaptQueryResponse, deleteSession, exportPdf } from '../api';
+import { DraftComplete, parseText } from './DraftComplete';
 import { IconWage, IconHome, IconCheque, IconCart, IconPhone, IconHeart, IconBriefcase, IconDollar, IconSend, IconArrowBack, IconDraft, IconScale, IconCopy, IconCheck } from '../icons';
 
 const STAGES = ['Describe', 'Clarify', 'Sections', 'Authority', 'Confirm', 'Generate'];
@@ -18,41 +19,64 @@ const DRAFT_CATEGORIES = [
 ];
 
 function stageIndex(stage) {
-  return { CLARIFY: 1, SECTIONS: 2, AUTHORITY: 3, CONFIRM: 4, DONE: 5 }[stage] ?? 0;
+  return {
+    CLARIFY: 1, COLLECTING_FIELDS: 1, MENU_SHOWN: 0,
+    SECTIONS: 2, RETRIEVE_SECTIONS: 2,
+    AUTHORITY: 3, IDENTIFY_AUTHORITY: 3,
+    CONFIRM: 4, AWAITING_CONFIRMATION: 4,
+    GENERATE: 5, DONE: 5,
+  }[stage] ?? 0;
 }
 
-function parseText(text) {
-  if (!text) return null;
-  let html = text.replace(/\[(IPC|BNS)\s*§\d+[a-zA-Z]*\]|Section\s+\d+[a-zA-Z]*\s+(IPC|BNS)/gi, match => `<span class="citation-badge">${match}</span>`);
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/--(.*?)--/g, ''); 
-  
-  const blocks = html.split(/\n\s*\n/);
-  return blocks.map((block, i) => {
-    const lines = block.split('\n');
-    if (lines[0].match(/^(\*|-|•)\s/)) {
-      return <ul key={i} style={{ margin: '8px 0', paddingLeft: 24, lineHeight: 1.7 }}>
-        {lines.map((l, j) => {
-          const content = l.replace(/^(\*|-|•)\s/, '');
-          return <li key={j} dangerouslySetInnerHTML={{ __html: content }} />;
-        })}
-      </ul>;
-    }
-    if (lines[0].match(/^\d+\.\s/)) {
-      return <ol key={i} style={{ margin: '8px 0', paddingLeft: 24, lineHeight: 1.7 }}>
-        {lines.map((l, j) => {
-          const content = l.replace(/^\d+\.\s/, '');
-          return <li key={j} dangerouslySetInnerHTML={{ __html: content }} />;
-        })}
-      </ol>;
-    }
-    return <p key={i} dangerouslySetInnerHTML={{ __html: block.replace(/\n/g, '<br/>') }} style={{ marginBottom: 12, lineHeight: 1.6 }} />;
-  });
+
+
+function ConfirmModal({ open, onConfirm, onCancel }) {
+  useEffect(() => {
+    const handleEsc = (e) => { if (e.key === 'Escape' && open) onCancel(); };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [open, onCancel]);
+
+  if (!open) return null;
+
+  return (
+    <div 
+      onClick={onCancel}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.7)', zIndex: 9998,
+        display: 'flex', alignItems: 'center', justifyContent: 'center'
+      }}
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--c-elevated)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)',
+          padding: '24px 32px', maxWidth: '400px', width: '90%',
+          animation: 'modalFadeScale 200ms ease forwards', opacity: 0,
+          color: 'var(--c-text)'
+        }}
+      >
+        <style>{`
+          @keyframes modalFadeScale {
+            0% { opacity: 0; transform: scale(0.95); }
+            100% { opacity: 1; transform: scale(1); }
+          }
+        `}</style>
+        <h3 style={{ fontFamily: 'var(--f-head)', fontSize: 20, color: 'var(--c-gold)', margin: '0 0 12px 0' }}>Start Over?</h3>
+        <p style={{ fontSize: 15, color: 'var(--c-text2)', margin: '0 0 24px 0', lineHeight: 1.6 }}>Current draft will be lost.</p>
+        <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+          <button className="btn-ghost" onClick={onCancel}>Cancel</button>
+          <button className="btn-gold" onClick={onConfirm} style={{ background: 'rgba(239, 68, 68, 0.15)', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#ef4444' }}>Start Over</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function CategorySelector({ onSelect }) {
   return (
-    <div className="view-enter" style={{ padding: '48px 40px', maxWidth: 960, margin: '0 auto', overflowY: 'auto', height: '100%' }}>
+    <div className="view-enter draft-category-screen" style={{ margin: '0 auto', overflowY: 'auto', height: '100%' }}>
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
           <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
@@ -66,10 +90,11 @@ function CategorySelector({ onSelect }) {
         </p>
       </div>
       <motion.div
+        className="draft-cat-grid"
         initial="hidden"
         animate="visible"
         variants={{ visible: { transition: { staggerChildren: 0.06 } } }}
-        style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20, marginTop: 40 }}
+        style={{ marginTop: 40 }}
       >
         {DRAFT_CATEGORIES.map((cat, i) => (
           <motion.div
@@ -99,6 +124,10 @@ function CategorySelector({ onSelect }) {
   );
 }
 
+
+
+
+
 export default function DraftView() {
   const { toast, draftCategory, setDraftCategory } = useStore();
   const [messages, setMessages] = useState([]);
@@ -106,6 +135,7 @@ export default function DraftView() {
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [currentStage, setCurrentStage] = useState(null);
+  const [showChangeCategoryModal, setShowChangeCategoryModal] = useState(false);
   const inputValRef = useRef('');
   const endRef = useRef(null);
   const didAutoSend = useRef(false);
@@ -122,6 +152,15 @@ export default function DraftView() {
   const handleSend = async (textOverride) => {
     const q = (textOverride ?? inputValRef.current).trim();
     if (!q || loading) return;
+
+    // Intercept download-intent messages when draft is already done
+    const isDone = messages.some(m => m.draft && m.draft.length > 200);
+    const isDownloadRequest = /\b(download|save|pdf|export)\b/i.test(q);
+    if (isDone && isDownloadRequest) {
+      toast('Use the "Download as PDF" or "Download .txt" buttons above the draft to save it.');
+      return;
+    }
+
     setInput(''); inputValRef.current = '';
     setMessages(m => [...m, { role: 'user', content: q }]);
     setLoading(true);
@@ -133,7 +172,7 @@ export default function DraftView() {
       if (r.stage) setCurrentStage(r.stage);
       setMessages(m => [...m, {
         role: 'assistant', content: r.answer || r.draft || r.summary || 'Processing…',
-        stage: r.stage, draft: r.draft, outline: r.outline,
+        stage: r.stage, draft: r.draft, complete: r.complete, outline: r.outline,
         supportingDocuments: r.supportingDocuments, filingAuthority: r.filingAuthority,
       }]);
     } catch (err) {
@@ -145,14 +184,17 @@ export default function DraftView() {
   const onKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
   const stageIdx = stageIndex(currentStage);
 
-  const handleChangeCategory = async () => {
-    if (window.confirm("Start over? Current draft will be lost.")) {
-      if (sessionId) {
-        try { await deleteSession(sessionId); } catch { /* non-fatal */ }
-      }
-      setMessages([]); setSessionId(null); setCurrentStage(null);
-      setDraftCategory(null); didAutoSend.current = false;
+  const handleChangeCategory = () => {
+    setShowChangeCategoryModal(true);
+  };
+
+  const confirmChangeCategory = async () => {
+    if (sessionId) {
+      try { await deleteSession(sessionId); } catch { /* non-fatal */ }
     }
+    setMessages([]); setSessionId(null); setCurrentStage(null);
+    setDraftCategory(null); didAutoSend.current = false;
+    setShowChangeCategoryModal(false);
   };
 
   if (!draftCategory) {
@@ -161,6 +203,11 @@ export default function DraftView() {
 
   return (
     <div className="view-enter" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--c-bg)' }}>
+      <ConfirmModal 
+        open={showChangeCategoryModal} 
+        onConfirm={confirmChangeCategory} 
+        onCancel={() => setShowChangeCategoryModal(false)} 
+      />
       {/* Header */}
       <div style={{ padding: '20px 40px 16px', borderBottom: '1px solid var(--c-border2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
@@ -199,38 +246,9 @@ export default function DraftView() {
           );
 
           // DONE stage
-          if (m.stage === 'DONE' && m.draft) {
+          if (m.draft && m.draft.length > 200) {
             return (
-              <div key={i} className="msg-enter" style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)', padding: 24, alignSelf: 'center', width: '100%', maxWidth: 760 }}>
-                <div style={{ fontFamily: 'var(--f-head)', fontSize: 20, color: 'var(--c-gold)', marginBottom: 16 }}>Your Legal Draft is Ready</div>
-                <div style={{ maxHeight: 400, overflowY: 'auto', background: 'var(--c-elevated)', borderRadius: 'var(--r-sm)', padding: 16, border: '1px solid var(--c-border)' }}>
-                  <pre style={{ fontFamily: 'var(--f-mono)', fontSize: 13, lineHeight: 1.7, color: 'var(--c-text2)', whiteSpace: 'pre-wrap' }}>{m.draft}</pre>
-                </div>
-                <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-                  <button className="btn-ghost" onClick={() => { navigator.clipboard.writeText(m.draft); toast('Copied Draft to Clipboard'); }}>Copy Draft</button>
-                  <button className="btn-gold pulse-btn" onClick={() => { const b = new Blob([m.draft], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'legal_draft.txt'; a.click(); }}>
-                    Download .txt
-                  </button>
-                </div>
-                <style>{`
-                  @keyframes singlePulse { 0% { box-shadow: 0 0 0 12px var(--c-gold-dim); } 100% { box-shadow: 0 0 0 0 var(--c-gold-dim); } }
-                  .pulse-btn { animation: singlePulse 600ms ease-out forwards; }
-                `}</style>
-                {m.supportingDocuments?.length > 0 && (
-                  <div style={{ marginTop: 20 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--c-text3)', marginBottom: 8 }}>SUPPORTING DOCUMENTS NEEDED</div>
-                    <ul style={{ margin: 0, paddingLeft: 20, color: 'var(--c-text2)', fontSize: 13, lineHeight: 1.6 }}>
-                      {m.supportingDocuments.map((d, j) => <li key={j}>{d}</li>)}
-                    </ul>
-                  </div>
-                )}
-                {m.filingAuthority && (
-                  <div style={{ marginTop: 16, padding: 12, background: 'var(--c-elevated)', borderLeft: '2px solid var(--c-gold)', borderRadius: '0 var(--r-sm) var(--r-sm) 0' }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--c-text)' }}>Filing Authority</div>
-                    <div style={{ fontSize: 13, color: 'var(--c-text2)', marginTop: 4 }}>{m.filingAuthority}</div>
-                  </div>
-                )}
-              </div>
+              <DraftComplete key={i} msg={m} sessionId={sessionId} toast={toast} />
             );
           }
 
@@ -250,7 +268,15 @@ export default function DraftView() {
                 </div>
                 <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
                   <button className="btn-gold" onClick={() => handleSend("Looks good, please generate the draft.")}>✓ Confirm & Generate</button>
-                  <button className="btn-ghost" onClick={() => handleSend("I'd like to make some changes.")}>✗ Make Changes</button>
+                  <button className="btn-ghost" onClick={() => {
+                    setInput('');
+                    inputValRef.current = '';
+                    const ta = document.querySelector('.chat-input-area textarea');
+                    if (ta) {
+                      ta.placeholder = "What would you like to change?";
+                      ta.focus();
+                    }
+                  }}>✗ Make Changes</button>
                 </div>
               </div>
             );

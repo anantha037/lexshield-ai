@@ -324,25 +324,41 @@ def build_structured_response(
     key_clauses = _extract_key_clauses(answer_text, citations)
 
     # ── Risk scoring ───────────────────────────────────────────────────────────
-    effective_doc_type = doc_type or _detect_doc_type_from_intent(intent, answer_text)
+    # Only run risk scoring for intents that deal with documents or risk
+    # assessment.  For all other intents (rights_check, general, case_law_search,
+    # translation_request), skip risk scoring to avoid injecting misleading
+    # "Document type 'unknown'" risk factors into non-document responses.
+    _RISK_SCORING_INTENTS = {"document_analysis", "risk_check", "legal_query", "draft_request"}
 
-    # Skip expensive LLM risk for non-risk intents to save Groq quota
-    use_llm_risk = (intent == "risk_check")
+    if intent in _RISK_SCORING_INTENTS:
+        effective_doc_type = doc_type or _detect_doc_type_from_intent(intent, answer_text)
 
-    try:
-        risk_result: RiskResult = risk_scorer.score(
-            text     = answer_text,
-            doc_type = effective_doc_type,
-            entities = entities,
-            use_llm  = use_llm_risk,
-        )
-    except Exception as e:
-        logger.exception(f"[StructuredOutput] Risk scorer error")
+        # Skip expensive LLM risk for non-risk intents to save Groq quota
+        use_llm_risk = (intent == "risk_check")
+
+        try:
+            risk_result: RiskResult = risk_scorer.score(
+                text     = answer_text,
+                doc_type = effective_doc_type,
+                entities = entities,
+                use_llm  = use_llm_risk,
+            )
+        except Exception as e:
+            logger.exception(f"[StructuredOutput] Risk scorer error")
+            risk_result = RiskResult(
+                score               = 0.0,
+                level               = "Low",
+                factors             = ["Risk scoring unavailable"],
+                recommended_actions = [],
+            )
+    else:
+        # No risk scoring for this intent — return a null/omitted risk block
         risk_result = RiskResult(
             score               = 0.0,
-            level               = "Low",
-            factors             = ["Risk scoring unavailable"],
+            level               = "None",
+            factors             = [],
             recommended_actions = [],
+            method              = "skipped",
         )
 
     # ── Suggestions ────────────────────────────────────────────────────────────
