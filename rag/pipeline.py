@@ -707,7 +707,24 @@ class RAGPipeline:
         crag_triggered = False
         crag_fallback  = False   # set True when CRAG scores insufficient
 
-        if complexity in ("moderate", "complex"):
+        # Extra safety net: even when complexity is "simple", if the
+        # section fast-path did not fire (no pinned_chunks) AND an act was
+        # identified for this query (single-act hint or a paired-act
+        # relationship), still run CRAG. This catches cross-act
+        # contamination for act-specific queries without a section number
+        # (e.g. "what is the equivalent in BNS?"), without adding a CRAG
+        # call for purely conceptual simple queries that name no act at
+        # all (e.g. "define bail", "what is FIR").
+        run_crag = (
+            complexity in ("moderate", "complex")
+            or (
+                complexity == "simple"
+                and not pinned_chunks
+                and (original_act_hint or paired_source)
+            )
+        )
+
+        if run_crag:
             # Build CRAG eval pool: always include pinned + section_candidates
             # so fast-path chunks are never lost before CRAG scoring.
             _crag_ids: set[str] = set()
@@ -872,7 +889,7 @@ class RAGPipeline:
         if rt:
             rt.add_metadata({
                 "retrieval_mode":  complexity,
-                "crag_score":      crag_result["score"] if complexity in ("moderate", "complex") else (4 if complexity == "simple" else 0),
+                "crag_score":      crag_result["score"] if run_crag else 4,
                 "crag_fallback":   crag_fallback,
                 "chunks_retrieved": len(merged) if "merged" in locals() else len(final_chunks),
                 "query_complexity": complexity,
