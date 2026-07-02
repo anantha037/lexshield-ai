@@ -116,7 +116,7 @@ export default function Landing() {
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--c-gold)', textTransform: 'uppercase' }}>INDIAN LEGAL INTELLIGENCE PLATFORM</div>
           </div>
           <h1 style={{ fontFamily: 'var(--f-head)', fontWeight: 700, lineHeight: 1.05, letterSpacing: '-0.02em', color: 'var(--c-text)' }}>
-            <div style={{ display: 'flex', flexWrap: 'nowrap', gap: '16px' }}>
+            <div className="landing-hero-row">
               {['Legal', 'Intelligence'].map((w, i) => (
                 <motion.span
                   key={w}
@@ -133,7 +133,7 @@ export default function Landing() {
                 </motion.span>
               ))}
             </div>
-            <div style={{ display: 'flex', flexWrap: 'nowrap', gap: '16px', fontStyle: 'italic', color: 'var(--c-gold)' }}>
+            <div className="landing-hero-row" style={{ fontStyle: 'italic', color: 'var(--c-gold)' }}>
               {['for', 'Every', 'Indian'].map((w, i) => (
                 <motion.span
                   key={w}
