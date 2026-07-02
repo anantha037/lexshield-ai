@@ -350,6 +350,19 @@ _REWRITE_ACT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Cross-reference marker detection ─────────────────────────────────────────
+# Matches words/phrases that signal the query refers to something mentioned in
+# a prior turn — meaning the query is NOT self-contained even if it names an
+# act. Presence of any marker overrides the act-name skip in Condition 3.
+_CROSS_REFERENCE_RE = re.compile(
+    r'\b(equivalent|corresponding|same|similar|instead\s+of|replace[ds]?|substitut(?:e|ed|es)'
+    r'|this\s+(?:section|provision|offence|act)|that\s+(?:section|provision|offence|act)'
+    r'|under\s+(?:this|that|it)|in\s+(?:this|that|it)'
+    r'|does\s+(?:it|this|that)\s+(?:exist|apply|cover|still)'
+    r'|is\s+(?:it|this|that)\s+(?:still|also)|new\s+version|old\s+version)\b',
+    re.IGNORECASE,
+)
+
 _REWRITE_PROMPT = """You are a legal query reformulator.
 Given a conversation history and a follow-up question, rewrite the follow-up as a complete, self-contained legal search query.
 Output ONLY the rewritten query. No explanation. No preamble.
@@ -409,9 +422,15 @@ def rewrite_for_retrieval(query: str, context_block: str) -> str:
         logger.debug("[QueryRewriter] rewrite_for_retrieval: section number found — skipping")
         return query
 
-    # Condition 3: skip if query has an act name
-    if _REWRITE_ACT_RE.search(query):
-        logger.debug("[QueryRewriter] rewrite_for_retrieval: act name found — skipping")
+    # Condition 3: skip if query has an act name — UNLESS the query also
+    # contains a cross-reference marker (e.g. "equivalent", "this section",
+    # "still", "new version"), which signals the query depends on an
+    # unstated referent from prior conversation turns even though it names
+    # an act. Naming an act alone does not make a query self-contained if
+    # it's asking about the relationship between that act and something
+    # mentioned earlier.
+    if _REWRITE_ACT_RE.search(query) and not _CROSS_REFERENCE_RE.search(query):
+        logger.debug("[QueryRewriter] rewrite_for_retrieval: act name found (no cross-ref marker) — skipping")
         return query
 
     # All conditions met — rewrite via LLM
