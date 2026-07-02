@@ -43,6 +43,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 
@@ -490,11 +491,11 @@ def request_verification(current_user: dict = Depends(get_current_user)):
     return MessageResponse(message="Verification email sent. Please check your inbox.")
 
 
-@router.get("/verify-email", response_model=MessageResponse)
+@router.get("/verify-email")
 def verify_email(token: str = Query(..., description="Email verification token")):
     """
     Confirm email ownership via the token from the verification email.
-    Token is cleared after use — clicking the link a second time returns 400.
+    Token is cleared after use — clicking the link a second time redirects with an error.
     GET /api/v1/auth/verify-email?token=<token>
     """
     with get_conn() as conn:
@@ -504,10 +505,7 @@ def verify_email(token: str = Query(..., description="Email verification token")
         ).fetchone()
 
     if not row:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or already-used verification token.",
-        )
+        return RedirectResponse(url=f"{_APP_BASE_URL}/?verified=error", status_code=302)
 
     if row["is_email_verified"]:
         # Already verified — clear stale token, return friendly message
@@ -516,7 +514,7 @@ def verify_email(token: str = Query(..., description="Email verification token")
                 "UPDATE users SET verification_token = NULL WHERE id = %s",
                 (row["id"],),
             )
-        return MessageResponse(message="Email address is already verified.")
+        return RedirectResponse(url=f"{_APP_BASE_URL}/?verified=already", status_code=302)
 
     with get_conn() as conn:
         conn.execute(
@@ -527,7 +525,7 @@ def verify_email(token: str = Query(..., description="Email verification token")
         )
 
     logger.info("Email verified for user: %s", row["id"])
-    return MessageResponse(message="Email address verified successfully. Thank you!")
+    return RedirectResponse(url=f"{_APP_BASE_URL}/?verified=success", status_code=302)
 
 
 @router.post("/forgot-password", response_model=MessageResponse)
