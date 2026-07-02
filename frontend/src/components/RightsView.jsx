@@ -82,7 +82,7 @@ export default function RightsView() {
         <p style={{ fontSize: 15, color: 'var(--c-text2)', marginTop: 8, margin: 0 }}>Explore statutory protections and constitutional guarantees across key legal domains.</p>
       </div>
 
-      <div style={{ padding: '32px 40px' }}>
+      <div className="rights-content">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
           {CATEGORIES.map(({ id, Icon, label }) => (
             <div key={id} id={`rights-cat-${id}`}
@@ -178,8 +178,8 @@ export default function RightsView() {
         )}
 
         {!selected && (
-          <div style={{ height: 300, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-            <div style={{ opacity: 0.15 }}><IconShield color="var(--c-gold)" size={48} /></div>
+          <div className="rights-empty-state" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+            <div style={{ opacity: 0.15 }}><IconShield color="var(--c-gold)" size={48} className="empty-icon" /></div>
             <div style={{ fontFamily: 'var(--f-head)', fontSize: 24, fontWeight: 600, color: 'var(--c-text)' }}>Select a category above</div>
             <div style={{ fontSize: 14, color: 'var(--c-text2)' }}>Choose a legal domain to explore your rights and protections.</div>
           </div>

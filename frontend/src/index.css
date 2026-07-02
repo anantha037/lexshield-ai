@@ -417,6 +417,12 @@ h3 {
   color: var(--c-gold);
 }
 
+.landing-hero-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 16px;
+}
+
 .landing-auth-panel {
   flex: 0 0 45%;
   background: var(--c-bg2);
@@ -767,6 +773,10 @@ h3 {
   color: var(--c-text3);
 }
 
+.upload-zone-box {
+  padding: 48px 24px;
+}
+
 .upload-zone:hover,
 .upload-zone.dragover {
   border-color: var(--c-gold);
@@ -1108,7 +1118,15 @@ h3 {
   flex: 1;
   border-right: 1px solid var(--c-border);
   overflow-y: auto;
-  padding: 32px 40px;
+  padding: 32px 28px;
+}
+
+.doc-qa-messages {
+  padding: 24px 40px;
+}
+
+.doc-qa-input {
+  padding: 16px 40px 20px;
 }
 
 .doc-right {
@@ -2370,7 +2388,7 @@ h3 {
   flex: 1;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   overflow: hidden;
   background: var(--c-bg);
 }
@@ -2397,6 +2415,18 @@ h3 {
 .view-header > * {
   position: relative;
   z-index: 1;
+}
+
+.rights-content {
+  padding: 32px 40px;
+}
+
+.rights-empty-state {
+  height: 300px;
+}
+
+.chat-empty-state {
+  padding: 0 40px;
 }
 
 .view-header h1 {
@@ -2972,6 +3002,11 @@ textarea {
     gap: 8px !important;
   }
 
+  .landing-hero-row {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+
   .landing-auth-panel {
     flex: none;
     width: 100%;
@@ -3003,6 +3038,24 @@ textarea {
 
   .view-header {
     padding: 20px 20px 16px !important;
+  }
+
+  .rights-content {
+    padding: 16px !important;
+  }
+
+  .rights-empty-state {
+    height: 180px !important;
+  }
+
+  .chat-empty-state {
+    padding: 0 20px !important;
+  }
+
+  .chat-empty-state .empty-icon,
+  .rights-empty-state .empty-icon {
+    width: 32px !important;
+    height: 32px !important;
   }
 
   .view-header h1 {
@@ -3050,7 +3103,16 @@ textarea {
     max-width: 100% !important;
     border-right: none !important;
     border-bottom: 1px solid var(--c-border2) !important;
-    padding: 20px !important;
+    padding: 24px 16px !important;
+  }
+  .doc-qa-messages {
+    padding: 16px 16px !important;
+  }
+  .doc-qa-input {
+    padding: 12px 16px 20px !important;
+  }
+  .upload-zone-box {
+    padding: 24px 20px !important;
   }
 }
 

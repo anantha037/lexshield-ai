@@ -38,8 +38,8 @@ function ToastItem({ toast }) {
         border: '1px solid var(--c-border)', 
         borderRadius: 'var(--r-md)', 
         fontSize: 14, 
-        minWidth: 280, 
-        maxWidth: 380, 
+        minWidth: 'min(280px, calc(100vw - 32px))', 
+        maxWidth: 'min(380px, calc(100vw - 32px))', 
         position: 'relative', 
         overflow: 'hidden',
         borderLeft: `3px solid ${color}` 

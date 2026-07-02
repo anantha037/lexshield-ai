@@ -285,37 +285,36 @@ def _extract_image(
 
     CHANGED in Session 7:
       - Now passes source_language to extract_text_from_image()
-        so Surya uses the correct language model (was always defaulting to "en")
+        so Vision API uses the correct language model (was always defaulting to "en")
       - Returns 5 values now (same shape as _extract_pdf for consistency)
         (text, page_count, ocr_used, engine_used, ocr_confidence)
 
     PREVIOUSLY returned: (text, page_count, ocr_used)
     """
     try:
-        from cv.pipeline import extract_text_from_image, preprocess_image
-        from PIL import Image
-        import numpy as np
-        import cv2
+        from cv.pipeline import extract_text
+        import tempfile
+        import os
 
-        pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        cv_img  = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-
-        # Use Surya directly if available for best multilingual results
+        tmp_path = None
         try:
-            from cv.pipeline import _SURYA_AVAILABLE, _surya_ocr_image, _clean_extracted_text, _MIN_OCR_CONFIDENCE
-            if _SURYA_AVAILABLE:
-                logger.debug(f"Using Surya OCR for language: {language}")
-                text, confidence = _surya_ocr_image(cv_img, language)
-                text             = _clean_extracted_text(text)
-                engine_used      = "surya"
-                return text, 1, True, engine_used, confidence
-        except Exception:
-            pass
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            result = extract_text(tmp_path, source_language=language)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
-        # Fallback: preprocess + extract_text_from_image (Tesseract)
-        preprocessed = preprocess_image(cv_img)
-        text         = extract_text_from_image(preprocessed, source_language=language)
-        return text, 1, True, "tesseract", 0.5
+        text           = result.get("text", "")
+        engine_used    = result.get("engine_used", "unknown")
+        ocr_confidence = result.get("ocr_confidence", 1.0)
+        ocr_used       = engine_used != "pymupdf"
+
+        if not result.get("success") and not text.strip():
+            logger.warning("Image OCR yielded empty text or fell below confidence threshold.")
+
+        return text, 1, ocr_used, engine_used, ocr_confidence
 
     except HTTPException:
         logger.exception("HTTPException during image extraction")

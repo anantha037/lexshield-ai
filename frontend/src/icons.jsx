@@ -7,8 +7,8 @@ export const IconChat = ({ size = 24, color = 'currentColor' }) => (
   </svg>
 )
 
-export const IconDocument = ({ size = 24, color = 'currentColor' }) => (
-  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color}
+export const IconDocument = ({ size = 24, color = 'currentColor', className }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color} className={className}
     strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
     <polyline points="14 2 14 8 20 8"/>
@@ -25,15 +25,15 @@ export const IconDraft = ({ size = 24, color = 'currentColor' }) => (
   </svg>
 )
 
-export const IconShield = ({ size = 24, color = 'currentColor' }) => (
-  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color}
+export const IconShield = ({ size = 24, color = 'currentColor', className }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color} className={className}
     strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
   </svg>
 )
 
-export const IconScale = ({ size = 24, color = 'currentColor' }) => (
-  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color}
+export const IconScale = ({ size = 24, color = 'currentColor', className }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color} className={className}
     strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="3" x2="12" y2="21"/>
     <path d="M5 21h14"/>
@@ -210,8 +210,8 @@ export const IconInfo = ({ size = 24, color = 'currentColor' }) => (
   </svg>
 )
 
-export const IconGavel = ({ size = 24, color = 'currentColor' }) => (
-  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color}
+export const IconGavel = ({ size = 24, color = 'currentColor', className }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color} className={className}
     strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
     <path d="M14.5 2.5l5 5M2 22l4-4"/>
     <path d="M10.5 6.5L4 13l3 3 6.5-6.5"/>

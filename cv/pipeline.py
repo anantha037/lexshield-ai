@@ -1,53 +1,23 @@
 """
-LexShield AI — CV Pipeline  (Week 3 — Surya Upgrade)
+LexShield AI — CV Pipeline
 =====================================================
 ENGINE STACK (priority order):
 
   1. PyMuPDF (fitz)    — digital PDFs: direct text extraction, zero OCR cost.
                           Handles embedded fonts, multi-column, annotations.
-                          UNCHANGED from previous version.
 
   2. pdfplumber         — table extraction from digital PDFs.
-                          UNCHANGED from previous version.
 
-  3. Surya OCR          — replaces docTR. Transformer-based OCR supporting
-                          90+ languages including Malayalam (ml), Hindi (hi),
-                          Tamil (ta), Telugu (te), Kannada (kn).
-                          Returns per-line confidence scores — used to detect
-                          and reject garbage OCR output before it reaches NER.
-                          Processes pages one-by-one (RAM safety on 8GB machine).
+  3. Vision API         — replaces Surya. Google Cloud Vision API for
+                          high-accuracy, fast OCR, especially on scanned PDFs and images.
+                          Supports many languages including Indic scripts.
 
   4. Tesseract          — tertiary emergency fallback only.
-                          Path auto-detected via shutil.which() — works on
-                          both Windows and Linux/Docker (fixes hardcoded path bug).
 
-WHAT CHANGED vs previous version:
-  - docTR removed (English-only, produced garbage on Indic scripts silently)
-  - Surya OCR added (Indic language support, confidence scoring)
-  - pdf2image removed from OCR path (was loading all pages into RAM at once)
-  - Pages now processed one-by-one with gc.collect() between each (RAM safety)
-  - Tesseract path fixed: shutil.which() instead of hardcoded Windows path
-  - ocr_confidence added to output dict (0.0-1.0 aggregate quality signal)
-  - Quality gate: if confidence < 0.35, returns success=False (no more silent garbage)
-
-WHAT IS UNCHANGED:
-  - PyMuPDF extraction logic (identical)
-  - pdfplumber table extraction (identical)
-  - All preprocessing functions: _preprocess_for_tesseract, _deskew (identical)
-  - _clean_extracted_text (identical)
-  - All public function signatures: preprocess_image, extract_text_from_image,
-    extract_text_from_pdf_path, extract_text_from_pdf_bytes, extract_text
-  - Output dict keys (ocr_confidence is a new addition, not a replacement)
-  - Backward compatibility shims at the bottom (identical)
-
-Install (update requirements.txt):
-  REMOVE: python-doctr[torch]  pdf2image
-  ADD:    surya-ocr
-
-System packages (Dockerfile):
-  REMOVE: tesseract-ocr-* language packs (Tesseract is now tertiary only)
-  KEEP:   tesseract-ocr (still used as emergency fallback)
-  REMOVE: poppler-utils (was only needed by pdf2image)
+WHAT CHANGED:
+  - Surya OCR removed due to OOM issues and slow performance.
+  - Google Cloud Vision API added for OCR.
+  - _surya_ocr_image() and _surya_ocr_pdf() replaced with _vision_ocr_image() and _vision_ocr_pdf().
 """
 
 import gc
@@ -56,6 +26,7 @@ import re
 import logging
 import shutil
 import warnings
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -68,7 +39,6 @@ warnings.filterwarnings("ignore", message=".*Torch.*")
 warnings.filterwarnings("ignore", message=".*CUDA.*")
 
 # ── Thread limits for CPU inference ───────────────────────────────────────────
-import os
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 
@@ -94,16 +64,28 @@ except ImportError:
     logger.warning("[CV] pdfplumber not installed. pip install pdfplumber")
 
 try:
-    from surya.detection import DetectionPredictor as _SuryaDetectionPredictor
-    from surya.recognition import RecognitionPredictor as _SuryaRecognitionPredictor
-    _SURYA_AVAILABLE = True
-    logger.info("[CV] Surya OCR available — multilingual neural OCR engine ready")
+    from google.cloud import vision
+    _VISION_API_AVAILABLE = True
+    logger.info("[CV] Google Cloud Vision API available")
 except ImportError:
-    _SURYA_AVAILABLE = False
+    _VISION_API_AVAILABLE = False
     logger.warning(
-        "[CV] Surya OCR not installed. Falling back to Tesseract. "
-        "Install: pip install surya-ocr"
+        "[CV] Google Cloud Vision SDK not installed. Falling back to Tesseract. "
+        "Install: pip install google-cloud-vision"
     )
+
+_vision_client = None
+
+def _get_vision_client():
+    global _vision_client
+    if _vision_client is None and _VISION_API_AVAILABLE:
+        try:
+            _vision_client = vision.ImageAnnotatorClient()
+            logger.info("[CV] Vision API client initialized.")
+        except Exception:
+            logger.exception("[CV] Failed to initialize Vision API client")
+            return None
+    return _vision_client
 
 # ── Tesseract (tertiary fallback) ─────────────────────────────────────────────
 try:
@@ -125,34 +107,33 @@ except ImportError:
 # LANGUAGE CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Surya 0.14.7 uses its own language codes (3-letter for Indic scripts)
-_SURYA_SUPPORTED_LANGS = {
-    "en", "tam", "mal", "hin", "tel", "kan",
+# Vision API uses ISO 639-1 / BCP-47 language codes
+_VISION_SUPPORTED_LANGS = {
+    "en", "ta", "ml", "hi", "te", "kn",
     "mr", "bn", "gu", "pa", "or",
     "fr", "de", "es", "zh", "ja", "ko", "ar", "ru",
 }
 
-# Map from Surya lang code → Tesseract lang string
+# Map from Vision API lang code → Tesseract lang string
 _TESSERACT_LANG_MAP: dict[str, str] = {
-    "mal": "mal+eng",
-    "hin": "hin+eng",
-    "tam": "tam+eng",
-    "tel": "tel+eng",
-    "kan": "kan+eng",
-    "mr":  "hin+eng",
-    "bn":  "ben+eng",
-    "gu":  "guj+eng",
-    "pa":  "pan+eng",
-    "or":  "ori+eng",
-    "en":  "eng",
+    "ml": "mal+eng",
+    "hi": "hin+eng",
+    "ta": "tam+eng",
+    "te": "tel+eng",
+    "kn": "kan+eng",
+    "mr": "hin+eng",
+    "bn": "ben+eng",
+    "gu": "guj+eng",
+    "pa": "pan+eng",
+    "or": "ori+eng",
+    "en": "eng",
 }
 
-# Readable names for Tesseract missing-pack error messages
 _LANG_DISPLAY_NAMES: dict[str, str] = {
-    "tam": "Tamil",   "mal": "Malayalam", "hin": "Hindi",
-    "tel": "Telugu",  "kan": "Kannada",   "mr":  "Marathi",
-    "bn":  "Bengali", "gu":  "Gujarati",  "pa":  "Punjabi",
-    "or":  "Oriya",   "en":  "English",
+    "ta": "Tamil",   "ml": "Malayalam", "hi": "Hindi",
+    "te": "Telugu",  "kn": "Kannada",   "mr":  "Marathi",
+    "bn": "Bengali", "gu": "Gujarati",  "pa":  "Punjabi",
+    "or": "Oriya",   "en": "English",
 }
 
 _TESSERACT_CONFIG = "--psm 3 --oem 3"
@@ -163,35 +144,6 @@ _MIN_OCR_CONFIDENCE = 0.35
 # Page processing limits
 _MAX_PAGES_PER_CALL = 30    # warn if exceeded, still process
 _PAGE_BATCH_SIZE    = 1     # process one page at a time for RAM safety
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SURYA MODEL SINGLETONS  (lazy load — avoids cost on every import)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-_surya_det_predictor: "_SuryaDetectionPredictor | None" = None
-_surya_rec_predictor: "_SuryaRecognitionPredictor | None" = None
-
-
-def _get_surya_predictors():
-    global _surya_det_predictor, _surya_rec_predictor
-
-    if not _SURYA_AVAILABLE:
-        return None, None
-
-    if _surya_det_predictor is None:
-        try:
-            logger.info("[CV] Loading Surya DetectionPredictor (CPU)…")
-            _surya_det_predictor = _SuryaDetectionPredictor()
-            logger.info("[CV] Loading Surya RecognitionPredictor (CPU)…")
-            _surya_rec_predictor = _SuryaRecognitionPredictor()
-            logger.info("[CV] Surya predictors loaded successfully.")
-        except Exception as e:
-            logger.exception(f"[CV] Surya predictor load failed")
-            _surya_det_predictor = None
-            return None, None
-
-    return _surya_det_predictor, _surya_rec_predictor
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -209,24 +161,24 @@ def _detect_ocr_language(text: str) -> str:
         return "en"
 
 
-# ── Indic script detection for Surya language parameter ───────────────────────
+# ── Indic script detection ───────────────────────
 
 # Unicode block ranges for Indic scripts
 _INDIC_SCRIPT_RANGES: list[tuple[int, int, str]] = [
-    (0x0B80, 0x0BFF, "tam"),   # Tamil
-    (0x0D00, 0x0D7F, "mal"),   # Malayalam
-    (0x0900, 0x097F, "hin"),   # Devanagari (Hindi)
-    (0x0C00, 0x0C7F, "tel"),   # Telugu
-    (0x0C80, 0x0CFF, "kan"),   # Kannada
+    (0x0B80, 0x0BFF, "ta"),   # Tamil
+    (0x0D00, 0x0D7F, "ml"),   # Malayalam
+    (0x0900, 0x097F, "hi"),   # Devanagari (Hindi)
+    (0x0C00, 0x0C7F, "te"),   # Telugu
+    (0x0C80, 0x0CFF, "kn"),   # Kannada
 ]
 
 # Keyword hints that may appear in filenames or metadata
 _INDIC_FILENAME_HINTS: dict[str, str] = {
-    "tamil":     "tam",  "tam":  "tam",
-    "malayalam": "mal",  "mal":  "mal",
-    "hindi":     "hin",  "hin":  "hin",
-    "telugu":    "tel",  "tel":  "tel",
-    "kannada":   "kan",  "kan":  "kan",
+    "tamil":     "ta",  "tam": "ta",  "ta": "ta",
+    "malayalam": "ml",  "mal": "ml",  "ml": "ml",
+    "hindi":     "hi",  "hin": "hi",  "hi": "hi",
+    "telugu":    "te",  "tel": "te",  "te": "te",
+    "kannada":   "kn",  "kan": "kn",  "kn": "kn",
 }
 
 
@@ -237,13 +189,7 @@ def _detect_indic_script(
 ) -> str:
     """
     Detect Indic script from filename, metadata hint, or a pre-scan of
-    extractable text.  Returns a Surya 0.14.7 language code.
-
-    Priority:
-      1. Filename keywords  (e.g. "contract_tamil.pdf")
-      2. Metadata hint       (e.g. caller passes "ta" or "tamil")
-      3. Unicode block scan  (look at actual character ranges in text)
-      4. Default → "en"
+    extractable text.
     """
     # 1. Filename keywords
     if filename:
@@ -258,8 +204,7 @@ def _detect_indic_script(
         hint = metadata_hint.strip().lower()
         if hint in _INDIC_FILENAME_HINTS:
             return _INDIC_FILENAME_HINTS[hint]
-        # Also accept Surya codes directly
-        if hint in _SURYA_SUPPORTED_LANGS:
+        if hint in _VISION_SUPPORTED_LANGS:
             return hint
 
     # 3. Unicode block scan of available text
@@ -273,7 +218,7 @@ def _detect_indic_script(
                     break
         if script_counts:
             dominant = max(script_counts, key=script_counts.get)  # type: ignore[arg-type]
-            if script_counts[dominant] >= 3:  # at least 3 chars to be confident
+            if script_counts[dominant] >= 3:
                 logger.debug(
                     f"[CV] Indic script detected from unicode scan: {dominant} "
                     f"({script_counts[dominant]} chars)"
@@ -399,86 +344,85 @@ def _extract_digital_pdf_bytes(pdf_bytes: bytes) -> Optional[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STAGE 2: Surya OCR — Replaces docTR
+# STAGE 2: Vision API — Replaces Surya OCR
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _surya_ocr_image(
+def _vision_ocr_image(
     image:         np.ndarray,
     lang_code:     str = "en",
     filename:      Optional[str] = None,
     metadata_hint: Optional[str] = None,
 ) -> tuple[str, float]:
     """
-    Run Surya OCR on a single numpy image (BGR).
-    surya-ocr 0.14.7 API:  rec_predictor(images, langs, det_predictor)
-      - images: list[PIL.Image]
-      - langs:  list[list[str]]  (language codes per image)
-      - det_predictor: DetectionPredictor instance
-
-    On any Surya exception, returns ("", 0.0) so callers fall through
-    to the Tesseract fallback path.
+    Run Vision API OCR on a single numpy image (BGR).
     """
     if isinstance(lang_code, list):
         lang_code = lang_code[0] if lang_code else "en"
     if isinstance(metadata_hint, list):
         metadata_hint = metadata_hint[0] if metadata_hint else None
 
-    det_predictor, rec_predictor = _get_surya_predictors()
-    if det_predictor is None:
+    if not _VISION_API_AVAILABLE:
         return "", 0.0
 
     try:
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_image)
-
-        # Detect Indic script from filename / metadata / pre-scan
         lang = _detect_indic_script(
             filename=filename,
             metadata_hint=metadata_hint if metadata_hint else (
                 lang_code if lang_code != "en" else None
             ),
         )
-        if lang not in _SURYA_SUPPORTED_LANGS:
+        if lang not in _VISION_SUPPORTED_LANGS:
             lang = "en"
 
-        # Surya 0.14.7: langs was removed. 2nd positional is task_names.
-        # Passing [[lang]] to task_names causes unhashable type: 'list'
-        predictions = rec_predictor([pil_image], None, det_predictor)
-
-        if not predictions or not predictions[0].text_lines:
+        client = _get_vision_client()
+        if client is None:
             return "", 0.0
 
-        lines       = predictions[0].text_lines
-        text_lines  = []
+        success, encoded_image = cv2.imencode('.jpg', image)
+        if not success:
+            return "", 0.0
+            
+        content = encoded_image.tobytes()
+        image_vision = vision.Image(content=content)
+        image_context = vision.ImageContext(language_hints=[lang])
+
+        response = client.document_text_detection(
+            image=image_vision,
+            image_context=image_context,
+            timeout=30,
+        )
+
+        if response.error.message:
+            logger.error(f"[CV] Vision API Error: {response.error.message}")
+            return "", 0.0
+
+        text = response.full_text_annotation.text
+        if not text:
+            return "", 0.0
+
         confidences = []
-        for line in lines:
-            if line.text.strip():
-                text_lines.append(line.text.strip())
-                confidences.append(line.confidence)
+        for page in response.full_text_annotation.pages:
+            for block in page.blocks:
+                for paragraph in block.paragraphs:
+                    for word in paragraph.words:
+                        confidences.append(word.confidence)
 
-        if not text_lines:
-            return "", 0.0
-
-        avg_confidence = sum(confidences) / len(confidences)
-        return "\n".join(text_lines), round(avg_confidence, 3)
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+        return text, round(avg_confidence, 3)
 
     except Exception as e:
-        logger.exception(f"[CV] Surya OCR error")
+        logger.exception(f"[CV] Vision API OCR error")
         return "", 0.0
 
 
-def _surya_ocr_pdf(
+def _vision_ocr_pdf(
     pdf_bytes:     bytes,
     lang_code:     str = "en",
     filename:      Optional[str] = None,
     metadata_hint: Optional[str] = None,
 ) -> tuple[str, float]:
     """
-    Run Surya OCR on a scanned PDF — one page at a time for RAM safety.
-    surya-ocr 0.14.7 API:  rec_predictor(images, langs, det_predictor)
-
-    On any Surya exception, returns ("", 0.0) so callers fall through
-    to the Tesseract fallback path.
+    Run Vision API OCR on a scanned PDF — one page at a time for RAM safety.
     """
     if isinstance(lang_code, list):
         lang_code = lang_code[0] if lang_code else "en"
@@ -489,8 +433,7 @@ def _surya_ocr_pdf(
         logger.warning("[CV] PyMuPDF needed for PDF-to-image conversion")
         return "", 0.0
 
-    det_predictor, rec_predictor = _get_surya_predictors()
-    if det_predictor is None:
+    if not _VISION_API_AVAILABLE:
         return "", 0.0
 
     try:
@@ -499,14 +442,13 @@ def _surya_ocr_pdf(
         all_pages  = []
         all_confs  = []
 
-        # Detect Indic script from filename / metadata
         lang = _detect_indic_script(
             filename=filename,
             metadata_hint=metadata_hint if metadata_hint else (
                 lang_code if lang_code != "en" else None
             ),
         )
-        if lang not in _SURYA_SUPPORTED_LANGS:
+        if lang not in _VISION_SUPPORTED_LANGS:
             lang = "en"
 
         if page_count > _MAX_PAGES_PER_CALL:
@@ -515,15 +457,16 @@ def _surya_ocr_pdf(
                 f"Processing first {_MAX_PAGES_PER_CALL} pages."
             )
 
+        client = _get_vision_client()
+        if client is None:
+            return "", 0.0
+
         for page_num in range(min(page_count, _MAX_PAGES_PER_CALL)):
             page = doc[page_num]
             mat  = _fitz.Matrix(200 / 72, 200 / 72)
             pix  = page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
-            img  = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            # On the first page, try to refine language from extracted text
             if page_num == 0 and lang == "en":
-                # Quick prescan: try to get text from first page for script detection
                 try:
                     first_page_text = doc[0].get_text("text")
                     if first_page_text and len(first_page_text.strip()) >= 5:
@@ -535,27 +478,36 @@ def _surya_ocr_pdf(
                     pass
 
             try:
-                # Surya 0.14.7: langs was removed. 2nd positional is task_names.
-                # Passing [[lang]] to task_names causes unhashable type: 'list'
-                predictions = rec_predictor([img], None, det_predictor)
+                img_bytes = pix.tobytes("jpeg")
+                image_vision = vision.Image(content=img_bytes)
+                image_context = vision.ImageContext(language_hints=[lang])
 
-                if predictions and predictions[0].text_lines:
-                    page_lines = []
+                response = client.document_text_detection(
+                    image=image_vision,
+                    image_context=image_context,
+                    timeout=30,
+                )
+
+                if response.error.message:
+                    logger.error(f"[CV] Vision API Error: {response.error.message}")
+                    continue
+
+                text = response.full_text_annotation.text
+                if text:
+                    all_pages.append(f"--- Page {page_num + 1} ---\n{text}")
+                    
                     page_confs = []
-                    for line in predictions[0].text_lines:
-                        if line.text.strip():
-                            page_lines.append(line.text.strip())
-                            page_confs.append(line.confidence)
-                    if page_lines:
-                        all_pages.append(
-                            f"--- Page {page_num + 1} ---\n" + "\n".join(page_lines)
-                        )
-                        all_confs.extend(page_confs)
+                    for p in response.full_text_annotation.pages:
+                        for block in p.blocks:
+                            for paragraph in block.paragraphs:
+                                for word in paragraph.words:
+                                    page_confs.append(word.confidence)
+                    all_confs.extend(page_confs)
 
             except Exception as e:
-                logger.exception(f"[CV] Surya: page {page_num + 1} failed")
+                logger.exception(f"[CV] Vision API: page {page_num + 1} failed")
             finally:
-                del img, pix
+                del pix
                 gc.collect()
 
         doc.close()
@@ -566,13 +518,13 @@ def _surya_ocr_pdf(
         avg_confidence = sum(all_confs) / len(all_confs) if all_confs else 0.0
         text           = "\n\n".join(all_pages)
         logger.info(
-            f"[CV] Surya PDF: {len(all_pages)} page(s), "
+            f"[CV] Vision API PDF: {len(all_pages)} page(s), "
             f"{len(text)} chars, lang={lang}, confidence={avg_confidence:.2f}"
         )
         return text, round(avg_confidence, 3)
 
     except Exception as e:
-        logger.exception(f"[CV] Surya PDF OCR error")
+        logger.exception(f"[CV] Vision API PDF OCR error")
         return "", 0.0
 
 
@@ -696,7 +648,7 @@ def _clean_extracted_text(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# UNIFIED ENTRY POINTS  (signatures preserved, Surya replaces docTR internally)
+# UNIFIED ENTRY POINTS  (signatures preserved, Vision API replaces Surya internally)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def extract_text_from_pdf_path(
@@ -708,8 +660,8 @@ def extract_text_from_pdf_path(
 
     Decision tree:
       1. PyMuPDF  -> digital PDF? -> return text + pdfplumber tables merged in
-      2. Surya    -> scanned PDF (multilingual neural OCR, page-by-page)
-      3. Tesseract -> emergency fallback if Surya unavailable
+      2. Vision API -> scanned PDF
+      3. Tesseract -> emergency fallback if Vision API unavailable
 
     Public signature UNCHANGED — callers are unaffected.
     """
@@ -722,19 +674,19 @@ def extract_text_from_pdf_path(
             return _clean_extracted_text(digital_text + "\n\n" + table_block)
         return _clean_extracted_text(digital_text)
 
-    # Engine 2: Surya (scanned PDF)
-    if _SURYA_AVAILABLE:
+    # Engine 2: Vision API (scanned PDF)
+    if _VISION_API_AVAILABLE:
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
-        surya_text, confidence = _surya_ocr_pdf(pdf_bytes, source_language)
-        if surya_text and confidence >= _MIN_OCR_CONFIDENCE:
-            return _clean_extracted_text(surya_text)
-        elif surya_text:
+        vision_text, confidence = _vision_ocr_pdf(pdf_bytes, source_language)
+        if vision_text and confidence >= _MIN_OCR_CONFIDENCE:
+            return _clean_extracted_text(vision_text)
+        elif vision_text:
             logger.warning(
-                f"[CV] Surya confidence {confidence:.2f} below threshold "
+                f"[CV] Vision API confidence {confidence:.2f} below threshold "
                 f"{_MIN_OCR_CONFIDENCE} — text may be unreliable"
             )
-            return _clean_extracted_text(surya_text)  # still return, caller sees confidence
+            return _clean_extracted_text(vision_text)  # still return, caller sees confidence
 
     # Engine 3: Tesseract emergency fallback
     logger.info(f"[CV] Falling back to Tesseract (lang={source_language})")
@@ -775,16 +727,16 @@ def extract_text_from_pdf_bytes(
             return _clean_extracted_text(digital_text + "\n\n" + table_block)
         return _clean_extracted_text(digital_text)
 
-    # Engine 2: Surya
-    if _SURYA_AVAILABLE:
-        surya_text, confidence = _surya_ocr_pdf(pdf_bytes, source_language)
-        if surya_text:
+    # Engine 2: Vision API
+    if _VISION_API_AVAILABLE:
+        vision_text, confidence = _vision_ocr_pdf(pdf_bytes, source_language)
+        if vision_text:
             if confidence < _MIN_OCR_CONFIDENCE:
                 logger.warning(
-                    f"[CV] Surya confidence {confidence:.2f} below threshold "
+                    f"[CV] Vision API confidence {confidence:.2f} below threshold "
                     f"{_MIN_OCR_CONFIDENCE}"
                 )
-            return _clean_extracted_text(surya_text)
+            return _clean_extracted_text(vision_text)
 
     # Engine 3: Tesseract
     import tempfile
@@ -807,7 +759,7 @@ def extract_text_from_image(
     Extract text from an image (OpenCV BGR numpy array).
 
     Decision tree:
-      1. Surya  -> multilingual neural OCR (replaces docTR)
+      1. Vision API  -> multilingual OCR
       2. Tesseract -> multilingual fallback (uses source_language for lang pack)
 
     Public signature UNCHANGED — api/document.py callers are unaffected.
@@ -816,13 +768,13 @@ def extract_text_from_image(
         logger.warning("[CV] extract_text_from_image received empty image")
         return ""
 
-    # Engine 1: Surya
-    if _SURYA_AVAILABLE:
-        text, confidence = _surya_ocr_image(image, source_language)
+    # Engine 1: Vision API
+    if _VISION_API_AVAILABLE:
+        text, confidence = _vision_ocr_image(image, source_language)
         if text:
             if confidence < _MIN_OCR_CONFIDENCE:
                 logger.warning(
-                    f"[CV] Surya image confidence {confidence:.2f} — may be unreliable"
+                    f"[CV] Vision API image confidence {confidence:.2f} — may be unreliable"
                 )
             return _clean_extracted_text(text)
 
@@ -832,7 +784,7 @@ def extract_text_from_image(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MAIN ENTRY POINT  (output dict unchanged + new ocr_confidence field)
+# MAIN ENTRY POINT  (output dict unchanged)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def extract_text(
@@ -848,11 +800,11 @@ def extract_text(
           "file_type":       str,    # "pdf" | "image" | "unsupported"
           "success":         bool,   # True if non-empty text extracted
           "source_language": str,    # Detected language of extracted text
-          "engine_used":     str,    # "pymupdf" | "surya" | "tesseract"
+          "engine_used":     str,    # "pymupdf" | "vision_api" | "tesseract"
           "tables_found":    int,    # Number of tables extracted (PDF only)
           "char_count":      int,    # Length of extracted text
-          "ocr_confidence":  float,  # NEW: 0.0-1.0. 1.0 for digital PDFs (no OCR).
-        }                            # If < 0.35, analysis results may be unreliable.
+          "ocr_confidence":  float,  # 0.0-1.0. 1.0 for digital PDFs (no OCR).
+        }
     """
     path   = Path(file_path)
     suffix = path.suffix.lower()
@@ -861,7 +813,7 @@ def extract_text(
         with open(file_path, "rb") as f:
             pdf_bytes = f.read()
 
-        # Check digital vs scanned once — no double PyMuPDF call
+        # Check digital vs scanned once
         digital_text = _extract_digital_pdf_bytes(pdf_bytes)
 
         if digital_text:
@@ -882,18 +834,18 @@ def extract_text(
                 "ocr_confidence":  1.0,   # digital PDF: no OCR, perfect quality
             }
 
-        # Scanned PDF — try Surya
-        if _SURYA_AVAILABLE:
-            surya_text, confidence = _surya_ocr_pdf(pdf_bytes, source_language)
-            if surya_text:
-                clean         = _clean_extracted_text(surya_text)
+        # Scanned PDF — try Vision API
+        if _VISION_API_AVAILABLE:
+            vision_text, confidence = _vision_ocr_pdf(pdf_bytes, source_language)
+            if vision_text:
+                clean         = _clean_extracted_text(vision_text)
                 detected_lang = _detect_ocr_language(clean) if clean else source_language
                 return {
                     "text":            clean,
                     "file_type":       "pdf",
                     "success":         bool(clean.strip()) and confidence >= _MIN_OCR_CONFIDENCE,
                     "source_language": detected_lang,
-                    "engine_used":     "surya",
+                    "engine_used":     "vision_api",
                     "tables_found":    0,
                     "char_count":      len(clean),
                     "ocr_confidence":  confidence,
@@ -910,7 +862,7 @@ def extract_text(
             "engine_used":     "tesseract",
             "tables_found":    0,
             "char_count":      len(tess_text),
-            "ocr_confidence":  0.5,   # Tesseract: no confidence scoring available
+            "ocr_confidence":  0.5,
         }
 
     elif suffix in {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}:
@@ -922,20 +874,21 @@ def extract_text(
                 "tables_found": 0, "char_count": 0, "ocr_confidence": 0.0,
             }
 
-        if _SURYA_AVAILABLE:
-            text, confidence = _surya_ocr_image(image, source_language)
-            clean            = _clean_extracted_text(text)
-            detected_lang    = _detect_ocr_language(clean) if clean else source_language
-            return {
-                "text":            clean,
-                "file_type":       "image",
-                "success":         bool(clean.strip()) and confidence >= _MIN_OCR_CONFIDENCE,
-                "source_language": detected_lang,
-                "engine_used":     "surya",
-                "tables_found":    0,
-                "char_count":      len(clean),
-                "ocr_confidence":  confidence,
-            }
+        if _VISION_API_AVAILABLE:
+            text, confidence = _vision_ocr_image(image, source_language)
+            if text:
+                clean            = _clean_extracted_text(text)
+                detected_lang    = _detect_ocr_language(clean) if clean else source_language
+                return {
+                    "text":            clean,
+                    "file_type":       "image",
+                    "success":         bool(clean.strip()) and confidence >= _MIN_OCR_CONFIDENCE,
+                    "source_language": detected_lang,
+                    "engine_used":     "vision_api",
+                    "tables_found":    0,
+                    "char_count":      len(clean),
+                    "ocr_confidence":  confidence,
+                }
 
         # Tesseract fallback for images
         tess_text     = _tesseract_ocr_image(image, source_language)
@@ -962,7 +915,7 @@ def extract_text(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# BACKWARD COMPATIBILITY SHIMS  (UNCHANGED — api/document.py imports these)
+# BACKWARD COMPATIBILITY SHIMS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def preprocess_image(image: np.ndarray) -> np.ndarray:
