@@ -30,6 +30,50 @@ function stageIndex(stage) {
 
 
 
+function ConfirmModal({ open, onConfirm, onCancel }) {
+  useEffect(() => {
+    const handleEsc = (e) => { if (e.key === 'Escape' && open) onCancel(); };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [open, onCancel]);
+
+  if (!open) return null;
+
+  return (
+    <div 
+      onClick={onCancel}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.7)', zIndex: 9998,
+        display: 'flex', alignItems: 'center', justifyContent: 'center'
+      }}
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--c-elevated)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)',
+          padding: '24px 32px', maxWidth: '400px', width: '90%',
+          animation: 'modalFadeScale 200ms ease forwards', opacity: 0,
+          color: 'var(--c-text)'
+        }}
+      >
+        <style>{`
+          @keyframes modalFadeScale {
+            0% { opacity: 0; transform: scale(0.95); }
+            100% { opacity: 1; transform: scale(1); }
+          }
+        `}</style>
+        <h3 style={{ fontFamily: 'var(--f-head)', fontSize: 20, color: 'var(--c-gold)', margin: '0 0 12px 0' }}>Start Over?</h3>
+        <p style={{ fontSize: 15, color: 'var(--c-text2)', margin: '0 0 24px 0', lineHeight: 1.6 }}>Current draft will be lost.</p>
+        <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+          <button className="btn-ghost" onClick={onCancel}>Cancel</button>
+          <button className="btn-gold" onClick={onConfirm} style={{ background: 'rgba(239, 68, 68, 0.15)', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#ef4444' }}>Start Over</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CategorySelector({ onSelect }) {
   return (
     <div className="view-enter draft-category-screen" style={{ margin: '0 auto', overflowY: 'auto', height: '100%' }}>
@@ -91,6 +135,7 @@ export default function DraftView() {
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [currentStage, setCurrentStage] = useState(null);
+  const [showChangeCategoryModal, setShowChangeCategoryModal] = useState(false);
   const inputValRef = useRef('');
   const endRef = useRef(null);
   const didAutoSend = useRef(false);
@@ -139,14 +184,17 @@ export default function DraftView() {
   const onKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
   const stageIdx = stageIndex(currentStage);
 
-  const handleChangeCategory = async () => {
-    if (window.confirm("Start over? Current draft will be lost.")) {
-      if (sessionId) {
-        try { await deleteSession(sessionId); } catch { /* non-fatal */ }
-      }
-      setMessages([]); setSessionId(null); setCurrentStage(null);
-      setDraftCategory(null); didAutoSend.current = false;
+  const handleChangeCategory = () => {
+    setShowChangeCategoryModal(true);
+  };
+
+  const confirmChangeCategory = async () => {
+    if (sessionId) {
+      try { await deleteSession(sessionId); } catch { /* non-fatal */ }
     }
+    setMessages([]); setSessionId(null); setCurrentStage(null);
+    setDraftCategory(null); didAutoSend.current = false;
+    setShowChangeCategoryModal(false);
   };
 
   if (!draftCategory) {
@@ -155,6 +203,11 @@ export default function DraftView() {
 
   return (
     <div className="view-enter" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--c-bg)' }}>
+      <ConfirmModal 
+        open={showChangeCategoryModal} 
+        onConfirm={confirmChangeCategory} 
+        onCancel={() => setShowChangeCategoryModal(false)} 
+      />
       {/* Header */}
       <div style={{ padding: '20px 40px 16px', borderBottom: '1px solid var(--c-border2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
