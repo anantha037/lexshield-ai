@@ -151,7 +151,7 @@ export default function DocumentView() {
   return (
     <div className="view-enter doc-panels" style={{ height: '100%' }}>
       {/* LEFT PANEL */}
-      <div className="doc-left" style={{ overflowY: 'auto', padding: '32px 28px' }}>
+      <div className="doc-left" style={{ overflowY: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
           <div style={{ width: 28, height: 1, background: 'var(--c-gold)' }} />
           <span style={{ fontFamily: 'var(--f-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '0.2em', color: 'var(--c-gold)', textTransform: 'uppercase' }}>
@@ -166,10 +166,10 @@ export default function DocumentView() {
         {!doc && (
           <>
             <div 
+              className="upload-zone-box"
               style={{
                 border: `1.5px dashed ${dragOver ? 'var(--c-gold)' : 'var(--c-border)'}`,
                 borderRadius: 'var(--r-md)',
-                padding: '48px 24px',
                 textAlign: 'center',
                 cursor: 'pointer',
                 transition: 'all 200ms ease',
@@ -215,8 +215,8 @@ export default function DocumentView() {
                 border: '1px solid var(--c-border)',
               }}
             >
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--c-text)' }}>{file.name}</div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--c-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>
                 <div style={{ fontSize: 12, color: 'var(--c-text2)', marginTop: 2 }}>{(file.size / 1024).toFixed(0)} KB</div>
               </div>
               <button className="btn-gold" onClick={handleAnalyze} disabled={analyzing} style={{ padding: '6px 12px', fontSize: 13 }}>
@@ -234,9 +234,9 @@ export default function DocumentView() {
 
         {doc && (
           <div className="fade-in">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
-              <IconDocument color="var(--c-gold)" size={20} />
-              <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--c-text)' }}>{doc.filename}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20, minWidth: 0 }}>
+              <IconDocument color="var(--c-gold)" size={20} style={{ flexShrink: 0 }} />
+              <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--c-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
             </div>
 
             {/* Step 1 */}
@@ -394,7 +394,7 @@ export default function DocumentView() {
                     </div>
                   ) : (
                     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-                      <div style={{ opacity: 0.15 }}><IconDocument color="var(--c-gold)" size={48} /></div>
+                      <div style={{ opacity: 0.15 }}><IconDocument color="var(--c-gold)" size={48} className="empty-icon" /></div>
                       <div style={{ fontFamily: 'var(--f-head)', fontSize: 18, fontWeight: 600, color: 'var(--c-text)' }}>No text extracted</div>
                       <div style={{ fontSize: 14, color: 'var(--c-text2)' }}>Upload and analyse a document to see its contents here.</div>
                     </div>
@@ -404,10 +404,10 @@ export default function DocumentView() {
 
               {tab === 'qa' && (
                 <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                  <div style={{ flex: 1, overflowY: 'auto', padding: '24px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+                  <div className="doc-qa-messages" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
                     {!extractedText && (
                       <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-                        <div style={{ opacity: 0.15 }}><IconDocument color="var(--c-gold)" size={48} /></div>
+                        <div style={{ opacity: 0.15 }}><IconDocument color="var(--c-gold)" size={48} className="empty-icon" /></div>
                         <div style={{ fontFamily: 'var(--f-head)', fontSize: 18, fontWeight: 600, color: 'var(--c-text)' }}>No document loaded</div>
                         <div style={{ fontSize: 14, color: 'var(--c-text2)' }}>Analyse a document first to ask questions about it.</div>
                       </div>
@@ -443,7 +443,7 @@ export default function DocumentView() {
                   </div>
                   
                   {extractedText && (
-                    <div style={{ padding: '16px 40px 20px', borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
+                    <div className="doc-qa-input" style={{ borderTop: '1px solid var(--c-border2)', background: 'var(--c-bg)', flexShrink: 0 }}>
                       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
                         <textarea className="textarea" value={docQ} onChange={e => { setDocQ(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(Math.max(e.target.scrollHeight, 44), 140) + 'px'; }}
                           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleDocQuery(); } }}
