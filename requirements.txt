@@ -73,6 +73,7 @@ bcrypt==5.0.0
 python-jose==3.5.0
 argon2-cffi==25.1.0
 cryptography==48.0.0
+resend==2.10.0            # email delivery via Resend API (used in api/auth.py)
 
 # === Multilingual ===
 langdetect==1.0.9

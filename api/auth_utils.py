@@ -1,6 +1,21 @@
 """
-LexShield AI — Auth Utilities
-================================
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  DEPRECATED — DO NOT USE                                                    ║
+║                                                                              ║
+║  This file is legacy code from an early version of LexShield AI that used   ║
+║  passlib/argon2 for hashing and a 60-minute JWT expiry.                      ║
+║                                                                              ║
+║  The LIVE, active auth system is in api/auth.py, which uses:                 ║
+║    • direct bcrypt (no passlib) for password hashing                         ║
+║    • 7-day JWT expiry via python-jose                                        ║
+║    • raw psycopg v3 SQL via agents/pg_sessions.get_conn()                    ║
+║                                                                              ║
+║  Nothing in the codebase imports this file.  It is kept in the repository    ║
+║  for historical reference only.  Do not build new features on top of it.     ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+LexShield AI — Auth Utilities  [DEPRECATED]
+============================================
 Password hashing with bcrypt.
 JWT token creation and verification.
 """

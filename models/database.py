@@ -1,6 +1,21 @@
 """
-LexShield AI — Database Setup
-================================
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  DEPRECATED — DO NOT USE                                                    ║
+║                                                                              ║
+║  This file is legacy code from an early version of LexShield AI that used   ║
+║  SQLAlchemy ORM with a SQLite default (DATABASE_URL).                        ║
+║                                                                              ║
+║  The LIVE database layer uses a psycopg v3 connection pool defined in        ║
+║  agents/pg_sessions.py (get_conn()).  All SQL in the live system is raw      ║
+║  psycopg — no ORM, no SQLAlchemy.                                            ║
+║                                                                              ║
+║  The only caller of create_tables() was api/main.py; that call was removed   ║
+║  in Session 7.  Nothing else in the codebase imports this file.              ║
+║  Kept for historical reference only — do not build on top of it.             ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+LexShield AI — Database Setup  [DEPRECATED]
+============================================
 SQLAlchemy engine + session factory.
 Switch databases by changing DATABASE_URL only.
 """

@@ -44,6 +44,9 @@ export const authRegister = (email, password, full_name) =>
 export const authLogin = (email, password) =>
   request('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
 export const authMe = () => request('/api/v1/auth/me');
+export const requestVerification = () => request('/api/v1/auth/request-verification', { method: 'POST' });
+export const forgotPassword = (email) => request('/api/v1/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+export const resetPassword = (token, new_password) => request('/api/v1/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, new_password }) });
 
 // Sessions
 export const getSessions = (type = 'all') => request(`/api/v1/master/sessions?type=${type}`);

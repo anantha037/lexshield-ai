@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useStore } from '../store';
+import { requestVerification } from '../api';
 import Sidebar from '../components/Sidebar';
 import ChatView from '../components/ChatView';
 import DocumentView from '../components/DocumentView';
@@ -58,6 +59,21 @@ export default function Dashboard() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [resending, setResending] = useState(false);
+
+  const handleResendVerification = async () => {
+    setResending(true);
+    try {
+      const res = await requestVerification();
+      toast(res.message);
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      setResending(false);
+    }
+  };
 
   const dragState = useRef(null);
 
@@ -155,6 +171,31 @@ export default function Dashboard() {
             </span>
           </div>
         )}
+
+        {user && !user.is_email_verified && !bannerDismissed && (
+          <div style={{ background: 'rgba(196,149,42,0.1)', borderBottom: '1px solid rgba(196,149,42,0.2)', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ fontSize: 13, color: 'var(--c-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ color: 'var(--c-gold)' }}>⚠️</span>
+              Please verify your email address.
+            </div>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <button 
+                onClick={handleResendVerification} 
+                disabled={resending}
+                style={{ background: 'none', border: 'none', color: 'var(--c-gold)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+              >
+                {resending ? 'Sending...' : 'Resend link'}
+              </button>
+              <button 
+                onClick={() => setBannerDismissed(true)} 
+                style={{ background: 'none', border: 'none', color: 'var(--c-text3)', fontSize: 16, cursor: 'pointer' }}
+              >
+                &times;
+              </button>
+            </div>
+          </div>
+        )}
+
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
             key={activeView}

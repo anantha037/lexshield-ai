@@ -96,12 +96,12 @@ else:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 3: Database tables (safe — skips if exist)
+# STEP 3: Database tables
 # ═══════════════════════════════════════════════════════════════════════════════
-
-from models.database import create_tables
-logger.info("Ensuring database tables exist")
-create_tables()
+# NOTE: PostgreSQL table initialization (users, sessions) is handled by
+# _init_auth_tables() inside api/auth.py, which runs automatically when that
+# module is imported below (Step 5).  The legacy create_tables() call that
+# pointed at models/database.py (SQLAlchemy / SQLite) has been removed.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
