@@ -403,6 +403,32 @@ def route_by_intent(state: AgentState) -> str:
     return node
 
 
+def route_after_rights(state: AgentState) -> str:
+    """
+    Conditional edge after rights_node.
+
+    If rights_node found no matching category (scope_status == "out_of_scope"
+    and rights_category is empty), reroute to legal_rag_node so the query
+    still gets a real answer instead of a dead-end menu message.
+
+    Loop guard: rights_node sets scratchpad["rights_fallback_used"] = True
+    on this exact path, so this function never routes the same query through
+    rights_node -> legal_rag_node -> rights_node more than once.
+    """
+    scratchpad = state.get("scratchpad", {})
+    no_category_matched = (
+        state.get("scope_status") == "out_of_scope"
+        and not state.get("rights_category")
+    )
+    already_fell_back = scratchpad.get("rights_fallback_used", False)
+
+    if no_category_matched and not already_fell_back:
+        logger.debug("[Graph] route_after_rights -> no category matched -> legal_rag_node")
+        return "legal_rag_node"
+
+    return "end"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # NODE: LEGAL RAG  (+ optional case law enrichment)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -994,6 +1020,9 @@ def rights_node(state: AgentState) -> dict:
         
         scope_msg = "Requested rights category is not supported. " + " ".join(menu_lines)
         
+        scratchpad = dict(state.get("scratchpad", {}))
+        scratchpad["rights_fallback_used"] = True
+
         return {
             "rights_category": "",
             "rights_result":   {},
@@ -1003,6 +1032,7 @@ def rights_node(state: AgentState) -> dict:
             "pipeline_depth":  state.get("pipeline_depth", 1) + 1,
             "scope_status":    "out_of_scope",
             "scope_message":   scope_msg,
+            "scratchpad":      scratchpad,
             "error":           "",
         }
     except Exception as exc:
@@ -1267,9 +1297,18 @@ def build_graph():
     for node_name in [
         "legal_rag_node", "document_analysis_node", "draft_node",
         "risk_check_node", "multilingual_node", "case_law_node",
-        "rights_node", "general_node",
+        "general_node",
     ]:
         builder.add_edge(node_name, END)
+
+    builder.add_conditional_edges(
+        "rights_node",
+        route_after_rights,
+        {
+            "legal_rag_node": "legal_rag_node",
+            "end":             END,
+        },
+    )
 
     return builder.compile(checkpointer=checkpointer)
 
