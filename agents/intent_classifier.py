@@ -830,6 +830,26 @@ Respond ONLY with valid JSON matching this exact schema. No markdown, no explana
     # TOOL-CALLING CLASSIFICATION  (new primary path, with fallback)
     # ──────────────────────────────────────────────────────────────────────────
 
+    # Short system prompt for the tool-calling path.
+    # Deliberately ~30% the length of _SYSTEM_PROMPT: the tool docstrings
+    # already carry full intent definitions and examples — this message only
+    # needs to (a) frame the task so the model knows it MUST call a tool,
+    # (b) set the Indian-legal-assistant context, and (c) add the three
+    # most-ambiguous disambiguation rules that trip up bare tool selection.
+    _TOOL_CALL_SYSTEM_PROMPT = (
+        "You are a query router for LexShield AI, an Indian legal assistance "
+        "platform with 8 intent categories.\n"
+        "You MUST call exactly ONE of the provided tools to route the user query. "
+        "Do not respond with text — only a tool call.\n"
+        "\nKey disambiguation rules:\n"
+        "- A question asked IN Hindi/regional language about Indian law "
+        "(e.g. 'dharaa 302 kya hai?') → tool_legal_query, NOT tool_translation_request.\n"
+        "- 'I got fired / my landlord locked me out / what can I do?' "
+        "→ tool_rights_check (person seeking guidance), NOT tool_draft_request.\n"
+        "- 'Help me write / draft / create a complaint / notice' "
+        "→ tool_draft_request (explicit drafting), NOT tool_rights_check."
+    )
+
     # Valid intent names (must match route_by_intent's _map keys exactly)
     _VALID_INTENTS = frozenset(INTENTS)
 
@@ -867,8 +887,15 @@ Respond ONLY with valid JSON matching this exact schema. No markdown, no explana
                 )
                 return None
 
-            # Invoke the bound LLM — it will choose to call one of the 8 tools
-            response = bound_llm.invoke(query)
+            # Invoke the bound LLM with a system message so it understands
+            # it must call exactly one tool.  Without this, ambiguous queries
+            # produce either no tool_calls (model responds in prose) or
+            # malformed tool-call syntax — both cause 400 errors from Groq.
+            from langchain_core.messages import SystemMessage, HumanMessage
+            response = bound_llm.invoke([
+                SystemMessage(content=self._TOOL_CALL_SYSTEM_PROMPT),
+                HumanMessage(content=query),
+            ])
 
             # Extract tool_calls from the AIMessage
             tool_calls = getattr(response, "tool_calls", None)
