@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useStore } from '../store';
-import { authRegister, authLogin } from '../api';
+import { authRegister, authLogin, forgotPassword } from '../api';
 import { IconScale } from '../icons';
 
 export default function Landing() {
   const { login, toast } = useStore();
   const [tab, setTab] = useState('login');
+  const [showForgot, setShowForgot] = useState(false);
   const [form, setForm] = useState({ email: '', password: '', full_name: '', confirm: '' });
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
@@ -44,6 +45,24 @@ export default function Landing() {
   const goAnon = () => {
     sessionStorage.setItem('lexshield_anon', '1');
     window.location.reload();
+  };
+
+  const handleForgot = async (ev) => {
+    ev.preventDefault();
+    if (!form.email.includes('@')) {
+      setErrors({ email: 'Valid email required' });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await forgotPassword(form.email);
+      toast(res.message);
+      setShowForgot(false);
+    } catch (err) {
+      toast(err.message || 'Failed to request reset', 'error');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -188,72 +207,102 @@ export default function Landing() {
             <div style={{ fontFamily: 'var(--f-head)', fontWeight: 700, fontSize: 20, color: 'var(--c-text)' }}>LexShield<span style={{ color: 'var(--c-gold)' }}>AI</span></div>
           </div>
 
-          <div style={{ display: 'flex', marginBottom: 28, borderBottom: '1px solid var(--c-border)', position: 'relative' }}>
-            <div
-              style={{ 
-                position: 'absolute', bottom: -1, height: 2, background: 'var(--c-gold)',
-                width: '50%',
-                left: tab === 'login' ? '0%' : '50%',
-                transition: 'left 300ms cubic-bezier(0.4, 0, 0.2, 1)'
-              }}
-            />
-            {[
-              { key: 'login', label: 'Sign In' },
-              { key: 'register', label: 'Create Account' }
-            ].map((t) => (
-              <div 
-                key={t.key}
-                style={{ flex: 1, padding: 10, textAlign: 'center', fontSize: 13, fontWeight: 600, color: tab === t.key ? 'var(--c-gold)' : 'var(--c-text3)', cursor: 'pointer', transition: 'color 150ms', position: 'relative', zIndex: 1 }} 
-                onClick={() => setTab(t.key)}
-                onMouseEnter={e => { if (tab !== t.key) e.currentTarget.style.color = 'var(--c-text2)'; }}
-                onMouseLeave={e => { if (tab !== t.key) e.currentTarget.style.color = 'var(--c-text3)'; }}
-              >
-                {t.label}
-              </div>
-            ))}
-          </div>
-
-          <form onSubmit={handleSubmit}>
-            {tab === 'register' && (
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Full Name</label>
-                <input className={`input${errors.full_name ? ' error' : ''}`} value={form.full_name} onChange={e => set('full_name', e.target.value)} placeholder="Anantha Krishnan K" />
-                {errors.full_name && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.full_name}</div>}
-              </div>
-            )}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Email</label>
-              <input className={`input${errors.email ? ' error' : ''}`} type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="you@example.com" />
-              {errors.email && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.email}</div>}
+          {!showForgot && (
+            <div style={{ display: 'flex', marginBottom: 28, borderBottom: '1px solid var(--c-border)', position: 'relative' }}>
+              <div
+                style={{ 
+                  position: 'absolute', bottom: -1, height: 2, background: 'var(--c-gold)',
+                  width: '50%',
+                  left: tab === 'login' ? '0%' : '50%',
+                  transition: 'left 300ms cubic-bezier(0.4, 0, 0.2, 1)'
+                }}
+              />
+              {[
+                { key: 'login', label: 'Sign In' },
+                { key: 'register', label: 'Create Account' }
+              ].map((t) => (
+                <div 
+                  key={t.key}
+                  style={{ flex: 1, padding: 10, textAlign: 'center', fontSize: 13, fontWeight: 600, color: tab === t.key ? 'var(--c-gold)' : 'var(--c-text3)', cursor: 'pointer', transition: 'color 150ms', position: 'relative', zIndex: 1 }} 
+                  onClick={() => setTab(t.key)}
+                  onMouseEnter={e => { if (tab !== t.key) e.currentTarget.style.color = 'var(--c-text2)'; }}
+                  onMouseLeave={e => { if (tab !== t.key) e.currentTarget.style.color = 'var(--c-text3)'; }}
+                >
+                  {t.label}
+                </div>
+              ))}
             </div>
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Password</label>
-              <input className={`input${errors.password ? ' error' : ''}`} type="password" value={form.password} onChange={e => set('password', e.target.value)} placeholder="••••••••" />
-              {errors.password && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.password}</div>}
-            </div>
-            {tab === 'register' && (
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Confirm Password</label>
-                <input className={`input${errors.confirm ? ' error' : ''}`} type="password" value={form.confirm} onChange={e => set('confirm', e.target.value)} placeholder="••••••••" />
-                {errors.confirm && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.confirm}</div>}
-              </div>
-            )}
-            <motion.button className="btn-gold" type="submit" disabled={submitting} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }} style={{ width: '100%', height: 44, marginTop: 8 }}>
-              {submitting ? 'Please wait...' : (tab === 'login' ? 'Sign In' : 'Create Account')}
-            </motion.button>
-          </form>
+          )}
 
-          <div style={{ textAlign: 'center', marginTop: 16 }}>
-            <span style={{ fontSize: 12, color: 'var(--c-text3)', cursor: 'pointer', display: 'inline-block', transition: 'color 150ms, letter-spacing 150ms' }} onClick={goAnon} onMouseEnter={e => {
-              e.target.style.color = 'var(--c-gold)';
-              e.target.style.letterSpacing = '0.02em';
-            }} onMouseLeave={e => {
-              e.target.style.color = 'var(--c-text3)';
-              e.target.style.letterSpacing = 'normal';
-            }}>
-              Continue without account →
-            </span>
-          </div>
+          {showForgot ? (
+            <form onSubmit={handleForgot}>
+              <div style={{ marginBottom: 16 }}>
+                <p style={{ fontSize: 13, color: 'var(--c-text2)', marginBottom: 16 }}>Enter your email address and we'll send you a link to reset your password.</p>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Email</label>
+                <input className={`input${errors.email ? ' error' : ''}`} type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="you@example.com" />
+                {errors.email && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.email}</div>}
+              </div>
+              <motion.button className="btn-gold" type="submit" disabled={submitting} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }} style={{ width: '100%', height: 44, marginTop: 8 }}>
+                {submitting ? 'Please wait...' : 'Send Reset Link'}
+              </motion.button>
+              <div style={{ textAlign: 'center', marginTop: 16 }}>
+                <span style={{ fontSize: 12, color: 'var(--c-text3)', cursor: 'pointer', display: 'inline-block', transition: 'color 150ms' }} onClick={() => setShowForgot(false)} onMouseEnter={e => e.target.style.color = 'var(--c-text2)'} onMouseLeave={e => e.target.style.color = 'var(--c-text3)'}>
+                  Back to Sign In
+                </span>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={handleSubmit}>
+              {tab === 'register' && (
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Full Name</label>
+                  <input className={`input${errors.full_name ? ' error' : ''}`} value={form.full_name} onChange={e => set('full_name', e.target.value)} placeholder="Anantha Krishnan K" />
+                  {errors.full_name && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.full_name}</div>}
+                </div>
+              )}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Email</label>
+                <input className={`input${errors.email ? ' error' : ''}`} type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="you@example.com" />
+                {errors.email && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.email}</div>}
+              </div>
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Password</label>
+                <input className={`input${errors.password ? ' error' : ''}`} type="password" value={form.password} onChange={e => set('password', e.target.value)} placeholder="••••••••" />
+                {errors.password && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.password}</div>}
+                {tab === 'login' && (
+                  <div style={{ textAlign: 'right', marginTop: 6 }}>
+                    <span style={{ fontSize: 11, color: 'var(--c-text3)', cursor: 'pointer', transition: 'color 150ms' }} onClick={() => setShowForgot(true)} onMouseEnter={e => e.target.style.color = 'var(--c-gold)'} onMouseLeave={e => e.target.style.color = 'var(--c-text3)'}>
+                      Forgot password?
+                    </span>
+                  </div>
+                )}
+              </div>
+              {tab === 'register' && (
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--c-text2)', marginBottom: 6, letterSpacing: '0.02em' }}>Confirm Password</label>
+                  <input className={`input${errors.confirm ? ' error' : ''}`} type="password" value={form.confirm} onChange={e => set('confirm', e.target.value)} placeholder="••••••••" />
+                  {errors.confirm && <div style={{ fontSize: 12, color: 'var(--c-high)', marginTop: 4 }}>{errors.confirm}</div>}
+                </div>
+              )}
+              <motion.button className="btn-gold" type="submit" disabled={submitting} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }} style={{ width: '100%', height: 44, marginTop: 8 }}>
+                {submitting ? 'Please wait...' : (tab === 'login' ? 'Sign In' : 'Create Account')}
+              </motion.button>
+            </form>
+          )}
+
+          {!showForgot && (
+            <div style={{ textAlign: 'center', marginTop: 16 }}>
+              <span style={{ fontSize: 12, color: 'var(--c-text3)', cursor: 'pointer', display: 'inline-block', transition: 'color 150ms, letter-spacing 150ms' }} onClick={goAnon} onMouseEnter={e => {
+                e.target.style.color = 'var(--c-gold)';
+                e.target.style.letterSpacing = '0.02em';
+              }} onMouseLeave={e => {
+                e.target.style.color = 'var(--c-text3)';
+                e.target.style.letterSpacing = 'normal';
+              }}>
+                Continue without account →
+              </span>
+            </div>
+          )}
         </motion.div>
       </div>
     </div>

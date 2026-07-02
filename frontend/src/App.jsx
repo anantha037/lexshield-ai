@@ -1,5 +1,6 @@
 import { StoreProvider, useStore } from './store';
 import Landing from './pages/Landing';
+import ResetPassword from './pages/ResetPassword';
 
 import Dashboard from './pages/Dashboard';
 import Toast from './components/Toast';
@@ -12,6 +13,11 @@ function AppRoutes() {
       <div className="typing"><span /><span /><span /></div>
     </div>
   );
+
+  const path = window.location.pathname;
+  if (path === '/reset-password') {
+    return <ResetPassword />;
+  }
 
   const isAnon = sessionStorage.getItem('lexshield_anon') === '1';
 
