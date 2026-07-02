@@ -209,7 +209,7 @@ export default function DraftView() {
         onCancel={() => setShowChangeCategoryModal(false)} 
       />
       {/* Header */}
-      <div style={{ padding: '20px 40px 16px', borderBottom: '1px solid var(--c-border2)' }}>
+      <div className="view-header" style={{ borderBottom: '1px solid var(--c-border2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
           <button className="btn-ghost" onClick={handleChangeCategory} style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px' }}>
             <IconArrowBack size={14} /> Change Category
