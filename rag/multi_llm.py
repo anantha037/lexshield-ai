@@ -6,8 +6,8 @@ Production-grade LLM client with proactive provider failover.
 Architecture:
   - Sliding window rate tracker per provider (avoids 429 before it happens)
   - Circuit breaker per provider (backs off after 3 consecutive failures)
-  - Priority queue: Groq -> OpenRouter Llama -> OpenRouter Qwen -> Gemini ->
-                    OpenRouter Nemotron -> OpenRouter DeepSeek -> OpenRouter Mistral
+  - Priority queue: Groq -> OpenRouter Llama -> OpenRouter Qwen3-Coder -> Gemini ->
+                    OpenRouter Gemma4 -> OpenRouter Nemotron-Nano -> OpenRouter auto-free
   - Identical generate() interface to LegalLLM — drop-in replacement
   - get_langchain_llm() returns a LangChain-compatible LLM for RAGAS eval
 
@@ -21,6 +21,7 @@ Why proactive switching matters:
   GEMINI_API_KEY     — provider 4
 """
 
+import re
 import os
 import time
 import logging
@@ -69,6 +70,9 @@ class ProviderState:
 
 
 # ── Provider registry (priority order) ────────────────────────────────────────
+# MAINTENANCE NOTE — free-tier model slugs churn frequently on OpenRouter.
+# Last verified against https://openrouter.ai/api/v1/models: 2026-07-02.
+# Re-run rag/scripts/check_openrouter_free_models.py before changing any slug.
 
 _PROVIDERS: list[ProviderConfig] = [
     # 1. Groq — correct (browser GET error is expected, POST works fine)
@@ -91,10 +95,13 @@ _PROVIDERS: list[ProviderConfig] = [
         priority       = 2,
         preempt_buffer = 3,
     ),
-    # 3. DeepSeek V4 Flash — fast, free, strong on structured output
+    # 3. Qwen3-Next 80B — 262K context, general-instruction, free
+    #    Confirmed free (price=0) via OpenRouter /api/v1/models on 2026-07-02.
+    #    Replaces deepseek/deepseek-v4-flash:free (no :free variant; paid only)
+    #    and qwen/qwen3-coder:free (coder-specialized, higher deprecation risk).
     ProviderConfig(
-        name           = "openrouter-deepseek-v4",
-        model          = "deepseek/deepseek-v4-flash:free",
+        name           = "openrouter-qwen3-next-80b",
+        model          = "qwen/qwen3-next-80b-a3b-instruct:free",
         api_key_env    = "OPENROUTER_API_KEY",
         base_url       = "https://openrouter.ai/api/v1",
         rpm_limit      = 20,
@@ -124,10 +131,13 @@ _PROVIDERS: list[ProviderConfig] = [
         priority       = 5,
         preempt_buffer = 3,
     ),
-    # 6. MiniMax M2.5 — free, reliable fallback
+    # 6. NVIDIA Nemotron-Nano 30B — free, reliable fallback
+    #    Confirmed free (price=0) via OpenRouter /api/v1/models on 2026-07-02.
+    #    Replaces minimax/minimax-m2.5:free which had no :free variant and
+    #    returned 404 on every call (minimax/minimax-m2.5 is a paid model).
     ProviderConfig(
-        name           = "openrouter-minimax-m25",
-        model          = "minimax/minimax-m2.5:free",
+        name           = "openrouter-nemotron-nano",
+        model          = "nvidia/nemotron-3-nano-30b-a3b:free",
         api_key_env    = "OPENROUTER_API_KEY",
         base_url       = "https://openrouter.ai/api/v1",
         rpm_limit      = 20,
@@ -149,6 +159,159 @@ _PROVIDERS: list[ProviderConfig] = [
 # Circuit breaker config
 _CIRCUIT_OPEN_SECONDS    = 300   # 5 minutes before retrying a failed provider
 _MAX_CONSECUTIVE_FAILURES = 3    # open circuit after this many back-to-back failures
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESPONSE CLEANING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Matches well-formed XML thinking/reasoning blocks anchored at the START of
+# the response (leading whitespace allowed).  Only three tag names are matched —
+# all are used by known reasoning-capable free-tier models (DeepSeek R1,
+# Qwen3 in thinking mode) when they leak CoT into message.content.
+#
+# Deliberately excluded patterns:
+#   - Bare prose preambles ("Let me think...", "Thinking:") — too ambiguous;
+#     could be a legitimate answer opener on certain query types.
+#   - Mid-response <think> blocks — only the preamble case is safe to strip.
+#   - <answer> / <output> tags — used for structured output, not CoT.
+_REASONING_PREAMBLE_RE = re.compile(
+    r'^\s*<(think|thinking|reasoning)>.*?</\1>\s*',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def strip_reasoning_preamble(text: str) -> str:
+    """Remove chain-of-thought preamble leaked into message.content by some
+    free-tier reasoning models (DeepSeek R1, Qwen3 thinking mode, etc.).
+
+    Only strips a well-formed <think>/<thinking>/<reasoning> block that sits
+    at the very beginning of the response.  Any other content — including all
+    citation markers like [1] and [SOURCE 1] — is left completely untouched.
+
+    Conservative guarantee:
+      If stripping would leave an empty string (i.e. the entire response was
+      inside a reasoning tag with no answer after it), the original text is
+      returned unchanged.  The caller's existing empty-response guard will
+      then treat it as a provider failure and try the next provider.
+
+    Args:
+        text: Raw string from response.choices[0].message.content
+
+    Returns:
+        Cleaned string with CoT preamble removed, or original text if
+        stripping would produce an empty result.
+    """
+    match = _REASONING_PREAMBLE_RE.match(text)
+    if not match:
+        return text.strip()   # nothing to strip — fast path
+
+    remainder = text[match.end():].strip()
+    if not remainder:
+        # Entire response was inside the thinking block — preserve original
+        # so the empty-response guard in generate() can handle it properly.
+        logger.warning(
+            "[MultiLLMRouter] Response was entirely inside a reasoning tag "
+            "with no answer after it — returning original for empty-check."
+        )
+        return text.strip()
+
+    logger.debug(
+        f"[MultiLLMRouter] Stripped reasoning preamble "
+        f"({match.end()} chars) — answer starts: {remainder[:60]!r}"
+    )
+    return remainder
+
+
+# Structured-answer headers that synthesizer.py's build_synthesis_prompt()
+# instructs the LLM to produce.  Used by _is_malformed_response() to
+# distinguish a valid answer start from a meta-commentary opener.
+# Kept as lowercase strings — comparison is done on text.lower().
+_SYNTHESIS_HEADERS: frozenset[str] = frozenset({
+    "**relevant law:**",
+    "**what it says:**",
+    "**answer:**",
+    "**punishment/remedy:**",
+    "**note:**",
+    "**legal risk:**",
+    "**consequences:**",
+    "**procedure:**",
+    "**advice:**",
+    "**your rights:**",
+    "**what to do:**",
+})
+
+# First-person meta-commentary phrases that indicate the model is narrating
+# its reasoning process rather than delivering the final answer.
+# Only checked in the first 300 characters to avoid false-positives on
+# answers that *mention* or *quote* a reasoning step later in the text.
+_META_COMMENTARY_SIGNALS: tuple[str, ...] = (
+    "let me analyze",
+    "let me think",
+    "let me break",
+    "let me look at",
+    "let me work through",
+    "let me go through",
+    "let me consider",
+    "i need to consider",
+    "i'll analyze",
+    "i will analyze",
+    "i'll think",
+    "to answer this question",
+    "the user is asking",
+    "based on my analysis",
+    "i should first",
+    "first, i'll",
+    "first, let me",
+    "okay, let me",
+    "alright, let me",
+)
+
+
+def _is_malformed_response(text: str) -> bool:
+    """Return True if the text looks like unstripped reasoning prose rather
+    than a direct legal answer.
+
+    Two conditions must BOTH hold (AND logic — conservative by design):
+      1. A meta-commentary signal is found in the first 300 characters.
+      2. No recognised answer structure is found in the first 400 characters.
+         "Answer structure" means either:
+           a. A known synthesis header (**Relevant Law:**, **Your Rights:**, etc.), OR
+           b. ANY bold Markdown header of the form **<Word(s)>:** — which covers
+              document-analysis and general answers that use custom headers.
+
+    If only one condition holds the response is returned to the caller as-is:
+    a false-negative (leaked reasoning shown to user once) is preferable to a
+    false-positive (legitimate answer dropped and provider penalised unfairly).
+
+    Note: this function operates on text already processed by
+    strip_reasoning_preamble(), so tagged CoT blocks have already been removed.
+
+    Args:
+        text: Text already processed by strip_reasoning_preamble().
+
+    Returns:
+        True if both conditions hold and the response should be retried.
+    """
+    if not text:
+        return False
+
+    window = text[:300].lower()
+    if not any(sig in window for sig in _META_COMMENTARY_SIGNALS):
+        return False   # fast path — no meta-commentary detected
+
+    # Meta-commentary found — only flag as malformed if there is also no
+    # recognised answer structure in the first 400 characters.
+    # Check (a): known synthesis-prompt headers
+    search_zone = text[:400].lower()
+    if any(h in search_zone for h in _SYNTHESIS_HEADERS):
+        return False
+    # Check (b): any bold Markdown header (**Word(s):**) — catches document-
+    # analysis and general answers that use their own structured headers.
+    if re.search(r'\*\*[A-Za-z][^*]{1,40}:\*\*', text[:400]):
+        return False
+
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -370,10 +533,27 @@ class MultiLLMRouter:
                     client = self._clients[cfg.name]
 
                     logger.debug(f"[MultiLLMRouter] Dispatching to {cfg.name}")
+
+                    # Priority-5+ providers are more likely to be reasoning-
+                    # capable models (Nemotron, Qwen3-Next) that may leak
+                    # untagged chain-of-thought.  Append an explicit no-
+                    # commentary directive to the caller-supplied system prompt
+                    # to reduce the incidence before it reaches the cleaners.
+                    effective_system_prompt = system_prompt
+                    if cfg.priority >= 5:
+                        effective_system_prompt = (
+                            system_prompt.rstrip()
+                            + "\n\nCRITICAL OUTPUT RULE: Output ONLY the final "
+                            "answer. Do not include chain-of-thought, reasoning "
+                            "steps, internal analysis, or any meta-commentary "
+                            "about your process. Begin your response directly "
+                            "with the answer content."
+                        )
+
                     response = client.chat.completions.create(
                         model       = cfg.model,
                         messages    = [
-                            {"role": "system", "content": system_prompt},
+                            {"role": "system", "content": effective_system_prompt},
                             {"role": "user",   "content": prompt},
                         ],
                         max_tokens  = max_tokens,
@@ -386,7 +566,24 @@ class MultiLLMRouter:
                         )
                         self._record_failure(cfg, state, RuntimeError("empty response"))
                         continue
-                    result = raw_content.strip()
+                    result = strip_reasoning_preamble(raw_content)
+                    # NOTE: _is_malformed_response() runs on ALL providers,
+                    # including Groq (priority=1) — not just the priority>=5
+                    # cohort that gets the anti-commentary system prompt.
+                    # This is deliberate defense-in-depth: even a highly
+                    # reliable primary provider could theoretically regress
+                    # on a specific prompt type, and the check is O(1).
+                    if _is_malformed_response(result):
+                        logger.warning(
+                            f"[MultiLLMRouter] Provider {cfg.name} returned "
+                            f"unstripped reasoning prose — treating as malformed, "
+                            f"trying next provider (starts: {result[:80]!r})"
+                        )
+                        self._record_failure(
+                            cfg, state,
+                            RuntimeError("malformed response: reasoning prose leak")
+                        )
+                        continue
                     self._record_success(cfg, state)
                     return result
 
@@ -426,6 +623,13 @@ class MultiLLMRouter:
                 )
                 time.sleep(sleep_time)
 
+        # KNOWN TRADE-OFF: this RuntimeError propagates to the caller
+        # (rag/pipeline.py) and surfaces as the generic 500-error message,
+        # NOT as _generate_fallback_response()'s warmer "I couldn't retrieve
+        # a good answer" message.  A full provider cascade is rare enough in
+        # production that this is an accepted gap for now.  If it becomes
+        # frequent, add a try/except in pipeline.py's generate() call site
+        # and route the RuntimeError to _generate_fallback_response().
         raise RuntimeError(
             f"MultiLLMRouter: all {len(self._available_providers)} providers failed. "
             f"Last error: {last_exception}"
