@@ -49,7 +49,7 @@ from rag.embedder          import embedder
 from rag.act_resolver      import act_resolver
 from rag.category_detector import category_detector, CONFIDENCE_HIGH, CONFIDENCE_MED
 from rag.adaptive_router   import classify_query_complexity
-from rag.crag              import evaluate_retrieval
+from rag.crag              import evaluate_retrieval, GOOD_MIN_SCORE
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 from rag.synthesizer       import (
@@ -745,7 +745,11 @@ class RAGPipeline:
                     _crag_ids.add(cid)
             crag_result = evaluate_retrieval(latest_expanded, eval_chunks)
             logger.debug(f"[DIAGNOSE] CRAG result: action={crag_result.get('action')}, score={crag_result.get('score')}, reason={crag_result.get('reason')}")
-            rag_grade   = "good" if crag_result["score"] >= 4 else "poor"
+            # GOOD_MIN_SCORE (4) is the grading threshold — intentionally
+            # stricter than CRAG's proceed gate (PROCEED_MIN_SCORE=3).
+            # A degraded (evaluator-failed) result carries score=3 and is
+            # therefore graded "poor" here, never "good".
+            rag_grade   = "good" if crag_result["score"] >= GOOD_MIN_SCORE else "poor"
             crag_fallback = crag_result.get("fallback", False)
 
             if crag_result["action"] == "insufficient":

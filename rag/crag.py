@@ -14,10 +14,13 @@ Returns:
         "action": str,          # "proceed" | "rewrite" | "insufficient"
     }
 
-Scoring thresholds:
-    score >= 4  -> "proceed"       (good retrieval, continue to synthesizer)
-    score 2-3   -> "rewrite"       (marginal — trigger query rewriter + re-retrieve once)
+Scoring thresholds (PROCEED_MIN_SCORE = 3, enforced in _parse_crag_response):
+    score >= 3  -> "proceed"       (relevant enough — continue to synthesizer)
+    score == 2  -> "rewrite"       (marginal — trigger query rewriter + re-retrieve once)
     score == 1  -> "insufficient"  (retrieval failed — return low-confidence response)
+
+Note: rag/pipeline.py grades retrieval as "good" only at score >= GOOD_MIN_SCORE (4).
+Grading (telemetry label) is intentionally stricter than gating (proceed decision).
 
 Design constraints (Windows 11, 8GB RAM, no GPU):
     - Pure Groq API call — zero local model, zero extra memory
@@ -93,6 +96,10 @@ score == 1 -> action must be "insufficient"
 _MAX_CHUNKS_TO_EVAL  = 5     # evaluate top 5 only — limits Groq token use
 _CHUNK_PREVIEW_CHARS = 300   # truncate each chunk preview to this length
 
+# Canonical thresholds — single source of truth for crag.py AND rag/pipeline.py.
+PROCEED_MIN_SCORE = 3   # gating: score >= 3 proceeds (see BUG FIX 3)
+GOOD_MIN_SCORE    = 4   # grading: rag_grade == "good" requires score >= 4
+
 
 # ── JSON parser ────────────────────────────────────────────────────────────────
 
@@ -111,8 +118,10 @@ def _parse_crag_response(raw: str) -> dict:
             score  = int(parsed["score"])
             action = parsed["action"].strip().lower()
             # Enforce action consistency regardless of what LLM returned.
-            # BUG FIX 3: threshold lowered — score >= 3 proceeds (was >= 4)
-            if score >= 3:
+            # BUG FIX 3: threshold lowered — score >= PROCEED_MIN_SCORE (3)
+            # proceeds (was >= 4). Kept as a named constant so docstring,
+            # implementation, and pipeline.py cannot drift again.
+            if score >= PROCEED_MIN_SCORE:
                 action = "proceed"
             elif score <= 1:
                 action = "insufficient"
@@ -130,7 +139,7 @@ def _parse_crag_response(raw: str) -> dict:
     reason = reason_match.group(1) if reason_match else "Could not parse evaluator response."
 
     # BUG FIX 3: consistent threshold in regex fallback path too
-    if score >= 3:
+    if score >= PROCEED_MIN_SCORE:
         action = "proceed"
     elif score <= 1:
         action = "insufficient"
@@ -153,13 +162,19 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
 
     Returns:
         {
-            "score":  int,   # 1–5
-            "reason": str,
-            "action": str,   # "proceed" | "rewrite" | "insufficient"
+            "score":    int,   # 1–5
+            "reason":   str,
+            "action":   str,   # "proceed" | "rewrite" | "insufficient"
+            "fallback": bool,  # True when action == "insufficient"
+            "degraded": bool,  # True when the evaluator itself failed and the
+                               # result is an UNVERIFIED pass-through, not a
+                               # genuine quality assessment
         }
 
-    Never raises — returns safe default {"score": 4, "action": "proceed"}
-    on any API or parse failure so the pipeline is never blocked.
+    Never raises — on any LLM API failure the pipeline is never blocked,
+    but the failure is NOT reported as success: the result carries
+    score=PROCEED_MIN_SCORE (proceeds, but grades as "poor" downstream)
+    and degraded=True, and the failure is logged at ERROR level.
     """
     if not chunks:
         return {
@@ -167,6 +182,7 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
             "reason": "No chunks were retrieved for this query.",
             "action": "insufficient",
             "fallback": True,
+            "degraded": False,
         }
 
     # Take top N chunks by hybrid_score; truncate text previews
@@ -196,6 +212,7 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
         result = _parse_crag_response(raw)
         # Stamp fallback flag so pipeline can read it without inspecting action string.
         result["fallback"] = result["action"] == "insufficient"
+        result["degraded"] = False
         logger.debug(
             f"[CRAG] score={result['score']} action={result['action']!r} "
             f"reason={result['reason'][:60]!r}"
@@ -203,10 +220,19 @@ def evaluate_retrieval(query: str, chunks: list[dict]) -> dict:
         return result
 
     except Exception as exc:
-        # Safe fallback — never block the pipeline
-        logger.exception(f"[CRAG] Evaluator failed — defaulting to proceed")
+        # Fail-degraded, NOT fail-open: the pipeline may proceed (availability
+        # over strictness — the embedding-based pre-synthesis relevance gate
+        # still runs as a backstop), but we must not claim verified quality.
+        # score=PROCEED_MIN_SCORE proceeds per gating threshold while grading
+        # as "poor" (< GOOD_MIN_SCORE) in pipeline telemetry.
+        logger.exception(
+            "[CRAG] Evaluator LLM call FAILED — retrieval quality is UNVERIFIED "
+            "for this query; proceeding in degraded mode (quality gating skipped)."
+        )
         return {
-            "score":  4,
-            "reason": f"Evaluator unavailable: {exc}",
-            "action": "proceed",
+            "score":    PROCEED_MIN_SCORE,
+            "reason":   f"Evaluator unavailable ({exc}) — quality NOT verified.",
+            "action":   "proceed",
+            "fallback": False,
+            "degraded": True,
         }
