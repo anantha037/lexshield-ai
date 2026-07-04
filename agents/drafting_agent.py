@@ -2123,10 +2123,33 @@ class DraftingAgent:
 
         except Exception as e:
             logger.exception("[DraftingAgent] LLM generation failed")
-            draft_text = f"[Draft generation failed: {e}. Please try again.]"
-            validation_status = "failed_returned"
+            # Do NOT advance to DONE. Keep the draft retryable at GENERATE:
+            # handle() dispatches GENERATE -> _generate_draft, so the user's
+            # next message automatically retries generation with the same
+            # collected facts.  We explicitly save GENERATE because some
+            # call paths (e.g. DONE-stage correction) reach here with the DB
+            # row at a different stage.  draft_data is preserved so no
+            # collected answers or corrections are lost.
+            self._save(session_id, DraftStage.GENERATE, category, draft_data)
 
-        # Mark DONE
+            label = _CATEGORY_LABELS.get(category, category)
+            return {
+                "answer": (
+                    f"⚠️ **I couldn't generate your {label} just now.**\n\n"
+                    f"The document-generation service did not respond. "
+                    f"All the details you provided have been saved — nothing is lost.\n\n"
+                    f"Reply **'retry'** (or send any message) and I will try generating "
+                    f"your draft again."
+                ),
+                "stage":             DraftStage.GENERATE,
+                "doc_type":          category,
+                "complete":          False,
+                "draft":             "",
+                "draft_data":        draft_data,
+                "validation_status": "not_applicable",
+            }
+
+        # Mark DONE (success path only)
         self._save(session_id, DraftStage.DONE, category, draft_data)
 
         docs  = _SUPPORTING_DOCUMENTS.get(category, [])
