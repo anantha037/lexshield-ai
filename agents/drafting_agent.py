@@ -2057,8 +2057,18 @@ class DraftingAgent:
             r'\b(confirm|yes|proceed|generate|draft it|go ahead|ok|okay|yes please)\b',
             query, re.IGNORECASE
         )
+        # Union of the original vocabulary and the broader cancel synonyms
+        # previously defined (unreachably) at graph level for the never-
+        # persisted AWAITING_CONFIRMATION stage.  This is now the single
+        # source of truth for cancel detection at the CONFIRM stage.
+        # NOTE: is_cancel is evaluated before is_confirm below, so phrases
+        # like "don't confirm" cancel rather than confirm.
         is_cancel = re.search(
-            r'\b(cancel|stop|abort|quit|start over|restart)\b',
+            r'\b(cancel|stop|abort|quit|start\s+over|restart|'
+            r'don\'t\s+confirm|do\s+not\s+confirm|discard|'
+            r'never\s*mind|forget\s*it|'
+            r'don\'t\s+draft|do\s+not\s+draft|'
+            r'don\'t\s+generate|do\s+not\s+generate)\b',
             query, re.IGNORECASE
         )
 

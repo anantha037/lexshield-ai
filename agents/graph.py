@@ -191,7 +191,7 @@ def classify_intent_node(state: AgentState) -> dict:
             "pipeline_depth":  1,
         }
 
-    # ── Priority 0: active draft session — four-stage-aware short-circuit ──────
+    # ── Priority 0: active draft session — short-circuit to draft_node ─────────
     _session_id_early = state.get("session_id", "")
     if _session_id_early:
         try:
@@ -200,62 +200,11 @@ def classify_intent_node(state: AgentState) -> dict:
                 _row = _da._load(_session_id_early)
                 _draft_stage = _row["stage"] if _row else ""
 
-                # ── AWAITING_CONFIRMATION: detect cancel / confirm / ambiguous ─
-                if _draft_stage == "AWAITING_CONFIRMATION":
-                    _CANCEL_RE = re.compile(
-                        r'\b(cancel|don\'t\s+confirm|do\s+not\s+confirm|'
-                        r'stop|abort|discard|never\s*mind|forget\s*it|'
-                        r'don\'t\s+draft|do\s+not\s+draft|'
-                        r'don\'t\s+generate|do\s+not\s+generate)\b',
-                        re.IGNORECASE,
-                    )
-                    _CONFIRM_RE = re.compile(
-                        r'\b(confirm|yes|proceed|generate|draft\s+it|'
-                        r'go\s+ahead|yes\s+please|approved?|do\s+it|make\s+it)\b',
-                        re.IGNORECASE,
-                    )
-                    _q = query.lower().strip()
-
-                    if _CANCEL_RE.search(_q):
-                        _da.cancel_draft(_session_id_early)
-                        logger.debug("[Graph] AWAITING_CONFIRMATION -> cancel -> clearing draft")
-                        return {
-                            "intent":          "_draft_handled",
-                            "confidence":      1.0,
-                            "source_language": "en",
-                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
-                            "scratchpad":      dict(state.get("scratchpad", {})),
-                            "response": (
-                                "✅ Draft cancelled. Your draft session has been cleared.\n\n"
-                                "Feel free to start a new draft or ask me anything else."
-                            ),
-                        }
-                    elif _CONFIRM_RE.search(_q):
-                        logger.debug("[Graph] AWAITING_CONFIRMATION -> confirmed -> draft_node")
-                        return {
-                            "intent":          "draft_request",
-                            "confidence":      1.0,
-                            "source_language": "en",
-                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
-                            "scratchpad":      dict(state.get("scratchpad", {})),
-                        }
-                    else:
-                        # Ambiguous — re-prompt without clearing state
-                        logger.debug("[Graph] AWAITING_CONFIRMATION -> ambiguous -> re-prompt")
-                        return {
-                            "intent":          "_draft_handled",
-                            "confidence":      1.0,
-                            "source_language": "en",
-                            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
-                            "scratchpad":      dict(state.get("scratchpad", {})),
-                            "response": (
-                                "I need a clear confirmation to proceed.\n\n"
-                                "Reply **'confirm'** to generate your legal draft, "
-                                "or **'cancel'** to discard it."
-                            ),
-                        }
-
-                # ── MENU_SHOWN / COLLECTING_FIELDS: always route to draft_node ─
+                # NOTE: confirm / cancel / correction handling at the CONFIRM
+                # stage lives in DraftingAgent._handle_confirm — the single
+                # source of truth.  A previous graph-level branch here keyed
+                # on an "AWAITING_CONFIRMATION" stage that DraftingAgent never
+                # persists; it was dead code and has been removed.
                 logger.debug(
                     f"[Graph] classify_intent_node -> draft stage={_draft_stage} "
                     f"session={_session_id_early[:8]}… -> short-circuit to draft_request"
