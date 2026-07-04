@@ -541,7 +541,11 @@ class RAGPipeline:
             final_chunks = (pinned_chunks + soft_pinned)[:n_final]
 
             # ── PRE-SYNTHESIS RELEVANCE GATE (simple path) ──────────────────
-            if not self._is_retrieval_relevant(user_query, final_chunks):
+            # Gate must score the same query retrieval used (latest_expanded:
+            # conversational rewrite + abbreviation expansion), NOT the raw
+            # user_query — otherwise valid follow-ups like "what about the
+            # punishment for that?" retrieve correct chunks but fail the gate.
+            if not self._is_retrieval_relevant(latest_expanded, final_chunks):
                 logger.info("Pre-synthesis gate: no relevant chunks found. Triggering fallback.")
                 return self._generate_fallback_response(
                     user_query=user_query,
@@ -842,7 +846,11 @@ class RAGPipeline:
         # STEP 6: Build prompt (labeled for complex, standard otherwise)
         # ═══════════════════════════════════════════════════════════════════════
         # PRE-SYNTHESIS RELEVANCE GATE (runs for simple, moderate, complex)
-        if not self._is_retrieval_relevant(user_query, final_chunks):
+        # Gate must score the same query retrieval used (latest_expanded:
+        # conversational rewrite + abbreviation expansion), NOT the raw
+        # user_query — otherwise valid follow-ups like "what about the
+        # punishment for that?" retrieve correct chunks but fail the gate.
+        if not self._is_retrieval_relevant(latest_expanded, final_chunks):
             logger.info("Pre-synthesis gate: no relevant chunks found. Triggering fallback.")
             return self._generate_fallback_response(
                 user_query=user_query,
