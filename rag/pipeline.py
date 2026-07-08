@@ -49,7 +49,7 @@ from rag.embedder          import embedder
 from rag.act_resolver      import act_resolver
 from rag.category_detector import category_detector, CONFIDENCE_HIGH, CONFIDENCE_MED
 from rag.adaptive_router   import classify_query_complexity
-from rag.crag              import evaluate_retrieval
+from rag.crag              import evaluate_retrieval, GOOD_MIN_SCORE
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 from rag.synthesizer       import (
@@ -59,9 +59,9 @@ from rag.synthesizer       import (
     LegalAnswer,
 )
 
-N_RETRIEVE_PER_QUERY    = 8
-N_RERANKER_INPUT        = 14
-N_FINAL_CONTEXT         = 5
+N_RETRIEVE_PER_QUERY    = 10
+N_RERANKER_INPUT        = 16
+N_FINAL_CONTEXT         = 8
 PAIRED_ACT_MAX_CHUNKS   = 2
 AMBIGUOUS_SECTION_SCORE = 0.88
 
@@ -541,7 +541,11 @@ class RAGPipeline:
             final_chunks = (pinned_chunks + soft_pinned)[:n_final]
 
             # ── PRE-SYNTHESIS RELEVANCE GATE (simple path) ──────────────────
-            if not self._is_retrieval_relevant(user_query, final_chunks):
+            # Gate must score the same query retrieval used (latest_expanded:
+            # conversational rewrite + abbreviation expansion), NOT the raw
+            # user_query — otherwise valid follow-ups like "what about the
+            # punishment for that?" retrieve correct chunks but fail the gate.
+            if not self._is_retrieval_relevant(latest_expanded, final_chunks):
                 logger.info("Pre-synthesis gate: no relevant chunks found. Triggering fallback.")
                 return self._generate_fallback_response(
                     user_query=user_query,
@@ -741,7 +745,11 @@ class RAGPipeline:
                     _crag_ids.add(cid)
             crag_result = evaluate_retrieval(latest_expanded, eval_chunks)
             logger.debug(f"[DIAGNOSE] CRAG result: action={crag_result.get('action')}, score={crag_result.get('score')}, reason={crag_result.get('reason')}")
-            rag_grade   = "good" if crag_result["score"] >= 4 else "poor"
+            # GOOD_MIN_SCORE (4) is the grading threshold — intentionally
+            # stricter than CRAG's proceed gate (PROCEED_MIN_SCORE=3).
+            # A degraded (evaluator-failed) result carries score=3 and is
+            # therefore graded "poor" here, never "good".
+            rag_grade   = "good" if crag_result["score"] >= GOOD_MIN_SCORE else "poor"
             crag_fallback = crag_result.get("fallback", False)
 
             if crag_result["action"] == "insufficient":
@@ -842,7 +850,11 @@ class RAGPipeline:
         # STEP 6: Build prompt (labeled for complex, standard otherwise)
         # ═══════════════════════════════════════════════════════════════════════
         # PRE-SYNTHESIS RELEVANCE GATE (runs for simple, moderate, complex)
-        if not self._is_retrieval_relevant(user_query, final_chunks):
+        # Gate must score the same query retrieval used (latest_expanded:
+        # conversational rewrite + abbreviation expansion), NOT the raw
+        # user_query — otherwise valid follow-ups like "what about the
+        # punishment for that?" retrieve correct chunks but fail the gate.
+        if not self._is_retrieval_relevant(latest_expanded, final_chunks):
             logger.info("Pre-synthesis gate: no relevant chunks found. Triggering fallback.")
             return self._generate_fallback_response(
                 user_query=user_query,

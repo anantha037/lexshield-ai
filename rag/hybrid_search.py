@@ -180,40 +180,34 @@ def _format_results(raw: dict) -> list[dict]:
 
 def _section_fast_path(section: str, query: str, collection, k: int = 5) -> list[dict]:
     act_hint = _extract_act_hint(query)
-    
-    where_filter = {"section": {"$eq": section}}
-    
-    if act_hint:
-        # Filter to only the intended act
-        where_filter = {
-            "$and": [
-                {"section": {"$eq": section}},
-                {"source": {"$contains": act_hint.split()[0]}}
-            ]
-        }
-    
+
+    # ChromaDB metadata `where` filters do NOT support `$contains` — that
+    # operator is only valid in `where_document` (full-text of the chunk),
+    # not on metadata fields like `source`. Substring matching on `source`
+    # must therefore be done client-side, mirroring the approach already
+    # used by vectorstore.search_by_source().
+    #
+    # When an act hint is present we fetch up to 10 candidates (instead of
+    # k) so the client-side act filter has enough results to select from.
+    fetch_n = 10 if act_hint else min(k, 10)
+
     results = collection.query(
         query_texts=[f"Section {section}"],
-        where=where_filter,
-        n_results=min(k, 10)
+        where={"section": {"$eq": section}},
+        n_results=fetch_n,
     )
-    
+
     chunks = _format_results(results)
-    
-    # If act_hint was specified but no chunks found with filter,
-    # fall back to unfiltered (corpus may use different source name)
-    if act_hint and len(chunks) == 0:
-        results = collection.query(
-            query_texts=[f"Section {section}"],
-            where={"section": {"$eq": section}},
-            n_results=min(k, 10)
-        )
-        chunks = _format_results(results)
-        # Filter client-side by checking source string
-        chunks = [c for c in chunks 
-                  if act_hint.split()[0].lower() in c.get('source', '').lower()]
-    
-    return chunks
+
+    # Client-side act filter — preserves the original intent of the
+    # `$and` + `$contains` filter (match first word of the act name
+    # against the chunk's source string).
+    if act_hint:
+        act_kw = act_hint.split()[0].lower()
+        chunks = [c for c in chunks
+                  if act_kw in c.get('source', '').lower()]
+
+    return chunks[:k]
 
 
 # ── ToC filter ────────────────────────────────────────────────────────────────
