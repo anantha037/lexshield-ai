@@ -76,6 +76,35 @@ Changes in this version:
          5,458-word Punjab Police Academy training manual, not the actual statute.
          BNS statute already in corpus. Handbook adds retrieval noise.
 
+  FIX-11 Word-count-based chunk sizing replaced with token-based sizing.
+         all-MiniLM-L6-v2 has a 256 word-piece max sequence length. Word
+         count is NOT a reliable proxy for token count: legal section
+         numbers, Hindi-transliterated act names, and dot-leader placeholder
+         runs in court forms (BNSS Chapter XXVIII, Constitution schedules,
+         CPC appendices) tokenize at 1.3x-5x the word count. Measured on
+         full corpus (23,740 chunks): 54.21% exceeded 256 tokens under the
+         old 450-word cap; the median chunk (296 tokens) was ALREADY
+         truncated. Truncation cuts the tail of a chunk — for statutes this
+         is systematically the proviso/exception/penalty clause.
+         Fix: (a) collapse 4+ char runs of . _ - into "[BLANK]" in
+         clean_text() — these placeholder runs alone inflate token/word
+         ratio from ~1.3 to 2-5x; (b) split_large_section() replaced by
+         split_by_tokens(), which uses the real MiniLM tokenizer with
+         return_offsets_mapping=True to slice the ORIGINAL CASED text at
+         token boundaries (never calls tokenizer.decode(), which would
+         lowercase everything and lose proper nouns/defined terms);
+         (c) contextual_chunk_document() now computes token budget per
+         section as MAX_SECTION_TOKENS minus the actual token cost of that
+         section's context_text prefix, so long chapter/header prefixes
+         can't silently push a chunk over the model's real limit;
+         (d) wrap_prechunked_records() (Supreme Court judgment ingestion)
+         previously stored each record as ONE chunk with no size limit at
+         all — this was the source of near-100% truncation on judgment_*
+         sources. Now routes through the same split_by_tokens() path.
+         Verified on stratified 500-chunk sample across BNSS/Constitution/
+         CPC/Other: 0.00% truncated post-fix (was 9.84% under a word-based
+         180-word cap, 54.21% under the original 450-word cap).
+
 Statute corpus: 10 categories | 50+ Indian Acts
 File convention: data/raw/statutes/{slug}.pdf
 
@@ -108,10 +137,25 @@ try:
 except ImportError:
     raise ImportError("Run: pip install PyMuPDF")
 
+from transformers import AutoTokenizer
+
 # ── Chunking constants ────────────────────────────────────────────────────────
-MAX_SECTION_WORDS = 450
-OVERLAP_WORDS     = 38
+MAX_SECTION_WORDS = 450   # legacy — no longer used for chunk sizing, kept as
+                          # a reference constant only (see FIX-11)
+OVERLAP_WORDS     = 38    # legacy — superseded by OVERLAP_TOKENS
 MIN_CHUNK_WORDS   = 15
+
+# FIX-11: token-based chunk sizing. MAX_SECTION_TOKENS leaves headroom under
+# MiniLM's 256 word-piece limit for the context_text prefix
+# ("[source | chapter | header]") plus the 2 special tokens ([CLS]/[SEP])
+# added at encode time. Budget is reduced further per-section by the actual
+# token cost of that section's prefix (see contextual_chunk_document()).
+MAX_SECTION_TOKENS = 220
+OVERLAP_TOKENS     = 40
+MIN_SPLIT_BUDGET   = 60   # floor so a pathologically long header can't starve the budget
+
+# Must match the model used in rag/embedder.py (MODEL_NAME = "all-MiniLM-L6-v2")
+_TOKENIZER = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
 
 # ── Regex patterns ────────────────────────────────────────────────────────────
 
@@ -145,6 +189,13 @@ SECTION_PATTERNS: list[re.Pattern] = [
     re.compile(r'^(\d{1,4}-[A-Z]{1,3}\.\s+[A-Z][^\n]{2,100})', re.MULTILINE),        # [6] "80-IA. Deductions..." FIX-7
 ]
 
+# FIX-11: 4+ consecutive dots, underscores, or dashes — dot-leader
+# placeholders in court forms/schedules (e.g. "Dated, this....... day of").
+# Measured: these alone push token/word ratio from ~1.3 to 2-5x. Collapsing
+# to a single token before chunking removes the artificial token inflation
+# without losing the semantic signal that a blank/signature field exists.
+_PLACEHOLDER_RUN_RE = re.compile(r'[._-]{4,}')
+
 # ── Text cleaning ─────────────────────────────────────────────────────────────
 
 def clean_text(text: str) -> str:
@@ -160,6 +211,8 @@ def clean_text(text: str) -> str:
         '', text, flags=re.MULTILINE | re.IGNORECASE,
     )
     text = re.sub(r'\d{1,3}\[([A-Za-z][^\[\]\n]{1,80})\]', r'\1', text)
+    # FIX-11: collapse dot-leader / placeholder runs before whitespace cleanup
+    text = _PLACEHOLDER_RUN_RE.sub(' [BLANK] ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'[ \t]+', ' ', text)
     return text.strip()
@@ -328,22 +381,54 @@ def parse_section_header(header: str) -> tuple[str, str]:
             return num, title
     return "", header
 
-# ── Token-based split for over-long sections ──────────────────────────────────
+# ── Token-based split for over-long sections (FIX-11) ─────────────────────────
 
-def split_large_section(
+def _token_count(text: str) -> int:
+    """Real MiniLM word-piece token count, no special tokens added."""
+    return len(_TOKENIZER.encode(text, add_special_tokens=False, truncation=False))
+
+
+def split_by_tokens(
     text: str,
-    max_words: int = MAX_SECTION_WORDS,
-    overlap:   int = OVERLAP_WORDS,
+    max_tokens: int = MAX_SECTION_TOKENS,
+    overlap_tokens: int = OVERLAP_TOKENS,
 ) -> list[str]:
-    words  = text.split()
+    """
+    Splits text into segments that each fit within max_tokens, measured by
+    the actual MiniLM tokenizer — not word count.
+
+    Uses return_offsets_mapping to slice the ORIGINAL text at character
+    positions corresponding to token boundaries. This preserves original
+    casing and punctuation exactly — critical because MiniLM's tokenizer
+    is uncased, so tok.decode() would silently lowercase everything
+    (act names, defined terms, section headers) if used to reconstruct text.
+    """
+    if not text.strip():
+        return []
+
+    enc = _TOKENIZER(
+        text, add_special_tokens=False, truncation=False,
+        return_offsets_mapping=True,
+    )
+    offsets = enc["offset_mapping"]
+
+    if len(offsets) <= max_tokens:
+        return [text.strip()]
+
     parts: list[str] = []
-    start  = 0
-    while start < len(words):
-        end = min(start + max_words, len(words))
-        parts.append(" ".join(words[start:end]))
-        if end == len(words):
+    start = 0
+    n = len(offsets)
+    while start < n:
+        end = min(start + max_tokens, n)
+        char_start = offsets[start][0]
+        char_end   = offsets[end - 1][1]
+        part = text[char_start:char_end].strip()
+        if part:
+            parts.append(part)
+        if end == n:
             break
-        start = end - overlap
+        # guard against overlap >= max_tokens causing an infinite loop
+        start = max(end - overlap_tokens, start + 1)
     return parts
 
 
@@ -368,7 +453,12 @@ def contextual_chunk_document(
 
     Chunk schema (all fields preserved exactly for downstream compatibility):
       chunk_id, text, context_text, source, doc_type, section,
-      section_title, chapter, chunk_type, word_count, category, era
+      section_title, chapter, chunk_type, word_count, token_count,
+      category, era
+
+    FIX-11: chunk sizing is now token-based (see split_by_tokens()), not
+    word-count-based. token_count is a new informational field; existing
+    consumers (vectorstore.py) ignore unknown metadata keys safely.
     """
     text       = clean_text(text)
     chapters   = find_chapters(text)
@@ -378,16 +468,17 @@ def contextual_chunk_document(
 
     # ── No section markers: fallback token-split ──────────────────────────────
     if not boundaries:
-        words = text.split()
-        i = 0
-        while i < len(words):
-            part = " ".join(words[i : i + MAX_SECTION_WORDS])
+        ctx_prefix    = f"[{source}]\n"
+        prefix_tokens = _token_count(ctx_prefix)
+        budget        = max(MAX_SECTION_TOKENS - prefix_tokens, MIN_SPLIT_BUDGET)
+
+        for part in split_by_tokens(text, max_tokens=budget, overlap_tokens=OVERLAP_TOKENS):
             if len(part.split()) >= MIN_CHUNK_WORDS and not _is_toc_chunk(part):
                 cid = make_chunk_id(source_slug, idx, part)
                 chunks.append({
                     "chunk_id":      cid,
                     "text":          part,
-                    "context_text":  f"[{source}]\n{part}",
+                    "context_text":  ctx_prefix + part,
                     "source":        source,
                     "doc_type":      doc_type,
                     "section":       "",
@@ -395,11 +486,11 @@ def contextual_chunk_document(
                     "chapter":       "",
                     "chunk_type":    "fallback_split",
                     "word_count":    len(part.split()),
+                    "token_count":   _token_count(part),
                     "category":      category,
                     "era":           era,
                 })
                 idx += 1
-            i += MAX_SECTION_WORDS - OVERLAP_WORDS
         return chunks
 
     # ── Build (start, end, header) spans ─────────────────────────────────────
@@ -424,7 +515,14 @@ def contextual_chunk_document(
         chap_name          = chapter_at(sec_start, chapters)
         ctx_prefix         = f"[{source} | {chap_name} | {header}]\n"
 
-        if len(raw.split()) <= MAX_SECTION_WORDS:
+        # FIX-11: budget is reduced by the ACTUAL token cost of this
+        # section's prefix, since prefix length varies with chapter/header
+        # text length — a fixed word-count cap can't account for this.
+        prefix_tokens = _token_count(ctx_prefix)
+        budget        = max(MAX_SECTION_TOKENS - prefix_tokens, MIN_SPLIT_BUDGET)
+        raw_tokens    = _token_count(raw)
+
+        if raw_tokens <= budget:
             cid = make_chunk_id(source_slug, idx, raw)
             chunks.append({
                 "chunk_id":      cid,
@@ -437,12 +535,13 @@ def contextual_chunk_document(
                 "chapter":       chap_name,
                 "chunk_type":    "section",
                 "word_count":    len(raw.split()),
+                "token_count":   raw_tokens,
                 "category":      category,
                 "era":           era,
             })
             idx += 1
         else:
-            for part in split_large_section(raw):
+            for part in split_by_tokens(raw, max_tokens=budget, overlap_tokens=OVERLAP_TOKENS):
                 if len(part.split()) < MIN_CHUNK_WORDS:
                     continue
                 cid = make_chunk_id(source_slug, idx, part)
@@ -457,6 +556,7 @@ def contextual_chunk_document(
                     "chapter":       chap_name,
                     "chunk_type":    "split",
                     "word_count":    len(part.split()),
+                    "token_count":   _token_count(part),
                     "category":      category,
                     "era":           era,
                 })
@@ -992,29 +1092,47 @@ def wrap_prechunked_records(
     max_records: int = 2000,
     start_index: int = 0,
 ) -> list[dict]:
+    """
+    FIX-11: previously stored each record as ONE chunk with no size limit —
+    this was the source of ~100% truncation on judgment_* / SC sources.
+    Now routes each record through the same placeholder-collapse + token-
+    based split path used for statutes.
+    """
     chunks: list[dict] = []
-    idx = start_index
     for i, rec in enumerate(records[:max_records]):
         text   = rec.get("text", rec.get("chunk", ""))
         source = str(rec.get("source", rec.get("case", f"SC_{i}")))[:200]
         if not text or len(text.split()) < MIN_CHUNK_WORDS:
             continue
-        cid = make_chunk_id(f"{slug_prefix}_{i:04d}", 0, text)
-        chunks.append({
-            "chunk_id":      cid,
-            "text":          text,
-            "context_text":  f"[Supreme Court Judgment | {source}]\n{text}",
-            "source":        source,
-            "doc_type":      doc_type,
-            "section":       str(rec.get("section", "")),
-            "section_title": str(rec.get("section_title", "")),
-            "chapter":       "",
-            "chunk_type":    "judgment_segment",
-            "word_count":    len(text.split()),
-            "category":      "judgment",
-            "era":           "",
-        })
-        idx += 1
+
+        text = _PLACEHOLDER_RUN_RE.sub(' [BLANK] ', text)
+
+        ctx_prefix    = f"[Supreme Court Judgment | {source}]\n"
+        prefix_tokens = _token_count(ctx_prefix)
+        budget        = max(MAX_SECTION_TOKENS - prefix_tokens, MIN_SPLIT_BUDGET)
+
+        parts = split_by_tokens(text, max_tokens=budget, overlap_tokens=OVERLAP_TOKENS)
+        multi = len(parts) > 1
+
+        for part_idx, part in enumerate(parts):
+            if len(part.split()) < MIN_CHUNK_WORDS:
+                continue
+            cid = make_chunk_id(f"{slug_prefix}_{i:04d}", part_idx, part)
+            chunks.append({
+                "chunk_id":      cid,
+                "text":          part,
+                "context_text":  ctx_prefix + part,
+                "source":        source,
+                "doc_type":      doc_type,
+                "section":       str(rec.get("section", "")),
+                "section_title": str(rec.get("section_title", "")),
+                "chapter":       "",
+                "chunk_type":    "judgment_segment_split" if multi else "judgment_segment",
+                "word_count":    len(part.split()),
+                "token_count":   _token_count(part),
+                "category":      "judgment",
+                "era":           "",
+            })
     return chunks
 
 

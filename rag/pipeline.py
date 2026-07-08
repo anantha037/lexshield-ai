@@ -59,9 +59,9 @@ from rag.synthesizer       import (
     LegalAnswer,
 )
 
-N_RETRIEVE_PER_QUERY    = 8
-N_RERANKER_INPUT        = 14
-N_FINAL_CONTEXT         = 5
+N_RETRIEVE_PER_QUERY    = 10
+N_RERANKER_INPUT        = 16
+N_FINAL_CONTEXT         = 8
 PAIRED_ACT_MAX_CHUNKS   = 2
 AMBIGUOUS_SECTION_SCORE = 0.88
 

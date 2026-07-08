@@ -72,7 +72,7 @@ GEN_BATCH_SIZE  = 5    # Questions per generation batch
 GEN_BATCH_SLEEP = 25   # Seconds between generation batches
 
 # Number of chunks to retrieve per question for eval
-N_RETRIEVAL = 5
+N_RETRIEVAL = 8
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
