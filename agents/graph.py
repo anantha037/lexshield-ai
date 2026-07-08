@@ -191,6 +191,23 @@ def classify_intent_node(state: AgentState) -> dict:
             "pipeline_depth":  1,
         }
 
+    # ── Priority -1: pre-classified document analysis (upload flow) ────────────
+    # handle_document() in orchestrator.py seeds intent="document_analysis"
+    # with confidence=1.0; handle_query() always seeds intent="".  A pre-set
+    # document_analysis intent therefore uniquely identifies a document
+    # upload — honour it here so an active draft session cannot swallow the
+    # upload as a field answer, and skip redundant re-classification of the
+    # document text.  route_by_intent() has a matching exclusion.
+    if state.get("intent") == "document_analysis" and state.get("confidence", 0.0) >= 1.0:
+        logger.debug("[Graph] classify_intent_node -> pre-set document_analysis (upload) -> passthrough")
+        return {
+            "intent":          "document_analysis",
+            "confidence":      1.0,
+            "source_language": "en",
+            "pipeline_depth":  state.get("pipeline_depth", 0) + 1,
+            "scratchpad":      {},
+        }
+
     # ── Priority 0: active draft session — short-circuit to draft_node ─────────
     _session_id_early = state.get("session_id", "")
     if _session_id_early:
@@ -306,7 +323,8 @@ def route_by_intent(state: AgentState) -> str:
     Conditional edge after classify_intent_node.
 
     Priority:
-      1. Active SQLite draft -> draft_node
+      1. Active draft -> draft_node (except document_analysis — uploads are
+         explicit UI actions and must never be swallowed by an active draft)
       2. Non-English + legal/risk/general intent -> multilingual_node
       3. Intent map -> correct node
     """
@@ -321,8 +339,12 @@ def route_by_intent(state: AgentState) -> str:
         logger.debug("[Graph] route -> _draft_handled -> general_node (response pre-set)")
         return "general_node"
 
-    # Priority 1: active draft
-    if session_id and drafting_agent.has_active_draft(session_id, state.get("query", "")):
+    # Priority 1: active draft (document uploads are exempt — see docstring)
+    if (
+        intent != "document_analysis"
+        and session_id
+        and drafting_agent.has_active_draft(session_id, state.get("query", ""))
+    ):
         logger.debug(f"[Graph] route -> active draft -> draft_node")
         return "draft_node"
 

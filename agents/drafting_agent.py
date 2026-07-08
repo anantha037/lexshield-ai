@@ -92,6 +92,36 @@ _init_drafts_table()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# DRAFT SESSION LIFECYCLE CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# TTL for in-progress draft sessions.  The full flow is 8-11 short questions
+# (typically 5-10 minutes end to end); one hour of inactivity is 6-12x the
+# entire completion time and comfortably covers mid-flow pauses (finding a
+# cheque number, salary slip, address).  Beyond this, has_active_draft()
+# stops treating the draft as active so normal intent classification resumes
+# instead of silently reviving a stale draft.
+DRAFT_TTL_SECONDS = 3600  # 1 hour
+
+# Canonical cancel vocabulary — single source of truth for cancel detection
+# at every draft stage (used by handle()'s universal escape and by
+# _handle_confirm at the CONFIRM stage).
+_CANCEL_WORDS_RE = re.compile(
+    r'\b(cancel|stop|abort|quit|start\s+over|restart|'
+    r'don\'t\s+confirm|do\s+not\s+confirm|discard|'
+    r'never\s*mind|forget\s*it|'
+    r'don\'t\s+draft|do\s+not\s+draft|'
+    r'don\'t\s+generate|do\s+not\s+generate)\b',
+    re.IGNORECASE,
+)
+
+# Cancel commands are short imperatives; long narrative field answers that
+# merely contain a cancel word (e.g. "...the police asked him to stop") must
+# not cancel the draft.
+_CANCEL_MAX_WORDS = 8
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # COMPLAINT CATEGORIES — KEYWORD DETECTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1378,7 +1408,7 @@ class DraftingAgent:
         """Load draft row from DB. Returns None if not found."""
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT stage, category, draft_data FROM drafts WHERE session_id = %s",
+                "SELECT stage, category, draft_data, updated_at FROM drafts WHERE session_id = %s",
                 (session_id,)
             ).fetchone()
         if row is None:
@@ -1387,6 +1417,7 @@ class DraftingAgent:
             "stage":      row["stage"],
             "category":   row["category"],
             "draft_data": json.loads(row["draft_data"]),
+            "updated_at": row["updated_at"],
         }
 
     def _save(self, session_id: str, stage: str, category: str, draft_data: dict) -> None:
@@ -1413,7 +1444,23 @@ class DraftingAgent:
         row = self._load(session_id)
         if row is None:
             return False
-            
+
+        # ── TTL expiry: stale drafts must not hijack the session ──────────────
+        # An in-progress draft idle beyond DRAFT_TTL_SECONDS is abandoned:
+        # delete it and let the message classify normally.  A stale DONE row
+        # is kept (its completed_draft backs /export-pdf) but is no longer
+        # treated as active, so the correction heuristic below cannot fire
+        # for long-finished drafts.
+        updated_at = row.get("updated_at") or 0.0
+        if updated_at and (time.time() - updated_at) > DRAFT_TTL_SECONDS:
+            if row["stage"] != DraftStage.DONE:
+                logger.info(
+                    f"[DraftingAgent] Stale draft (stage={row['stage']}) for "
+                    f"session {session_id[:8]}… exceeded TTL — clearing."
+                )
+                self._delete(session_id)
+            return False
+
         if row["stage"] != DraftStage.DONE:
             return True
             
@@ -1456,6 +1503,31 @@ class DraftingAgent:
             return self._start_draft(session_id, query)
 
         stage = row["stage"]
+
+        # ── Universal cancel escape ────────────────────────────────────────────
+        # Applies to every in-progress stage EXCEPT:
+        #   - CONFIRM: _handle_confirm owns confirm/cancel/correction semantics
+        #   - DONE:    the row must survive for /export-pdf
+        # Word-count guard: only short imperative messages qualify, so long
+        # factual field answers containing a cancel word are still recorded
+        # as answers rather than cancelling the draft.
+        if (
+            stage not in (DraftStage.CONFIRM, DraftStage.DONE)
+            and len(query.split()) <= _CANCEL_MAX_WORDS
+            and _CANCEL_WORDS_RE.search(query)
+        ):
+            self._delete(session_id)
+            logger.info(f"[DraftingAgent] Cancel at stage={stage} for session {session_id[:8]}… — draft cleared.")
+            return {
+                "answer": (
+                    "✅ Draft cancelled. Your draft session has been cleared.\n\n"
+                    "Feel free to start a new draft or ask me anything else."
+                ),
+                "stage":    0,
+                "doc_type": "",
+                "complete": False,
+                "draft":    "",
+            }
 
         # ── New explicit stages ────────────────────────────────────────────────
         if stage == DraftStage.MENU_SHOWN:
@@ -2057,20 +2129,11 @@ class DraftingAgent:
             r'\b(confirm|yes|proceed|generate|draft it|go ahead|ok|okay|yes please)\b',
             query, re.IGNORECASE
         )
-        # Union of the original vocabulary and the broader cancel synonyms
-        # previously defined (unreachably) at graph level for the never-
-        # persisted AWAITING_CONFIRMATION stage.  This is now the single
-        # source of truth for cancel detection at the CONFIRM stage.
-        # NOTE: is_cancel is evaluated before is_confirm below, so phrases
-        # like "don't confirm" cancel rather than confirm.
-        is_cancel = re.search(
-            r'\b(cancel|stop|abort|quit|start\s+over|restart|'
-            r'don\'t\s+confirm|do\s+not\s+confirm|discard|'
-            r'never\s*mind|forget\s*it|'
-            r'don\'t\s+draft|do\s+not\s+draft|'
-            r'don\'t\s+generate|do\s+not\s+generate)\b',
-            query, re.IGNORECASE
-        )
+        # Canonical cancel vocabulary — shared module-level constant
+        # (see _CANCEL_WORDS_RE).  NOTE: is_cancel is evaluated before
+        # is_confirm below, so phrases like "don't confirm" cancel rather
+        # than confirm.
+        is_cancel = _CANCEL_WORDS_RE.search(query)
 
         if is_cancel:
             self._delete(session_id)
