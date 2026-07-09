@@ -97,10 +97,23 @@ _ACT_ABBREVIATIONS = (
     r"|MSMED?\s+Act|LLP\s+Act"
 )
 
+_ACT_FULL_NAMES = (
+    r"Indian Penal Code"
+    r"|Bharatiya Nyaya Sanhita"
+    r"|Code of Criminal Procedure"
+    r"|Bharatiya Nagarik Suraksha Sanhita"
+    r"|Indian Evidence Act"
+    r"|Bharatiya Sakshya Adhiniyam"
+    r"|Code of Civil Procedure"
+)
+
 SECTION_NUMBER_RE = re.compile(
     r'\b[Ss]ections?\s*\.?\s*(\d{1,4}[A-Za-z]?)\b'
     r'|'
-    r'\b(\d{1,4}[A-Za-z]?)\s+(?:' + _ACT_ABBREVIATIONS + r')\b',
+    r'\b(\d{1,4}[A-Za-z]?)\s+(?:' + _ACT_ABBREVIATIONS + r')\b'
+    r'|'
+    r'\b(\d{1,4}[A-Za-z]?)\s+(?:of|under|in)\s+(?:the\s+)?(?:'
+    + _ACT_ABBREVIATIONS + r'|' + _ACT_FULL_NAMES + r')\b',
     re.IGNORECASE,
 )
 
@@ -120,7 +133,7 @@ def extract_sections_and_sources(query: str) -> list[tuple[str, Optional[str]]]:
     pairs: list[tuple[str, Optional[str]]] = []
 
     for m in SECTION_NUMBER_RE.finditer(query):
-        section_number = (m.group(1) or m.group(2) or "").strip().upper()
+        section_number = (m.group(1) or m.group(2) or m.group(3) or "").strip().upper()
         if not section_number:
             continue
 
