@@ -221,17 +221,78 @@ class ActResolver:
 
         return found
 
+    def _resolve_act_nearest(
+        self,
+        query:       str,
+        match_start: int,
+        match_end:   int,
+    ) -> Optional[str]:
+        """
+        Among all act-name occurrences in *query*, return the source_partial
+        of the one whose midpoint is closest to the section-number match
+        (midpoint = (match_start + match_end) / 2).
+
+        This breaks the tie when two distinct act names appear in the same
+        query (e.g. "CrPC Section 102 and BNSS Section 102") and both fall
+        inside the ±window radius — whichever act-name span is textually
+        nearest to the section number wins.
+
+        Returns None when no act name is found at all.
+        """
+        t = query.lower()
+        t_clean = re.sub(r'[^\w\s]', ' ', t)
+        t_clean = re.sub(r'\s+', ' ', t_clean).strip()
+
+        section_mid = (match_start + match_end) / 2.0
+
+        best_source:   Optional[str] = None
+        best_distance: float         = float("inf")
+
+        for phrase, source_partial in _REGISTRY:
+            # Find the phrase in the cleaned lowercase query, then map the
+            # character offset back to the original (offset is stable because
+            # we only collapse spaces / strip punctuation — lengths can differ
+            # slightly, so we search in t_clean but use the index as an
+            # approximation of position in the original query).
+            idx = t_clean.find(phrase)
+            if idx == -1:
+                continue
+            phrase_mid = idx + len(phrase) / 2.0
+            dist = abs(phrase_mid - section_mid)
+            if dist < best_distance:
+                best_distance = dist
+                best_source   = source_partial
+
+        return best_source
+
     def resolve_section_source(
         self,
-        query:         str,
+        query:          str,
         section_number: str,
-        window: int = 120,
+        window:         int = 120,
+        match_start:    Optional[int] = None,
+        match_end:      Optional[int] = None,
     ) -> Optional[str]:
         """
         Resolve source_partial for a specific section reference in query.
 
-        Searches ±window chars around the section number match for act name.
-        Falls back to whole-query search.
+        Priority:
+          1. If caller supplies match_start/match_end (the regex match
+             position from extract_sections_and_sources), use proximity
+             ranking via _resolve_act_nearest() on the local ±window slice.
+             This correctly handles multi-act queries like
+             "CrPC Section 102 and BNSS Section 102".
+          2. Otherwise, locate the section number internally with a regex,
+             scan ±window chars, and fall back to whole-query search.
+
+        Args:
+            query:          Original query string.
+            section_number: Section number string (e.g. "102").
+            window:         Character radius around the match to scan.
+            match_start:    Start offset of the regex match in query
+                            (from m.start() in the caller).
+            match_end:      End offset of the regex match in query
+                            (from m.end() in the caller).
 
         Example:
           query = "Limited Liability Partnership Act section 24"
@@ -239,7 +300,32 @@ class ActResolver:
           -> scans local context -> finds "limited liability partnership act"
           -> returns "Limited Liability Partnership"
         """
-        # Find section number position in query
+        # ── Path 1: caller provided the exact match position ──────────────
+        if match_start is not None and match_end is not None:
+            local_start = max(0, match_start - window)
+            local_end   = min(len(query), match_end + window)
+            local       = query[local_start:local_end]
+
+            # Try local window first — if a single act resolves, done.
+            result = self.resolve_act(local)
+
+            # If the local window contains multiple act mentions the simple
+            # resolve_act() still returns the LONGEST match, which may not
+            # be the closest one.  Use proximity ranking to be sure.
+            if result is not None:
+                result = self._resolve_act_nearest(local, match_start - local_start, match_end - local_start)
+
+            # Whole-query proximity fallback when local window found nothing.
+            if result is None:
+                result = self._resolve_act_nearest(query, match_start, match_end)
+
+            # Last resort: whole-query longest-match.
+            if result is None:
+                result = self.resolve_act(query)
+
+            return result
+
+        # ── Path 2: legacy call without match position ────────────────────
         pattern = re.compile(
             r'\b[Ss]ections?\s*\.?\s*' + re.escape(section_number) + r'\b'
             r'|'

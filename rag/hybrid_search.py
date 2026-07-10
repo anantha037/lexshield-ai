@@ -137,8 +137,10 @@ def extract_sections_and_sources(query: str) -> list[tuple[str, Optional[str]]]:
         if not section_number:
             continue
 
-        # Priority 1: act_resolver (longest-match-first)
-        source_hint = act_resolver.resolve_section_source(query, section_number)
+        # Priority 1: act_resolver (proximity-first when match position known)
+        source_hint = act_resolver.resolve_section_source(
+            query, section_number, match_start=m.start(), match_end=m.end()
+        )
 
         # Priority 2: SOURCE_KEYWORDS fallback (scan ±80 chars)
         if source_hint is None:
