@@ -113,7 +113,9 @@ SECTION_NUMBER_RE = re.compile(
     r'\b(\d{1,4}[A-Za-z]?)\s+(?:' + _ACT_ABBREVIATIONS + r')\b'
     r'|'
     r'\b(\d{1,4}[A-Za-z]?)\s+(?:of|under|in)\s+(?:the\s+)?(?:'
-    + _ACT_ABBREVIATIONS + r'|' + _ACT_FULL_NAMES + r')\b',
+    + _ACT_ABBREVIATIONS + r'|' + _ACT_FULL_NAMES + r')\b'
+    r'|'
+    r'\b(?:' + _ACT_ABBREVIATIONS + r'|' + _ACT_FULL_NAMES + r')\s+(?:[Ss]ections?\s*\.?\s*)?(\d{1,3}[A-Za-z]?)\b',
     re.IGNORECASE,
 )
 
@@ -133,7 +135,7 @@ def extract_sections_and_sources(query: str) -> list[tuple[str, Optional[str]]]:
     pairs: list[tuple[str, Optional[str]]] = []
 
     for m in SECTION_NUMBER_RE.finditer(query):
-        section_number = (m.group(1) or m.group(2) or m.group(3) or "").strip().upper()
+        section_number = (m.group(1) or m.group(2) or m.group(3) or m.group(4) or "").strip().upper()
         if not section_number:
             continue
 
