@@ -150,6 +150,23 @@ def _has_paired_context(chunks: list[dict]) -> bool:
     return has_legacy and has_current
 
 
+def _order_chunks_for_synthesis(chunks: list[dict]) -> list[dict]:
+    """
+    When paired era context is present (both legacy and current-era
+    chunks), reorder so legacy-era chunks come first. This keeps SOURCE
+    numbering — and therefore citation numbering, since build_citations()
+    must use this same ordering — consistent with the "old law first,
+    new law second" narrative PAIRED_ACT_SYSTEM_PROMPT requires,
+    regardless of which act the user mentioned first in their query.
+    Stable sort: relative order within each era group is preserved.
+    No-op when paired context isn't present.
+    """
+    if not _has_paired_context(chunks):
+        return chunks
+    era_rank = {"legacy": 0}
+    return sorted(chunks, key=lambda c: era_rank.get(c.get("era", ""), 1))
+
+
 def get_system_prompt(chunks: list[dict]) -> str:
     """Returns the appropriate system prompt based on chunk era composition."""
     return PAIRED_ACT_SYSTEM_PROMPT if _has_paired_context(chunks) else SYNTHESIS_SYSTEM_PROMPT
@@ -163,6 +180,7 @@ def build_synthesis_prompt(query: str, chunks: list[dict], intent: str = "legal_
     When paired act chunks are present, injects an era context note
     before the sources block so the LLM knows what it's looking at.
     """
+    chunks = _order_chunks_for_synthesis(chunks)
     logger.debug("[DIAGNOSE] SYNTHESIS TRIGGERED")
     # Era context note — only injected when paired chunks are present
     era_note = ""
@@ -260,6 +278,7 @@ def build_synthesis_prompt(query: str, chunks: list[dict], intent: str = "legal_
 # ── Citation builder ──────────────────────────────────────────────────────────
 
 def build_citations(chunks: list[dict]) -> list[Citation]:
+    chunks = _order_chunks_for_synthesis(chunks)
     citations: list[Citation] = []
     for i, chunk in enumerate(chunks, start=1):
         score = (
