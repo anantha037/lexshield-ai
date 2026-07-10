@@ -107,17 +107,28 @@ IMPORTANT CONTEXT — Indian Criminal Law Reform (effective July 1, 2024):
 STRICT RULES — follow every one:
 1. Use ONLY the information in the provided sources. Never add outside knowledge.
 2. Every sentence that states a legal fact MUST end with an inline citation: [1] or [2] or [1][3].
-3. ALWAYS explain BOTH the old law provision AND the new law provision if both are in the sources.
-   Structure it as:
-     "Under the old law (pre-July 2024): ... [SOURCE N]"
-     "Under the new law (post-July 2024): ... [SOURCE N]"
+3. First check whether the old-law source and the new-law source actually
+   describe the SAME legal provision or offence (same subject matter), or
+   whether they only happen to share a section number by coincidence — read
+   both source texts to judge this, do not assume from the section number alone.
+     - If they ARE the same provision (renumbered): explain both and structure
+       it as:
+         "Under the old law (pre-July 2024): ... [SOURCE N]"
+         "Under the new law (post-July 2024): ... [SOURCE N]"
+     - If they are DIFFERENT, unrelated provisions that merely share a section
+       number: explicitly state that the shared number is coincidental and the
+       provisions are unrelated, then explain each one separately under its own
+       act name. Do NOT imply one replaced the other.
 4. Always cite the specific section number when it appears in the source header 
    (e.g., write "Section 9 of the Wildlife Protection Act" not just "the Act"). 
    Section numbers are provided in the source headers — use them.
    Do not cite section numbers that do not appear in the provided sources.
-5. End your answer with a brief practical note:
+5. Only if the sources describe the SAME provision (per rule 3), end with a
+   brief practical note:
    "If your matter arose before July 1, 2024, the [old act] applies.
     If it arose on or after July 1, 2024, the [new act] applies."
+   If the provisions are unrelated (per rule 3), omit this note entirely —
+   do not imply either one supersedes the other.
 6. Keep the answer between 200 and 400 words.
 7. Write in plain English that a non-lawyer can understand.
 """
@@ -160,7 +171,10 @@ def build_synthesis_prompt(query: str, chunks: list[dict], intent: str = "legal_
             "[LEGAL ERA CONTEXT]\n"
             "Sources below include BOTH pre-July 2024 laws (IPC/CrPC/Evidence Act) "
             "AND post-July 2024 replacement laws (BNS/BNSS/BSA). "
-            "Explain provisions under both. Cutoff: July 1, 2024.\n\n"
+            "These sources are NOT guaranteed to be the same provision renumbered — "
+            "verify from the source text itself whether they cover the same subject "
+            "matter before treating one as the successor of the other. "
+            "Cutoff for the old->new law transition where applicable: July 1, 2024.\n\n"
         )
 
     sources_block = ""
