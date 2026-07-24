@@ -27,6 +27,15 @@ Week 3 additions (wired in this version):
   All previous logic (FIX-9 ambiguous candidates, section fast-path,
   act_resolver, dual search, soft-pinned paired act, KG injection,
   section safety fallback) retained unchanged.
+
+  Section-equivalence lookup (rag/section_equivalence.py)
+     Fires before complexity routing on any query that is_equivalence_query()
+     flags (e.g. "what is the BNS equivalent of IPC 302"). On a match, a
+     synthetic high-confidence "_kg_equivalence_context" chunk is prepended
+     to pinned_chunks. This chunk ALONE must never satisfy the "simple path"
+     fast-exit (see real_hits_found below) and must never disable the CRAG
+     cross-act safety net (see run_crag below) — it augments retrieval, it
+     does not replace it.
 """
 
 import os
@@ -357,7 +366,7 @@ class RAGPipeline:
             "Suggest they consult a qualified legal professional.\n"
             "Do not cite any law or section number. Do not use structured headers. Just write the message."
         )
-        
+
         try:
             raw_answer = llm.generate(
                 prompt=fallback_prompt,
@@ -371,11 +380,11 @@ class RAGPipeline:
                 "I couldn't find specific legal provisions in my corpus that directly address this query. "
                 "You may want to consult a qualified legal professional for advice specific to your situation."
             )
-            
+
         rt = get_current_run_tree()
         if rt:
             rt.add_metadata({"fallback": True, "crag_action": "insufficient"})
-            
+
         return LegalAnswer(
             answer_text=raw_answer.strip(),
             citations=[],
@@ -402,17 +411,17 @@ class RAGPipeline:
         """
         if not chunks:
             return False
-        
+
         if all(c.get("retrieval_source") in ("metadata", "section_candidate") for c in chunks[:3]):
             return True
 
         import numpy as np
         query_embedding = embedder.embed_single(query)
-        
+
         for chunk in chunks[:5]:  # only check top 5 for speed
             chunk_text = chunk.get("text", "") if isinstance(chunk, dict) else (chunk.page_content if hasattr(chunk, "page_content") else str(chunk))
             chunk_embedding = embedder.embed_single(chunk_text)
-            
+
             # cosine similarity
             similarity = np.dot(query_embedding, chunk_embedding) / (
                 np.linalg.norm(query_embedding) * np.linalg.norm(chunk_embedding) + 1e-9
@@ -420,7 +429,7 @@ class RAGPipeline:
             logger.debug(f"[Pipeline] Relevance Gate - Chunk: {chunk.get('source', '')[:20]} | Sim: {similarity:.3f}")
             if similarity >= threshold:
                 return True
-        
+
         return False
 
     @traceable(name="rag_pipeline.query", run_type="chain")
@@ -450,7 +459,7 @@ class RAGPipeline:
         context_block:   str = "",
     ) -> LegalAnswer:
 
-        # Extract acts/sections ONLY from the latest user_query to avoid hard-pinning 
+        # Extract acts/sections ONLY from the latest user_query to avoid hard-pinning
         # chunks based on the assistant's previous answers in the context block.
         latest_expanded = preprocess_query(user_query)
 
@@ -470,6 +479,42 @@ class RAGPipeline:
         # For synthesis and deep rewriting, we can optionally use the full context
         full_query = f"{context_block}\n\n{user_query}" if context_block else user_query
         expanded = preprocess_query(full_query)
+
+        # ── Equivalence Graph lookup (new logic) ───────────────────────────────
+        # NOTE: eq_chunks (if populated) is a SYNTHETIC system-note chunk, not
+        # a real retrieved chunk. It must never, on its own, be treated as
+        # sufficient grounding — see real_hits_found below (controls the
+        # simple-path fast-exit) and run_crag below (controls the CRAG
+        # cross-act safety net). Both must key off real retrieval, not off
+        # pinned_chunks' raw truthiness, or this synthetic note can silently
+        # bypass both grounding checks.
+        from rag.section_equivalence import is_equivalence_query, lookup_equivalent, source_hint_to_act_name
+        is_eq, eq_pairs = is_equivalence_query(latest_expanded)
+        eq_chunks: list[dict] = []
+        if is_eq:
+            if not eq_pairs:
+                for sec_num, hint in extract_sections_and_sources(latest_expanded):
+                    act_name = source_hint_to_act_name(hint, latest_expanded.lower())
+                    if act_name:
+                        eq_pairs.append((act_name, sec_num))
+
+            found_equivs = []
+            for act, sec in list(dict.fromkeys(eq_pairs)):
+                res = lookup_equivalent(act, sec)
+                if res:
+                    status_str = "" if res["status"] == "verified" else " [STATUS: UNVERIFIED]"
+                    found_equivs.append(
+                        f"{res['source']['act']} {res['source']['section']} corresponds to {res['target']['act']} {res['target']['section']}{status_str}"
+                    )
+
+            if found_equivs:
+                eq_chunks.append({
+                    "chunk_id": "_kg_equivalence_context",
+                    "text": "SYSTEM NOTE: Known legal equivalences for this query:\n" + "\n".join(f"- {eq}" for eq in list(dict.fromkeys(found_equivs))),
+                    "source": "System", "section": "", "section_title": "", "chapter": "",
+                    "doc_type": "system", "chunk_type": "context", "category": "", "era": "",
+                    "hybrid_score": 2.0, "retrieval_source": "system",
+                })
 
         # ── STEP 0: Adaptive complexity routing ────────────────────────────────
         complexity = classify_query_complexity(latest_expanded)
@@ -493,7 +538,7 @@ class RAGPipeline:
                 logger.info(f"[Pipeline] Auto-category LOW: conf={auto_confidence:.2f} -> global")
 
         # ── Section fast-path (always runs — priority 1 in all complexity tiers)
-        pinned_chunks:      list[dict] = []
+        pinned_chunks:      list[dict] = eq_chunks.copy()
         section_candidates: list[dict] = []
 
         logger.info(f"[DEBUG] extract_sections input='{latest_expanded}'")
@@ -524,9 +569,18 @@ class RAGPipeline:
             if not (c["chunk_id"] in _seen or _seen.add(c["chunk_id"]))  # type: ignore[func-returns-value]
         ]
 
+        # real_hits_found is True only when the section fast-path pinned at
+        # least one REAL retrieved chunk beyond the synthetic eq_chunks note.
+        # This (not raw pinned_chunks truthiness) gates both the simple-path
+        # fast-exit below and the CRAG safety net further down, so a bare
+        # equivalence match with no real chunk can never skip grounding.
+        real_hits_found = len(pinned_chunks) > len(eq_chunks)
+
         # ── SIMPLE path: section fast-path is sufficient, skip heavy retrieval ─
-        # Only use simple path when fast-path actually found pinned chunks.
-        if complexity == "simple" and pinned_chunks:
+        # Only use simple path when fast-path actually found REAL pinned chunks
+        # (real_hits_found) — a synthetic equivalence note alone must not
+        # short-circuit into this fast, low-grounding branch.
+        if complexity == "simple" and real_hits_found:
             logger.info("[Pipeline] simple path — using section fast-path only")
             # Still inject KG context and paired act if available
             if KG_INJECTION_ENABLED:
@@ -712,18 +766,24 @@ class RAGPipeline:
         crag_fallback  = False   # set True when CRAG scores insufficient
 
         # Extra safety net: even when complexity is "simple", if the
-        # section fast-path did not fire (no pinned_chunks) AND an act was
-        # identified for this query (single-act hint or a paired-act
-        # relationship), still run CRAG. This catches cross-act
+        # section fast-path did not find any REAL chunk (real_hits_found is
+        # False — this is deliberately NOT "not pinned_chunks", since
+        # pinned_chunks may hold nothing but a synthetic equivalence note)
+        # AND an act was identified for this query (single-act hint or a
+        # paired-act relationship), still run CRAG. This catches cross-act
         # contamination for act-specific queries without a section number
         # (e.g. "what is the equivalent in BNS?"), without adding a CRAG
         # call for purely conceptual simple queries that name no act at
-        # all (e.g. "define bail", "what is FIR").
+        # all (e.g. "define bail", "what is FIR"). Equivalence queries are
+        # exactly the case most prone to cross-act contamination (their
+        # embeddings sit close to both the legacy and current act's text),
+        # so this must not be silently disabled by the presence of the
+        # synthetic eq_chunks note.
         run_crag = (
             complexity in ("moderate", "complex")
             or (
                 complexity == "simple"
-                and not pinned_chunks
+                and not real_hits_found
                 and (original_act_hint or paired_source)
             )
         )

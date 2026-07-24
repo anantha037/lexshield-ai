@@ -65,7 +65,7 @@ CRITICAL RULES FOR SCORING:
    DIFFERENT act with the same section number, score 1 (insufficient). Do not confuse them.
 
 3. IPC and BNS are paired equivalents (IPC replaced by BNS 2024).
-   If query asks about IPC 302 (murder) and chunks contain BNS 101 (murder equivalent), this IS
+   If query asks about IPC 302 (murder) and chunks contain BNS 103 (murder equivalent), this IS
    relevant — score 4-5.
    If query asks about BNS 302 (religious insult) and chunks contain IPC 302 (murder), this is
    NOT relevant — score 1.

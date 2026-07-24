@@ -1,0 +1,987 @@
+{
+  "IPC_34": {
+    "label": "IPC Section 34 — Acts done by several persons in furtherance of common intention",
+    "bns_equiv": "BNS_3_5",
+    "related": ["IPC_120B", "IPC_149", "IPC_107"],
+    "parent_act": "IPC",
+    "category": "general_provisions",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNS_3_5": {
+    "label": "BNS Section 3(5) — Acts done by several persons in furtherance of common intention",
+    "bns_equiv": "IPC_34",
+    "related": ["BNS_61", "BNS_48"],
+    "parent_act": "BNS",
+    "category": "general_provisions",
+    "era": "current",
+    "risk": "high"
+  },
+  "IPC_107": {
+    "label": "IPC Section 107 — Abetment of a thing",
+    "bns_equiv": "BNS_45",
+    "related": ["IPC_34", "IPC_120B", "IPC_109"],
+    "parent_act": "IPC",
+    "category": "abetment",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNS_45": {
+    "label": "BNS Section 45 — Abetment of a thing",
+    "bns_equiv": "IPC_107",
+    "related": ["BNS_3_5", "BNS_61"],
+    "parent_act": "BNS",
+    "category": "abetment",
+    "era": "current",
+    "risk": "high"
+  },
+  "IPC_120B": {
+    "label": "IPC Section 120B — Punishment of criminal conspiracy",
+    "bns_equiv": "BNS_61",
+    "related": ["IPC_34", "IPC_107", "IPC_120A"],
+    "parent_act": "IPC",
+    "category": "conspiracy",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_61": {
+    "label": "BNS Section 61 — Punishment for criminal conspiracy",
+    "bns_equiv": "IPC_120B",
+    "related": ["BNS_3_5", "BNS_45"],
+    "parent_act": "BNS",
+    "category": "conspiracy",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_299": {
+    "label": "IPC Section 299 — Culpable homicide",
+    "bns_equiv": "BNS_99",
+    "related": ["IPC_300", "IPC_302", "IPC_304", "IPC_304A", "IPC_304B"],
+    "parent_act": "IPC",
+    "category": "homicide",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_99": {
+    "label": "BNS Section 99 — Culpable homicide",
+    "bns_equiv": "IPC_299",
+    "related": ["BNS_100", "BNS_101", "BNS_105", "BNS_106"],
+    "parent_act": "BNS",
+    "category": "homicide",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_300": {
+    "label": "IPC Section 300 — Murder (definition and exceptions)",
+    "bns_equiv": "BNS_100",
+    "related": ["IPC_299", "IPC_302", "IPC_304"],
+    "parent_act": "IPC",
+    "category": "homicide",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_100": {
+    "label": "BNS Section 100 — Murder (definition and exceptions)",
+    "bns_equiv": "IPC_300",
+    "related": ["BNS_99", "BNS_101", "BNS_105"],
+    "parent_act": "BNS",
+    "category": "homicide",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_302": {
+    "label": "IPC Section 302 — Punishment for murder",
+    "bns_equiv": "BNS_103",
+    "equiv_status": "verified",
+    "related": ["IPC_300", "IPC_304", "IPC_307", "IPC_299"],
+    "parent_act": "IPC",
+    "category": "homicide",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_101": {
+    "label": null,
+    "equiv_status": "unverified_label",
+    "bns_equiv": null,
+    "related": ["BNS_100", "BNS_105", "BNS_109"],
+    "parent_act": "BNS",
+    "category": "homicide",
+    "era": "current",
+    "risk": "critical"
+  },
+  "BNS_103": {
+    "label": "BNS Section 103 — Punishment for murder",
+    "bns_equiv": "IPC_302",
+    "equiv_status": "verified",
+    "related": ["BNS_100", "BNS_105", "BNS_109"],
+    "parent_act": "BNS",
+    "category": "homicide",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_304": {
+    "label": "IPC Section 304 — Punishment for culpable homicide not amounting to murder",
+    "bns_equiv": "BNS_105",
+    "related": ["IPC_299", "IPC_300", "IPC_302", "IPC_304A", "IPC_304B"],
+    "parent_act": "IPC",
+    "category": "homicide",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_105": {
+    "label": "BNS Section 105 — Punishment for culpable homicide not amounting to murder",
+    "bns_equiv": "IPC_304",
+    "related": ["BNS_99", "BNS_100", "BNS_101", "BNS_106"],
+    "parent_act": "BNS",
+    "category": "homicide",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_304A": {
+    "label": "IPC Section 304A — Causing death by negligence",
+    "bns_equiv": "BNS_106",
+    "related": ["IPC_299", "IPC_304", "IPC_338"],
+    "parent_act": "IPC",
+    "category": "homicide",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNS_106": {
+    "label": "BNS Section 106 — Causing death by negligence",
+    "bns_equiv": "IPC_304A",
+    "related": ["BNS_99", "BNS_105"],
+    "parent_act": "BNS",
+    "category": "homicide",
+    "era": "current",
+    "risk": "high"
+  },
+  "IPC_304B": {
+    "label": "IPC Section 304B — Dowry death",
+    "bns_equiv": "BNS_80",
+    "equiv_status": "verified",
+    "related": ["IPC_498A", "IPC_302", "IPC_306", "IPC_304"],
+    "parent_act": "IPC",
+    "category": "domestic_violence",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_80": {
+    "label": "BNS Section 80 — Dowry death",
+    "bns_equiv": "IPC_304B",
+    "related": ["BNS_85", "BNS_101"],
+    "parent_act": "BNS",
+    "category": "domestic_violence",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_307": {
+    "label": "IPC Section 307 — Attempt to murder",
+    "bns_equiv": "BNS_109",
+    "related": ["IPC_302", "IPC_308", "IPC_300"],
+    "parent_act": "IPC",
+    "category": "homicide",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_109": {
+    "label": "BNS Section 109 — Attempt to murder",
+    "bns_equiv": "IPC_307",
+    "related": ["BNS_103", "BNS_110"],
+    "parent_act": "BNS",
+    "category": "homicide",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_308": {
+    "label": "IPC Section 308 — Attempt to commit culpable homicide",
+    "bns_equiv": "BNS_110",
+    "related": ["IPC_307", "IPC_304"],
+    "parent_act": "IPC",
+    "category": "homicide",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_110": {
+    "label": "BNS Section 110 — Attempt to commit culpable homicide",
+    "bns_equiv": "IPC_308",
+    "related": ["BNS_109", "BNS_105"],
+    "parent_act": "BNS",
+    "category": "homicide",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_354": {
+    "label": "IPC Section 354 — Assault or criminal force to woman with intent to outrage modesty",
+    "bns_equiv": "BNS_74",
+    "related": ["IPC_354A", "IPC_354B", "IPC_354C", "IPC_354D", "IPC_376"],
+    "parent_act": "IPC",
+    "category": "sexual_offences",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_74": {
+    "label": "BNS Section 74 — Assault or use of criminal force to woman with intent to outrage modesty",
+    "bns_equiv": "IPC_354",
+    "related": ["BNS_75", "BNS_63", "BNS_79"],
+    "parent_act": "BNS",
+    "category": "sexual_offences",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_354A": {
+    "label": "IPC Section 354A — Sexual harassment",
+    "bns_equiv": "BNS_75",
+    "related": ["IPC_354", "IPC_376"],
+    "parent_act": "IPC",
+    "category": "sexual_offences",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_75": {
+    "label": "BNS Section 75 — Sexual harassment",
+    "bns_equiv": "IPC_354A",
+    "related": ["BNS_74", "BNS_63"],
+    "parent_act": "BNS",
+    "category": "sexual_offences",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_375": {
+    "label": "IPC Section 375 — Rape (definition)",
+    "bns_equiv": "BNS_63",
+    "related": ["IPC_376", "IPC_376A", "IPC_376B", "IPC_376C", "IPC_376D", "IPC_354"],
+    "parent_act": "IPC",
+    "category": "sexual_offences",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "IPC_376": {
+    "label": "IPC Section 376 — Punishment for rape",
+    "bns_equiv": "BNS_63",
+    "related": ["IPC_375", "IPC_376A", "IPC_376B", "IPC_376C", "IPC_376D", "IPC_354"],
+    "parent_act": "IPC",
+    "category": "sexual_offences",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_63": {
+    "label": "BNS Section 63 — Rape (definition and punishment)",
+    "bns_equiv": "IPC_376",
+    "related": ["BNS_64", "BNS_65", "BNS_66", "BNS_74"],
+    "parent_act": "BNS",
+    "category": "sexual_offences",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_378": {
+    "label": "IPC Section 378 — Theft (definition)",
+    "bns_equiv": "BNS_302",
+    "related": ["IPC_379", "IPC_380", "IPC_381", "IPC_382", "IPC_390"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNS_302": {
+    "label": "BNS Section 302 — Theft (definition)",
+    "bns_equiv": "IPC_378",
+    "related": ["BNS_303", "BNS_304", "BNS_305", "BNS_308"],
+    "parent_act": "BNS",
+    "category": "theft_property",
+    "era": "current",
+    "risk": "high"
+  },
+  "IPC_379": {
+    "label": "IPC Section 379 — Punishment for theft",
+    "bns_equiv": "BNS_303",
+    "related": ["IPC_378", "IPC_380", "IPC_381", "IPC_382"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNS_303": {
+    "label": "BNS Section 303 — Punishment for theft",
+    "bns_equiv": "IPC_379",
+    "related": ["BNS_302", "BNS_305", "BNS_306"],
+    "parent_act": "BNS",
+    "category": "theft_property",
+    "era": "current",
+    "risk": "high"
+  },
+  "IPC_380": {
+    "label": "IPC Section 380 — Theft in dwelling house",
+    "bns_equiv": "BNS_305",
+    "related": ["IPC_378", "IPC_379", "IPC_381"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNS_305": {
+    "label": "BNS Section 305 — Theft in dwelling house, etc.",
+    "bns_equiv": "IPC_380",
+    "related": ["BNS_302", "BNS_303", "BNS_306"],
+    "parent_act": "BNS",
+    "category": "theft_property",
+    "era": "current",
+    "risk": "high"
+  },
+  "IPC_381": {
+    "label": "IPC Section 381 — Theft by clerk or servant",
+    "bns_equiv": "BNS_304",
+    "related": ["IPC_378", "IPC_379", "IPC_405", "IPC_406"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_382": {
+    "label": "IPC Section 382 — Theft after preparation for causing death or hurt",
+    "bns_equiv": "BNS_306",
+    "related": ["IPC_378", "IPC_379", "IPC_390"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "IPC_383": {
+    "label": "IPC Section 383 — Extortion (definition)",
+    "bns_equiv": "BNS_308",
+    "related": ["IPC_384", "IPC_385", "IPC_390"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_384": {
+    "label": "IPC Section 384 — Punishment for extortion",
+    "bns_equiv": "BNS_308",
+    "related": ["IPC_383", "IPC_385", "IPC_386"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_385": {
+    "label": "IPC Section 385 — Putting person in fear of injury in order to commit extortion",
+    "bns_equiv": "BNS_308",
+    "related": ["IPC_383", "IPC_384"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_390": {
+    "label": "IPC Section 390 — Robbery (definition)",
+    "bns_equiv": "BNS_308",
+    "related": ["IPC_378", "IPC_392", "IPC_395"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "IPC_392": {
+    "label": "IPC Section 392 — Punishment for robbery",
+    "bns_equiv": "BNS_309",
+    "related": ["IPC_390", "IPC_395", "IPC_394"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_309": {
+    "label": "BNS Section 309 — Punishment for robbery",
+    "bns_equiv": "IPC_392",
+    "related": ["BNS_308", "BNS_310"],
+    "parent_act": "BNS",
+    "category": "theft_property",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_395": {
+    "label": "IPC Section 395 — Punishment for dacoity",
+    "bns_equiv": "BNS_310",
+    "related": ["IPC_390", "IPC_392", "IPC_397"],
+    "parent_act": "IPC",
+    "category": "theft_property",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_310": {
+    "label": "BNS Section 310 — Punishment for dacoity",
+    "bns_equiv": "IPC_395",
+    "related": ["BNS_309", "BNS_311"],
+    "parent_act": "BNS",
+    "category": "theft_property",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_403": {
+    "label": "IPC Section 403 — Dishonest misappropriation of property",
+    "bns_equiv": "BNS_314",
+    "related": ["IPC_405", "IPC_406", "IPC_420"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_405": {
+    "label": "IPC Section 405 — Criminal breach of trust (definition)",
+    "bns_equiv": "BNS_316",
+    "related": ["IPC_406", "IPC_407", "IPC_408", "IPC_409", "IPC_403"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_406": {
+    "label": "IPC Section 406 — Punishment for criminal breach of trust",
+    "bns_equiv": "BNS_316",
+    "related": ["IPC_405", "IPC_409", "IPC_403", "IPC_498A"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNS_316": {
+    "label": "BNS Section 316 — Punishment for criminal breach of trust",
+    "bns_equiv": "IPC_406",
+    "related": ["BNS_314", "BNS_318"],
+    "parent_act": "BNS",
+    "category": "fraud_cheating",
+    "era": "current",
+    "risk": "high"
+  },
+  "IPC_415": {
+    "label": "IPC Section 415 — Cheating (definition)",
+    "bns_equiv": "BNS_318",
+    "related": ["IPC_417", "IPC_418", "IPC_419", "IPC_420"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_416": {
+    "label": "IPC Section 416 — Cheating by personation",
+    "bns_equiv": "BNS_319",
+    "related": ["IPC_415", "IPC_417", "IPC_420"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_417": {
+    "label": "IPC Section 417 — Punishment for cheating",
+    "bns_equiv": "BNS_318",
+    "related": ["IPC_415", "IPC_418", "IPC_420"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_418": {
+    "label": "IPC Section 418 — Cheating with knowledge that wrongful loss may ensue",
+    "bns_equiv": "BNS_318",
+    "related": ["IPC_415", "IPC_417", "IPC_420"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_419": {
+    "label": "IPC Section 419 — Punishment for cheating by personation",
+    "bns_equiv": "BNS_319",
+    "related": ["IPC_415", "IPC_416", "IPC_420"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_420": {
+    "label": "IPC Section 420 — Cheating and dishonestly inducing delivery of property",
+    "bns_equiv": "BNS_318",
+    "related": ["IPC_415", "IPC_417", "IPC_406", "IPC_471"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "IPC_421": {
+    "label": "IPC Section 421 — Dishonest or fraudulent removal or concealment of property",
+    "bns_equiv": "BNS_322",
+    "related": ["IPC_420", "IPC_422", "IPC_423"],
+    "parent_act": "IPC",
+    "category": "fraud_cheating",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNS_318": {
+    "label": "BNS Section 318 — Cheating (definition and punishment)",
+    "bns_equiv": "IPC_420",
+    "related": ["BNS_316", "BNS_319", "BNS_322"],
+    "parent_act": "BNS",
+    "category": "fraud_cheating",
+    "era": "current",
+    "risk": "high"
+  },
+  "IPC_498A": {
+    "label": "IPC Section 498A — Husband or relative of husband of a woman subjecting her to cruelty",
+    "bns_equiv": "BNS_85",
+    "related": ["IPC_304B", "IPC_406", "IPC_306", "IPC_494"],
+    "parent_act": "IPC",
+    "category": "domestic_violence",
+    "era": "legacy",
+    "risk": "critical"
+  },
+  "BNS_85": {
+    "label": "BNS Section 85 — Husband or relative of husband subjecting woman to cruelty",
+    "bns_equiv": "IPC_498A",
+    "related": ["BNS_80", "BNS_316", "BNS_86"],
+    "parent_act": "BNS",
+    "category": "domestic_violence",
+    "era": "current",
+    "risk": "critical"
+  },
+  "IPC_503": {
+    "label": "IPC Section 503 — Criminal intimidation (definition)",
+    "bns_equiv": "BNS_351",
+    "related": ["IPC_506", "IPC_507"],
+    "parent_act": "IPC",
+    "category": "intimidation",
+    "era": "legacy",
+    "risk": "medium"
+  },
+  "IPC_506": {
+    "label": "IPC Section 506 — Punishment for criminal intimidation",
+    "bns_equiv": "BNS_351",
+    "related": ["IPC_503", "IPC_507", "IPC_504"],
+    "parent_act": "IPC",
+    "category": "intimidation",
+    "era": "legacy",
+    "risk": "medium"
+  },
+  "BNS_351": {
+    "label": "BNS Section 351 — Criminal intimidation",
+    "bns_equiv": "IPC_506",
+    "related": ["BNS_352", "BNS_353"],
+    "parent_act": "BNS",
+    "category": "intimidation",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CrPC_154": {
+    "label": "CrPC Section 154 — Information in cognizable cases (FIR)",
+    "bns_equiv": "BNSS_173",
+    "related": ["CrPC_156", "CrPC_157", "CrPC_161", "CrPC_173"],
+    "parent_act": "CrPC",
+    "category": "criminal_procedure",
+    "era": "legacy",
+    "risk": "medium"
+  },
+  "BNSS_173": {
+    "label": "BNSS Section 173 — Information in cognizable cases (FIR under new code)",
+    "bns_equiv": "CrPC_154",
+    "related": ["BNSS_175", "BNSS_180", "BNSS_193"],
+    "parent_act": "BNSS",
+    "category": "criminal_procedure",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CrPC_161": {
+    "label": "CrPC Section 161 — Examination of witnesses by police",
+    "bns_equiv": "BNSS_180",
+    "related": ["CrPC_154", "CrPC_162", "CrPC_164"],
+    "parent_act": "CrPC",
+    "category": "criminal_procedure",
+    "era": "legacy",
+    "risk": "medium"
+  },
+  "BNSS_180": {
+    "label": "BNSS Section 180 — Examination of witnesses by police",
+    "bns_equiv": "CrPC_161",
+    "related": ["BNSS_173", "BNSS_183"],
+    "parent_act": "BNSS",
+    "category": "criminal_procedure",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CrPC_164": {
+    "label": "CrPC Section 164 — Recording of confessions and statements",
+    "bns_equiv": "BNSS_183",
+    "related": ["CrPC_161", "CrPC_162"],
+    "parent_act": "CrPC",
+    "category": "criminal_procedure",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNSS_183": {
+    "label": "BNSS Section 183 — Recording of confessions and statements",
+    "bns_equiv": "CrPC_164",
+    "related": ["BNSS_180", "BNSS_187"],
+    "parent_act": "BNSS",
+    "category": "criminal_procedure",
+    "era": "current",
+    "risk": "high"
+  },
+  "CrPC_167": {
+    "label": "CrPC Section 167 — Procedure when investigation cannot be completed in twenty-four hours",
+    "bns_equiv": "BNSS_187",
+    "related": ["CrPC_154", "CrPC_173", "CrPC_437"],
+    "parent_act": "CrPC",
+    "category": "criminal_procedure",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNSS_187": {
+    "label": "BNSS Section 187 — Procedure when investigation cannot be completed in 24 hours",
+    "bns_equiv": "CrPC_167",
+    "related": ["BNSS_173", "BNSS_193", "BNSS_480"],
+    "parent_act": "BNSS",
+    "category": "criminal_procedure",
+    "era": "current",
+    "risk": "high"
+  },
+  "CrPC_173": {
+    "label": "CrPC Section 173 — Report of police officer on completion of investigation",
+    "bns_equiv": "BNSS_193",
+    "related": ["CrPC_154", "CrPC_167", "CrPC_161"],
+    "parent_act": "CrPC",
+    "category": "criminal_procedure",
+    "era": "legacy",
+    "risk": "medium"
+  },
+  "BNSS_193": {
+    "label": "BNSS Section 193 — Report of police officer on completion of investigation",
+    "bns_equiv": "CrPC_173",
+    "related": ["BNSS_173", "BNSS_187", "BNSS_218"],
+    "parent_act": "BNSS",
+    "category": "criminal_procedure",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CrPC_197": {
+    "label": "CrPC Section 197 — Prosecution of judges and public servants",
+    "bns_equiv": "BNSS_218",
+    "related": ["CrPC_173", "CrPC_196"],
+    "parent_act": "CrPC",
+    "category": "criminal_procedure",
+    "era": "legacy",
+    "risk": "medium"
+  },
+  "BNSS_218": {
+    "label": "BNSS Section 218 — Prosecution of judges and public servants",
+    "bns_equiv": "CrPC_197",
+    "related": ["BNSS_193"],
+    "parent_act": "BNSS",
+    "category": "criminal_procedure",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CrPC_437": {
+    "label": "CrPC Section 437 — When bail may be taken in case of non-bailable offence",
+    "bns_equiv": "BNSS_480",
+    "related": ["CrPC_438", "CrPC_439", "CrPC_436", "CrPC_167"],
+    "parent_act": "CrPC",
+    "category": "bail",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNSS_480": {
+    "label": "BNSS Section 480 — When bail may be taken in case of non-bailable offence",
+    "bns_equiv": "CrPC_437",
+    "related": ["BNSS_482", "BNSS_483", "BNSS_187"],
+    "parent_act": "BNSS",
+    "category": "bail",
+    "era": "current",
+    "risk": "high"
+  },
+  "CrPC_438": {
+    "label": "CrPC Section 438 — Direction for grant of bail to person apprehending arrest (Anticipatory Bail)",
+    "bns_equiv": "BNSS_482",
+    "related": ["CrPC_437", "CrPC_439"],
+    "parent_act": "CrPC",
+    "category": "bail",
+    "era": "legacy",
+    "risk": "high"
+  },
+  "BNSS_482": {
+    "label": "BNSS Section 482 — Direction for grant of bail to person apprehending arrest (Anticipatory Bail)",
+    "bns_equiv": "CrPC_438",
+    "related": ["BNSS_480", "BNSS_483"],
+    "parent_act": "BNSS",
+    "category": "bail",
+    "era": "current",
+    "risk": "high"
+  },
+  "CrPC_482": {
+    "label": "CrPC Section 482 — Saving of inherent powers of High Court",
+    "bns_equiv": "BNSS_528",
+    "related": ["CrPC_438", "CrPC_439"],
+    "parent_act": "CrPC",
+    "category": "bail",
+    "era": "legacy",
+    "risk": "medium"
+  },
+  "BNSS_528": {
+    "label": "BNSS Section 528 — Saving of inherent powers of High Court",
+    "bns_equiv": "CrPC_482",
+    "related": ["BNSS_482", "BNSS_483"],
+    "parent_act": "BNSS",
+    "category": "bail",
+    "era": "current",
+    "risk": "medium"
+  },
+  "NI_138": {
+    "label": "NI Act Section 138 — Dishonour of cheque for insufficiency etc. of funds",
+    "bns_equiv": null,
+    "related": ["NI_139", "NI_141", "NI_142", "NI_143", "NI_147"],
+    "parent_act": "NI",
+    "category": "cheque_bounce",
+    "era": "current",
+    "risk": "high"
+  },
+  "NI_139": {
+    "label": "NI Act Section 139 — Presumption in favour of holder (cheque issued for debt)",
+    "bns_equiv": null,
+    "related": ["NI_138", "NI_141", "NI_142"],
+    "parent_act": "NI",
+    "category": "cheque_bounce",
+    "era": "current",
+    "risk": "high"
+  },
+  "NI_141": {
+    "label": "NI Act Section 141 — Offences by companies / directors liable",
+    "bns_equiv": null,
+    "related": ["NI_138", "NI_139", "NI_142"],
+    "parent_act": "NI",
+    "category": "cheque_bounce",
+    "era": "current",
+    "risk": "high"
+  },
+  "NI_142": {
+    "label": "NI Act Section 142 — Cognizance of offences under Section 138 (limitation and court)",
+    "bns_equiv": null,
+    "related": ["NI_138", "NI_139", "NI_141", "NI_143"],
+    "parent_act": "NI",
+    "category": "cheque_bounce",
+    "era": "current",
+    "risk": "medium"
+  },
+  "NI_143": {
+    "label": "NI Act Section 143 — Power of court to try cases summarily",
+    "bns_equiv": null,
+    "related": ["NI_138", "NI_142", "NI_147"],
+    "parent_act": "NI",
+    "category": "cheque_bounce",
+    "era": "current",
+    "risk": "medium"
+  },
+  "NI_147": {
+    "label": "NI Act Section 147 — Offences under NI Act to be compoundable",
+    "bns_equiv": null,
+    "related": ["NI_138", "NI_143"],
+    "parent_act": "NI",
+    "category": "cheque_bounce",
+    "era": "current",
+    "risk": "low"
+  },
+  "CPA_2_47": {
+    "label": "Consumer Protection Act 2019 Section 2(47) — Definition of Unfair Trade Practice",
+    "bns_equiv": null,
+    "related": ["CPA_35", "CPA_47", "CPA_2_11", "CPA_2_10"],
+    "parent_act": "CPA",
+    "category": "consumer",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CPA_2_10": {
+    "label": "Consumer Protection Act 2019 Section 2(10) — Definition of defect",
+    "bns_equiv": null,
+    "related": ["CPA_2_11", "CPA_35", "CPA_2_47"],
+    "parent_act": "CPA",
+    "category": "consumer",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CPA_2_11": {
+    "label": "Consumer Protection Act 2019 Section 2(11) — Definition of deficiency",
+    "bns_equiv": null,
+    "related": ["CPA_2_10", "CPA_35", "CPA_2_47"],
+    "parent_act": "CPA",
+    "category": "consumer",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CPA_35": {
+    "label": "Consumer Protection Act 2019 Section 35 — Complaint before District Commission (pecuniary jurisdiction ≤ ₹50 lakh)",
+    "bns_equiv": null,
+    "related": ["CPA_47", "CPA_58", "CPA_2_47", "CPA_2_11", "CPA_39"],
+    "parent_act": "CPA",
+    "category": "consumer",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CPA_47": {
+    "label": "Consumer Protection Act 2019 Section 47 — Complaint before State Commission (₹50 lakh to ₹2 crore)",
+    "bns_equiv": null,
+    "related": ["CPA_35", "CPA_58", "CPA_2_47"],
+    "parent_act": "CPA",
+    "category": "consumer",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CPA_58": {
+    "label": "Consumer Protection Act 2019 Section 58 — Complaint before National Commission (> ₹2 crore)",
+    "bns_equiv": null,
+    "related": ["CPA_35", "CPA_47"],
+    "parent_act": "CPA",
+    "category": "consumer",
+    "era": "current",
+    "risk": "medium"
+  },
+  "CPA_39": {
+    "label": "Consumer Protection Act 2019 Section 39 — Relief available to District Commission",
+    "bns_equiv": null,
+    "related": ["CPA_35", "CPA_2_11", "CPA_2_10"],
+    "parent_act": "CPA",
+    "category": "consumer",
+    "era": "current",
+    "risk": "medium"
+  },
+  "PWA_3": {
+    "label": "Payment of Wages Act 1936 Section 3 — Responsibility for payment of wages",
+    "bns_equiv": null,
+    "related": ["PWA_4", "PWA_5", "PWA_15", "PWA_20", "IDA_2_s"],
+    "parent_act": "PWA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "PWA_4": {
+    "label": "Payment of Wages Act 1936 Section 4 — Fixation of wage periods",
+    "bns_equiv": null,
+    "related": ["PWA_3", "PWA_5", "PWA_15"],
+    "parent_act": "PWA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "PWA_5": {
+    "label": "Payment of Wages Act 1936 Section 5 — Time of payment of wages",
+    "bns_equiv": null,
+    "related": ["PWA_3", "PWA_4", "PWA_15", "PWA_20"],
+    "parent_act": "PWA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "PWA_15": {
+    "label": "Payment of Wages Act 1936 Section 15 — Claims arising out of deductions from wages / delayed payment",
+    "bns_equiv": null,
+    "related": ["PWA_3", "PWA_5", "PWA_20", "IDA_33C"],
+    "parent_act": "PWA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "PWA_20": {
+    "label": "Payment of Wages Act 1936 Section 20 — Penalty for offences under the Act",
+    "bns_equiv": null,
+    "related": ["PWA_3", "PWA_15"],
+    "parent_act": "PWA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "IDA_2_s": {
+    "label": "Industrial Disputes Act 1947 Section 2(s) — Definition of 'workman'",
+    "bns_equiv": null,
+    "related": ["IDA_25F", "IDA_10", "IDA_2A", "IDA_33C"],
+    "parent_act": "IDA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "IDA_25F": {
+    "label": "Industrial Disputes Act 1947 Section 25F — Conditions precedent to retrenchment of workmen",
+    "bns_equiv": null,
+    "related": ["IDA_2_s", "IDA_25G", "IDA_25H", "IDA_10"],
+    "parent_act": "IDA",
+    "category": "labour",
+    "era": "current",
+    "risk": "high"
+  },
+  "IDA_25G": {
+    "label": "Industrial Disputes Act 1947 Section 25G — Procedure for retrenchment (last in, first out)",
+    "bns_equiv": null,
+    "related": ["IDA_25F", "IDA_25H"],
+    "parent_act": "IDA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "IDA_25H": {
+    "label": "Industrial Disputes Act 1947 Section 25H — Re-employment of retrenched workmen",
+    "bns_equiv": null,
+    "related": ["IDA_25F", "IDA_25G"],
+    "parent_act": "IDA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "IDA_2A": {
+    "label": "Industrial Disputes Act 1947 Section 2A — Dismissal of individual workman deemed to be industrial dispute",
+    "bns_equiv": null,
+    "related": ["IDA_2_s", "IDA_25F", "IDA_10"],
+    "parent_act": "IDA",
+    "category": "labour",
+    "era": "current",
+    "risk": "high"
+  },
+  "IDA_10": {
+    "label": "Industrial Disputes Act 1947 Section 10 — Reference of disputes to Boards, Courts, or Tribunals",
+    "bns_equiv": null,
+    "related": ["IDA_2A", "IDA_25F", "IDA_2_s"],
+    "parent_act": "IDA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "IDA_33C": {
+    "label": "Industrial Disputes Act 1947 Section 33C — Recovery of money due from employer",
+    "bns_equiv": null,
+    "related": ["IDA_2_s", "PWA_15", "IDA_25F"],
+    "parent_act": "IDA",
+    "category": "labour",
+    "era": "current",
+    "risk": "medium"
+  },
+  "TPA_106": {
+    "label": "Transfer of Property Act 1882 Section 106 — Duration of certain leases in absence of written contract",
+    "bns_equiv": null,
+    "related": ["TPA_108", "TPA_111", "TPA_105"],
+    "parent_act": "TPA",
+    "category": "property",
+    "era": "current",
+    "risk": "medium"
+  },
+  "TPA_108": {
+    "label": "Transfer of Property Act 1882 Section 108 — Rights and liabilities of lessor and lessee",
+    "bns_equiv": null,
+    "related": ["TPA_106", "TPA_111", "TPA_105"],
+    "parent_act": "TPA",
+    "category": "property",
+    "era": "current",
+    "risk": "medium"
+  },
+  "TPA_111": {
+    "label": "Transfer of Property Act 1882 Section 111 — Determination of lease (grounds for termination)",
+    "bns_equiv": null,
+    "related": ["TPA_106", "TPA_108"],
+    "parent_act": "TPA",
+    "category": "property",
+    "era": "current",
+    "risk": "medium"
+  }
+}
