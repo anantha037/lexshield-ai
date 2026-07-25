@@ -74,7 +74,9 @@ CRITICAL RULES FOR SCORING:
 4. CrPC and BNSS are paired. Evidence Act and BSA are paired.
    Other acts are NOT interchangeable even if section numbers match.
 
-5. Score 4-5: chunks directly answer the query from the correct act
+5. You may see a "SYSTEM NOTE: Known legal equivalences" chunk. If it correctly identifies the act/section pair the query is asking about, treat it as directly relevant (score 4-5) REGARDLESS of whether it is marked [STATUS: UNVERIFIED]. Verification status affects how confidently the FINAL ANSWER should state the pairing — it is not a reason to score the retrieval as insufficient. Do not reject a correct-act-and-section pairing merely because it is marked unverified.
+
+6. Score 4-5: chunks directly answer the query from the correct act
    Score 3: chunks are partially relevant, same legal topic
    Score 2: chunks are tangentially related, same broad area
    Score 1: chunks are from the wrong act or unrelated topic

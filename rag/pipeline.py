@@ -303,27 +303,110 @@ def _build_labeled_synthesis_prompt(
     """
     Builds a synthesis prompt with labeled context blocks per sub-query.
     Falls back to the standard build_synthesis_prompt if no sub-queries.
+
+    When pinned equivalence chunks are present (system note + target-section
+    chunks), they are prepended as a dedicated block BEFORE the sub-query
+    sections and an [EQUIVALENCE ANSWER \u2014 AUTHORITATIVE] directive is
+    injected into the header, so the model sees the target statute text and
+    the correct section number even on the complex decomposition path.
     """
     if not subquery_pools:
         return build_synthesis_prompt(expanded_query, all_chunks)
 
+    # ── Detect & extract pinned equivalence chunks ────────────────────────────
+    # These are: the system note chunk + any statute chunks fetched for the
+    # target section (Fix 1).  They are NOT part of any subquery pool, so they
+    # would otherwise be invisible to the model on the labeled path.
+    _subquery_ids: set[str] = set()
+    for _, pool in subquery_pools:
+        for c in pool:
+            _subquery_ids.add(c["chunk_id"])
+
+    eq_note_chunk = next(
+        (c for c in all_chunks if c.get("chunk_id") == "_kg_equivalence_context"), None
+    )
+    target_statute_chunks = [
+        c for c in all_chunks
+        if c.get("chunk_id") not in _subquery_ids
+        and c.get("chunk_id") != "_kg_equivalence_context"
+        and not c.get("chunk_id", "").startswith("_")
+        and c.get("retrieval_source") == "metadata"
+    ]
+
+    # ── Build equivalence header & pinned block ───────────────────────────────
+    equivalence_header = ""
+    pinned_block = ""
+
+    if eq_note_chunk:
+        import re as _re
+        eq_text = eq_note_chunk.get("text", "")
+        _target_act, _target_sec = "", ""
+        _m = _re.search(
+            r"corresponds to\s+([A-Z][^\d\n]+?)\s+(\d+[A-Z]?)\s*(?:\[|$|\n)",
+            eq_text, _re.IGNORECASE
+        )
+        if _m:
+            _target_act = _m.group(1).strip()
+            _target_sec = _m.group(2).strip()
+
+        # Build pinned text: system note first, then target statute chunks
+        pinned_parts = []
+        pinned_parts.append(
+            f"[SYSTEM NOTE]\n{eq_text}"
+        )
+        for c in target_statute_chunks[:6]:   # cap at 6 chunks = full section
+            src  = c.get("source", "?")[:55]
+            sec  = c.get("section", "")
+            text = c.get("text", "")[:600]
+            pinned_parts.append(f"[Source: {src} \u00a7{sec}]\n{text}")
+
+        if len(pinned_parts) > 1:             # has at least one statute chunk
+            pinned_block = (
+                "[PINNED EQUIVALENCE CONTEXT \u2014 READ FIRST]\n"
+                + "\n\n".join(pinned_parts)
+            )
+
+        if _target_act and _target_sec:
+            src_note = (
+                " Its full statute text is in the PINNED EQUIVALENCE CONTEXT block above."
+                if len(pinned_parts) > 1 else
+                " Its full text was not retrieved \u2014 state the section number anyway."
+            )
+            equivalence_header = (
+                f"[EQUIVALENCE ANSWER \u2014 AUTHORITATIVE]\n"
+                f"The system has already identified the answer: the equivalent section "
+                f"is {_target_act} Section {_target_sec}.{src_note}\n"
+                f"You MUST state this section number as the direct answer. "
+                f"Do NOT write that the equivalent 'cannot be confirmed', "
+                f"'is not provided in context', or that you 'cannot determine' it.\n\n"
+            )
+        else:
+            equivalence_header = (
+                "[EQUIVALENCE ANSWER \u2014 AUTHORITATIVE]\n"
+                "A SYSTEM NOTE above states the correct cross-act section "
+                "correspondence. Treat it as authoritative.\n\n"
+            )
+
+    # ── Build labeled sub-query sections ─────────────────────────────────────
     sections = []
     for label, chunks in subquery_pools:
         if not chunks:
             continue
         chunk_texts = "\n\n".join(
-            f"[Source: {c.get('source','?')[:40]} §{c.get('section','')}]\n"
+            f"[Source: {c.get('source','?')[:40]} \u00a7{c.get('section','')}]\n"
             f"{c.get('text','')[:600]}"
             for c in chunks[:3]
         )
         sections.append(f"Context for {label}:\n{chunk_texts}")
 
-    labeled_context = "\n\n" + ("\n\n" + "─" * 60 + "\n\n").join(sections)
+    labeled_context = "\n\n" + ("\n\n" + "\u2500" * 60 + "\n\n").join(sections)
 
     return (
+        f"{equivalence_header}"
         f"Answer the following complex legal query using the labeled context blocks below.\n"
         f"Query: {expanded_query}\n\n"
-        f"{labeled_context}\n\n"
+        + (f"{pinned_block}\n\n" if pinned_block else "")
+        + f"{labeled_context}\n\n"
         f"Provide a comprehensive answer addressing ALL parts of the query. "
         f"Cite the specific acts and sections from the relevant context block."
     )
@@ -516,7 +599,30 @@ class RAGPipeline:
                     "hybrid_score": 2.0, "retrieval_source": "system",
                 })
 
-        # ── STEP 0: Adaptive complexity routing ────────────────────────────────
+            # ── TARGET section fast-fetch (Fix 1) ────────────────────────────
+            # For every successful equivalence lookup, hard-fetch the TARGET
+            # section's real statute text the same way the section fast-path
+            # does — so the synthesizer has actual BNSS/BNS text to cite, not
+            # just the synthetic system note.
+            _eq_target_chunks: list[dict] = []
+            for act, sec in list(dict.fromkeys(eq_pairs)):
+                res = lookup_equivalent(act, sec)
+                if not res:
+                    continue
+                t_act = res["target"]["act"]
+                t_sec = res["target"]["section"]
+                t_hits = vectorstore.get_by_section(t_sec, t_act)
+                for h in t_hits:
+                    _eq_target_chunks.append(h)
+                    logger.info(
+                        f"[Pipeline] Equivalence target fetch: {t_act} §{t_sec} "
+                        f"-> {h.get('source','?')[:45]} chunk={h.get('chunk_id','?')}"
+                    )
+            # Prepend target chunks right after eq_chunks so they sit early in
+            # pinned_chunks and survive n_final trimming.
+            eq_chunks = eq_chunks + _eq_target_chunks
+
+
         complexity = classify_query_complexity(latest_expanded)
         # pipeline_depth is used by graph.py node (stored in AgentState)
         # Here we just use it to control which steps fire.
@@ -795,9 +901,12 @@ class RAGPipeline:
             eval_chunks: list[dict] = []
             for c in pinned_chunks + section_candidates:
                 cid = c.get("chunk_id", "")
-                if cid and not cid.startswith("_") and cid not in _crag_ids:
-                    eval_chunks.append(c)
-                    _crag_ids.add(cid)
+                if not cid or cid in _crag_ids:
+                    continue
+                if cid.startswith("_") and cid != "_kg_equivalence_context":
+                    continue
+                eval_chunks.append(c)
+                _crag_ids.add(cid)
             for c in merged[:N_RERANKER_INPUT]:
                 cid = c.get("chunk_id", "")
                 if cid and not cid.startswith("_") and cid not in _crag_ids:

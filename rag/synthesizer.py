@@ -32,6 +32,172 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# ── Citation-tag mismatch validator ───────────────────────────────────────────
+#
+# Short and long forms of every act name that may appear in citation tags OR in
+# the surrounding sentence text.  Both directions must be covered:
+#   short -> long forms so "CrPC" matches "Code of Criminal Procedure"
+#   long fragments -> short so the citation tag text hits the same bucket.
+# Format: each tuple is a group of synonyms treated as the same act.
+_CITATION_ACT_ALIASES: list[tuple[str, ...]] = [
+    # IPC / BNS
+    ("indian penal code", "ipc"),
+    ("bharatiya nyaya sanhita", "bns"),
+    # CrPC / BNSS
+    ("code of criminal procedure", "crpc"),
+    ("bharatiya nagarik suraksha sanhita", "bnss"),
+    # Evidence Act / BSA
+    ("indian evidence act", "evidence act", "iea"),
+    ("bharatiya sakshya adhiniyam", "bsa"),
+    # Others
+    ("negotiable instruments act", "ni act"),
+    ("information technology act", "it act"),
+    ("code of civil procedure", "cpc"),
+    ("protection of children from sexual offences", "pocso"),
+    ("prevention of money laundering", "pmla"),
+    ("narcotic drugs and psychotropic substances", "ndps"),
+    ("insolvency and bankruptcy code", "ibc"),
+    # System / generic — these never mismatch anything
+    ("system",),
+]
+
+# Pre-build: token -> canonical group index, for O(1) group lookup
+_ALIAS_INDEX: dict[str, int] = {}
+for _gidx, _group in enumerate(_CITATION_ACT_ALIASES):
+    for _alias in _group:
+        _ALIAS_INDEX[_alias.lower()] = _gidx
+
+
+def _citation_act_group(text: str) -> Optional[int]:
+    """
+    Return the alias-group index for the first recognised act name found in
+    *text* (case-insensitive substring search through alias table).
+    Returns None if no recognised act is found.
+    """
+    lower = text.lower()
+    # Longest aliases first so "code of criminal procedure" beats "code"
+    for alias, gidx in sorted(_ALIAS_INDEX.items(), key=lambda x: -len(x[0])):
+        if alias in lower:
+            return gidx
+    return None
+
+
+# Regex that matches a replaced citation tag like:
+#   [Act Name, Section 154]   [System]   [Act Name (Short) 2023]
+_REPLACED_TAG_RE = re.compile(
+    r'\[([^\[\]]+?)\]'
+)
+
+
+# Caveat-sentence detector.  Sentences that describe the equivalence
+# pairing itself (e.g. "has not been independently verified") are always
+# sourced from the System note, never from either statute's real text.
+# They must be forced to [System] regardless of which act names appear in
+# the sentence body.  Anchored to the exact phrasing that synthesizer.py's
+# unverified_note instruction produces so the two stay in sync.
+_CAVEAT_RE = re.compile(
+    r"\[STATUS:\s*UNVERIFIED\]"
+    r"|not been independently verified"
+    r"|section pairing has not been"
+    r"|pairing is unverified",
+    re.IGNORECASE,
+)
+
+
+def validate_citation_tags(text: str) -> str:
+    """
+    Post-generation mechanical validation pass.
+
+    Splits *text* into sentence-like segments, then for each segment that
+    ends with a replaced citation tag checks whether the act named in the
+    tag matches an act name mentioned in the sentence body.  When they
+    don't match, the tag is downgraded to a generic safe fallback
+    ('[Statute]' or '[System]') rather than leaving a provably wrong
+    specific citation in place.
+
+    Rules:
+    - Only checks tags whose text contains a recognised act alias.
+      Unrecognised or purely numeric tags are left untouched.
+    - '[System]' tags are never flagged as mismatched.
+    - A sentence that mentions NO recognised act in its body is left
+      untouched (no body context to compare against → no false positive).
+    - Downgrades are logged at INFO level.
+    """
+    # Split on sentence boundaries: period/exclamation/question followed by
+    # whitespace + capital, OR a newline.  We keep the delimiter attached
+    # to the preceding segment via a lookahead so we don't lose it.
+    segments = re.split(r'(?<=[.!?])(?=\s+[A-Z])|(?=\n)', text)
+
+    result_parts: list[str] = []
+    for seg in segments:
+        # Find all citation tags in this segment
+        tags = _REPLACED_TAG_RE.findall(seg)
+        if not tags:
+            result_parts.append(seg)
+            continue
+
+        # Determine act group of the BODY (segment text minus the tags)
+        body = _REPLACED_TAG_RE.sub("", seg).strip()
+        body_group = _citation_act_group(body)
+
+        # ── Caveat-sentence override ──────────────────────────────────────────
+        # A sentence describing the equivalence pairing itself ("not been
+        # independently verified", "[STATUS: UNVERIFIED]", etc.) is always
+        # sourced from the System note — never from either statute's text.
+        # Force all specific-act tags to [System] regardless of body content.
+        if _CAVEAT_RE.search(seg):
+            new_seg = seg
+            for tag_content in tags:
+                tag_group = _citation_act_group(tag_content)
+                if tag_group is None:
+                    continue
+                if tag_content.strip().lower() == "system":
+                    continue
+                old_tag = f"[{tag_content}]"
+                logger.info(
+                    "[CitationValidator] Caveat sentence — forcing %r -> '[System]' | "
+                    "body preview: %r",
+                    old_tag, body[:80],
+                )
+                new_seg = new_seg.replace(old_tag, "[System]", 1)
+            result_parts.append(new_seg)
+            continue   # skip normal act-match check for this segment
+        # ─────────────────────────────────────────────────────────────────────
+
+        # If body mentions no recognisable act → nothing to compare, leave as-is
+        if body_group is None:
+            result_parts.append(seg)
+            continue
+
+        # For each tag, check whether its act group matches the body group
+        new_seg = seg
+        for tag_content in tags:
+            tag_group = _citation_act_group(tag_content)
+            # Tags with no recognised act (e.g. bare numeric remnants) → skip
+            if tag_group is None:
+                continue
+            # System group never mismatches
+            if tag_content.strip().lower() == "system":
+                continue
+            # Mismatch detected
+            if tag_group != body_group:
+                # Decide fallback: 'System' if tag was already a system note,
+                # otherwise generic 'Statute'
+                fallback = "System" if "system" in tag_content.lower() else "Statute"
+                old_tag  = f"[{tag_content}]"
+                new_tag  = f"[{fallback}]"
+                logger.info(
+                    "[CitationValidator] Mismatch downgraded: %r -> %r | "
+                    "sentence body mentions act-group %d, tag was act-group %d | "
+                    "body preview: %r",
+                    old_tag, new_tag, body_group, tag_group, body[:80],
+                )
+                new_seg = new_seg.replace(old_tag, new_tag, 1)
+        result_parts.append(new_seg)
+
+    return "".join(result_parts)
+
+
 # ── Structured citation ───────────────────────────────────────────────────────
 
 @dataclass
@@ -85,8 +251,15 @@ STRICT RULES — follow every one:
    Do not cite section numbers that do not appear in the provided sources.
 6. If the sources do not answer the question, say exactly:
    "The retrieved legal sections do not contain sufficient information to answer this question."
-8. Keep the answer between 150 and 350 words.
-9. Write in plain English that a non-lawyer can understand.
+7. Keep the answer between 150 and 350 words.
+8. Write in plain English that a non-lawyer can understand.
+9. If any source is marked [STATUS: UNVERIFIED], you MUST explicitly tell the user that this specific
+   section pairing has not been independently verified and recommend they confirm it against the
+   official bare act text. Do NOT state it as settled fact.
+10. Before citing [N], re-check that SOURCE N's own text actually supports the specific sentence you
+    are citing it for. Do not reuse a source number out of habit when discussing content from a
+    different source block — cite that other block's actual number instead. Citing the wrong source
+    number is a factual error, the same as citing the wrong section.
 """
 
 # Paired act prompt — used when both legacy (IPC/CrPC/Evidence Act) and
@@ -131,6 +304,13 @@ STRICT RULES — follow every one:
    do not imply either one supersedes the other.
 6. Keep the answer between 200 and 400 words.
 7. Write in plain English that a non-lawyer can understand.
+8. If any source is marked [STATUS: UNVERIFIED], you MUST explicitly tell the user that this specific
+   section pairing has not been independently verified and recommend they confirm it against the
+   official bare act text. Do NOT state it as settled fact.
+9. Before citing [N], re-check that SOURCE N's own text actually supports the specific sentence you
+   are citing it for. Do not reuse a source number out of habit when discussing content from a
+   different source block — cite that other block's actual number instead. Citing the wrong source
+   number is a factual error, the same as citing the wrong section.
 """
 
 
@@ -182,6 +362,85 @@ def build_synthesis_prompt(query: str, chunks: list[dict], intent: str = "legal_
     """
     chunks = _order_chunks_for_synthesis(chunks)
     logger.debug("[DIAGNOSE] SYNTHESIS TRIGGERED")
+
+    # Unverified equivalence note — injected when system note chunk is marked UNVERIFIED
+    has_unverified = any(
+        "[STATUS: UNVERIFIED]" in c.get("text", "") for c in chunks
+    )
+    unverified_note = ""
+    if has_unverified:
+        unverified_note = (
+            "[UNVERIFIED EQUIVALENCE WARNING]\n"
+            "One or more sources contain a section pairing marked [STATUS: UNVERIFIED]. "
+            "This means the equivalence has NOT been independently verified. "
+            "You MUST tell the user explicitly that this specific pairing is unverified "
+            "and recommend they confirm it against the official bare act text. "
+            "Do NOT present the pairing as settled fact.\n\n"
+        )
+
+    # Equivalence priority note — injected when a system equivalence chunk is present.
+    # Parses the target act/section from the SYSTEM NOTE text and identifies which
+    # source slots actually contain the target section's statute text, then tells
+    # the LLM explicitly so it cannot ignore them.
+    equivalence_priority_note = ""
+    eq_chunk = next(
+        (c for c in chunks if c.get("chunk_id") == "_kg_equivalence_context"), None
+    )
+    if eq_chunk:
+        import re as _re
+        eq_text = eq_chunk.get("text", "")
+        # Parse "X corresponds to Y ACT SECTION" pattern from the system note
+        _target_act, _target_sec = "", ""
+        _m = _re.search(
+            r"corresponds to\s+([A-Z][^\d\n]+?)\s+(\d+[A-Z]?)\s*(?:\[|$|\n)",
+            eq_text, _re.IGNORECASE
+        )
+        if _m:
+            _target_act = _m.group(1).strip()
+            _target_sec = _m.group(2).strip()
+
+        # After _order_chunks_for_synthesis runs (called just above), find which
+        # 1-indexed source slots contain the target section.
+        _ordered = _order_chunks_for_synthesis(chunks)
+        _target_source_nums = [
+            str(i + 1)
+            for i, c in enumerate(_ordered)
+            if c.get("section", "").upper() == _target_sec.upper()
+            and c.get("chunk_id") != "_kg_equivalence_context"
+            and (not _target_act or _target_act.upper().split()[0]
+                 in c.get("source", "").upper())
+        ]
+
+        if _target_act and _target_sec:
+            _src_hint = (
+                f" Its full text is in SOURCE{'S' if len(_target_source_nums) > 1 else ''} "
+                f"{', '.join(_target_source_nums)}."
+                if _target_source_nums else
+                " Its full text was not retrieved — state the section number anyway."
+            )
+            equivalence_priority_note = (
+                "[EQUIVALENCE ANSWER \u2014 AUTHORITATIVE]\n"
+                f"The SYSTEM NOTE below has already identified the answer: "
+                f"the equivalent section is {_target_act} Section {_target_sec}."
+                f"{_src_hint}\n"
+                "You MUST state this section number as the direct answer. "
+                "Do NOT write that the equivalent 'cannot be confirmed', "
+                "'is not provided in context', or that you 'cannot determine' it "
+                "\u2014 the SYSTEM NOTE is the authoritative source for this mapping "
+                "and overrides any such conclusion.\n"
+                "Cite the retrieved sources for the actual text of each provision.\n\n"
+            )
+        else:
+            # Fallback: no parseable target — use the generic advisory
+            equivalence_priority_note = (
+                "[EQUIVALENCE ANSWER \u2014 AUTHORITATIVE]\n"
+                "A SYSTEM NOTE below states the correct cross-act section "
+                "correspondence for this query. Treat it as authoritative. "
+                "Do NOT conclude no equivalent exists when the SYSTEM NOTE "
+                "has identified the pairing.\n\n"
+            )
+
+
     # Era context note — only injected when paired chunks are present
     era_note = ""
     if _has_paired_context(chunks):
@@ -189,7 +448,7 @@ def build_synthesis_prompt(query: str, chunks: list[dict], intent: str = "legal_
             "[LEGAL ERA CONTEXT]\n"
             "Sources below include BOTH pre-July 2024 laws (IPC/CrPC/Evidence Act) "
             "AND post-July 2024 replacement laws (BNS/BNSS/BSA). "
-            "These sources are NOT guaranteed to be the same provision renumbered — "
+            "These sources are NOT guaranteed to be the same provision renumbered \u2014 "
             "verify from the source text itself whether they cover the same subject "
             "matter before treating one as the successor of the other. "
             "Cutoff for the old->new law transition where applicable: July 1, 2024.\n\n"
@@ -257,6 +516,8 @@ def build_synthesis_prompt(query: str, chunks: list[dict], intent: str = "legal_
         structure_prompt = ""
 
     return (
+        f"{equivalence_priority_note}"
+        f"{unverified_note}"
         f"{era_note}"
         f"[RETRIEVED LEGAL SOURCES]\n"
         f"{sources_block}\n"
@@ -452,6 +713,13 @@ def synthesize(
                 
             processed_answer = re.sub(rf'\[{idx}\]', replacement, processed_answer)
             processed_answer = re.sub(rf'\[SOURCE {idx}\]', replacement, processed_answer, flags=re.IGNORECASE)
+
+    # ── Citation-tag mismatch validation pass ────────────────────────────────
+    # Mechanical check: for each sentence in processed_answer whose trailing
+    # citation tag names a specific act, verify the act name also appears in
+    # the sentence body.  Mismatches are downgraded to [Statute]/[System]
+    # rather than left as provably wrong specific citations.
+    processed_answer = validate_citation_tags(processed_answer)
 
     return LegalAnswer(
         answer_text        = processed_answer,

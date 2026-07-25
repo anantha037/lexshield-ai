@@ -273,3 +273,241 @@ if __name__ == "__main__":
 
     results = [run_single_query(q, verbose=args.verbose) for q in queries_to_run]
     print_results(results)
+
+
+# ── Pytest-compatible unit tests (no LLM / no API calls) ─────────────────────
+# These are the only pytest-discoverable tests in this file. The block above
+# is a standalone script entry-point; pytest will ignore it because it has no
+# test_ prefix functions.
+
+from rag.synthesizer import build_synthesis_prompt
+
+
+def test_unverified_warning_injected_in_prompt():
+    """
+    build_synthesis_prompt must inject an [UNVERIFIED EQUIVALENCE WARNING]
+    block when a chunk contains [STATUS: UNVERIFIED] — this is pure string
+    logic, no LLM call needed to verify it fires.
+    """
+    chunks = [{
+        "chunk_id":        "_kg_equivalence_context",
+        "text":            (
+            "SYSTEM NOTE: Known legal equivalences for this query:\n"
+            "- CrPC 154 corresponds to BNSS 173 [STATUS: UNVERIFIED]"
+        ),
+        "source":          "System",
+        "section":         "",
+        "section_title":   "",
+        "chapter":         "",
+        "doc_type":        "system",
+        "chunk_type":      "context",
+        "category":        "",
+        "era":             "",
+        "hybrid_score":    2.0,
+        "retrieval_source": "system",
+    }]
+    prompt = build_synthesis_prompt(
+        "what is the BNSS equivalent of CrPC 154", chunks
+    )
+    assert "[UNVERIFIED EQUIVALENCE WARNING]" in prompt, (
+        "Warning block was not injected for a chunk containing "
+        "[STATUS: UNVERIFIED] — the caveat mechanism itself is broken, "
+        "independent of what the LLM does with it."
+    )
+
+
+def test_no_unverified_warning_for_verified_chunk():
+    """
+    Confirm the warning does NOT fire for a verified pairing — guards against
+    false-positive caveats on confirmed data.
+    """
+    chunks = [{
+        "chunk_id":        "_kg_equivalence_context",
+        "text":            (
+            "SYSTEM NOTE: Known legal equivalences for this query:\n"
+            "- IPC 302 corresponds to BNS 103"
+        ),
+        "source":          "System",
+        "section":         "",
+        "section_title":   "",
+        "chapter":         "",
+        "doc_type":        "system",
+        "chunk_type":      "context",
+        "category":        "",
+        "era":             "",
+        "hybrid_score":    2.0,
+        "retrieval_source": "system",
+    }]
+    prompt = build_synthesis_prompt(
+        "what is the BNS equivalent of IPC 302", chunks
+    )
+    assert "[UNVERIFIED EQUIVALENCE WARNING]" not in prompt
+
+
+def test_equivalence_priority_note_injected_for_eq_chunk():
+    """
+    build_synthesis_prompt must inject [EQUIVALENCE ANSWER — AUTHORITATIVE]
+    when any chunk has chunk_id == '_kg_equivalence_context'.
+    Pure string check, no LLM call.
+    """
+    chunks = [{
+        "chunk_id":        "_kg_equivalence_context",
+        "text":            (
+            "SYSTEM NOTE: Known legal equivalences for this query:\n"
+            "- CrPC 154 corresponds to BNSS 173 [STATUS: UNVERIFIED]"
+        ),
+        "source":          "System",
+        "section":         "",
+        "section_title":   "",
+        "chapter":         "",
+        "doc_type":        "system",
+        "chunk_type":      "context",
+        "category":        "",
+        "era":             "",
+        "hybrid_score":    2.0,
+        "retrieval_source": "system",
+    }]
+    prompt = build_synthesis_prompt(
+        "what is the BNSS equivalent of CrPC 154", chunks
+    )
+    assert "[EQUIVALENCE ANSWER" in prompt, (
+        "[EQUIVALENCE ANSWER — AUTHORITATIVE] block was not injected "
+        "when chunk_id == '_kg_equivalence_context' is present."
+    )
+    assert "AUTHORITATIVE" in prompt
+
+
+def test_equivalence_priority_note_absent_without_eq_chunk():
+    """
+    Confirm [EQUIVALENCE ANSWER — AUTHORITATIVE] does NOT appear when no
+    chunk has chunk_id == '_kg_equivalence_context' — guards against noise
+    injected on normal (non-equivalence) queries.
+    """
+    chunks = [{
+        "chunk_id":        "ipc_302_chunk_abc",
+        "text":            "Section 302 — Punishment for murder.",
+        "source":          "Indian Penal Code (IPC) 1860",
+        "section":         "302",
+        "section_title":   "Punishment for murder",
+        "chapter":         "XVI",
+        "doc_type":        "statute",
+        "chunk_type":      "section",
+        "category":        "",
+        "era":             "legacy",
+        "hybrid_score":    0.9,
+        "retrieval_source": "metadata",
+    }]
+    prompt = build_synthesis_prompt(
+        "what is the punishment for IPC 302", chunks
+    )
+    assert "[EQUIVALENCE ANSWER" not in prompt
+
+
+# ── validate_citation_tags() tests (pure string, no LLM) ─────────────────────
+
+from rag.synthesizer import validate_citation_tags
+
+
+def test_citation_downgrade_on_act_mismatch():
+    """
+    A sentence whose body is entirely about CrPC but whose tag names BNSS
+    must be downgraded to [Statute], not left as the wrong BNSS citation.
+    """
+    # Sentence body = CrPC content; tag = BNSS citation (wrong)
+    answer = (
+        "According to Section 154 of the Code of Criminal Procedure (CrPC) 1973, "
+        "information must be recorded in writing "
+        "[Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023, Section 173]."
+    )
+    result = validate_citation_tags(answer)
+
+    assert "[Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023, Section 173]" not in result, (
+        "Wrong BNSS citation was left on a CrPC sentence — mismatch not detected."
+    )
+    assert "[Statute]" in result, (
+        "Mismatched citation was not downgraded to [Statute]."
+    )
+    # Body text must be preserved
+    assert "Code of Criminal Procedure" in result
+
+
+def test_citation_kept_when_matching():
+    """
+    A correctly matched citation (BNSS sentence + BNSS tag) must NOT be changed.
+    """
+    answer = (
+        "According to Section 173 of the Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023, "
+        "information may be given orally or by electronic communication "
+        "[Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023, Section 173]."
+    )
+    result = validate_citation_tags(answer)
+
+    assert "[Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023, Section 173]" in result, (
+        "Correct BNSS citation was incorrectly downgraded or removed."
+    )
+    assert "[Statute]" not in result
+
+
+def test_citation_downgrade_does_not_break_correct_citations_elsewhere():
+    """
+    Multi-sentence answer: sentence 1 has a correct citation, sentence 2 has
+    a mismatched one.  Only sentence 2's tag must be downgraded; sentence 1
+    must be completely untouched.
+    """
+    sentence_1 = (
+        "Under the old law, Section 154 of the Code of Criminal Procedure (CrPC) 1973 "
+        "requires information to be reduced to writing "
+        "[Code of Criminal Procedure (CrPC) 1973, Section 154]."
+    )
+    # Sentence 2: body is BNSS, tag is wrong (CrPC) — should be downgraded
+    sentence_2 = (
+        " Under the new law, Section 173 of the Bharatiya Nagarik Suraksha Sanhita (BNSS) 2023 "
+        "allows information by electronic communication "
+        "[Code of Criminal Procedure (CrPC) 1973, Section 154]."
+    )
+    answer = sentence_1 + sentence_2
+    result = validate_citation_tags(answer)
+
+    # Sentence 1 citation untouched
+    assert "[Code of Criminal Procedure (CrPC) 1973, Section 154]" in result, (
+        "Correct CrPC citation in sentence 1 was incorrectly removed or downgraded."
+    )
+    # Sentence 2 citation downgraded — the wrong CrPC tag on BNSS text should be gone
+    # (There should now be only ONE occurrence of the CrPC tag, not two)
+    crpc_tag = "[Code of Criminal Procedure (CrPC) 1973, Section 154]"
+    assert result.count(crpc_tag) == 1, (
+        f"Expected exactly 1 CrPC tag (sentence 1's correct one); "
+        f"found {result.count(crpc_tag)}. Sentence 2's mismatch was not downgraded."
+    )
+    assert "[Statute]" in result, (
+        "Sentence 2's mismatched citation was not downgraded to [Statute]."
+    )
+
+
+def test_caveat_sentence_forced_to_system():
+    """
+    A sentence that mentions both CrPC and BNSS by name AND contains caveat
+    language ('[STATUS: UNVERIFIED]' or 'not been independently verified')
+    must be forced to [System] regardless of which act name appears in the
+    body — caveat sentences describe the pairing, not statute content.
+    """
+    # Body mentions both CrPC and BNSS; tag is a specific CrPC citation.
+    # Without the caveat override, the act-match check would see CrPC in the
+    # body and leave the CrPC tag untouched (false-pass).  With the override
+    # it must always become [System].
+    caveat_sentence = (
+        "Please note that the equivalence of CrPC 154 to BNSS 173 "
+        "is marked as [STATUS: UNVERIFIED] in the provided context "
+        "[Code of Criminal Procedure (CrPC) 1973, Section 154]."
+    )
+    result = validate_citation_tags(caveat_sentence)
+
+    assert "[Code of Criminal Procedure (CrPC) 1973, Section 154]" not in result, (
+        "Caveat sentence kept a specific CrPC citation — caveat override did not fire."
+    )
+    assert "[System]" in result, (
+        "Caveat sentence was not forced to [System]."
+    )
+    # Body text must be preserved
+    assert "CrPC 154 to BNSS 173" in result
+
