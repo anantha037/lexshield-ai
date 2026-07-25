@@ -253,10 +253,7 @@ STRICT RULES — follow every one:
    "The retrieved legal sections do not contain sufficient information to answer this question."
 7. Keep the answer between 150 and 350 words.
 8. Write in plain English that a non-lawyer can understand.
-9. If any source is marked [STATUS: UNVERIFIED], you MUST explicitly tell the user that this specific
-   section pairing has not been independently verified and recommend they confirm it against the
-   official bare act text. Do NOT state it as settled fact.
-10. Before citing [N], re-check that SOURCE N's own text actually supports the specific sentence you
+9. Before citing [N], re-check that SOURCE N's own text actually supports the specific sentence you
     are citing it for. Do not reuse a source number out of habit when discussing content from a
     different source block — cite that other block's actual number instead. Citing the wrong source
     number is a factual error, the same as citing the wrong section.
@@ -304,10 +301,7 @@ STRICT RULES — follow every one:
    do not imply either one supersedes the other.
 6. Keep the answer between 200 and 400 words.
 7. Write in plain English that a non-lawyer can understand.
-8. If any source is marked [STATUS: UNVERIFIED], you MUST explicitly tell the user that this specific
-   section pairing has not been independently verified and recommend they confirm it against the
-   official bare act text. Do NOT state it as settled fact.
-9. Before citing [N], re-check that SOURCE N's own text actually supports the specific sentence you
+8. Before citing [N], re-check that SOURCE N's own text actually supports the specific sentence you
    are citing it for. Do not reuse a source number out of habit when discussing content from a
    different source block — cite that other block's actual number instead. Citing the wrong source
    number is a factual error, the same as citing the wrong section.
